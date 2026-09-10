@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from hashlib import sha256
-from copy import deepcopy
 from pathlib import Path
 import json
 from typing import Any, Mapping
@@ -24,7 +23,7 @@ def collect_runner_data(
 ) -> dict[str, Any]:
     """Project detached Runner and invocation facts without live authority."""
 
-    snapshot = deepcopy(dict(runner_snapshot))
+    snapshot = dict(runner_snapshot)
     if event_history_path is not None:
         events = read_runner_event_history(event_history_path)
         history = snapshot.get("event_history")
@@ -44,7 +43,7 @@ def collect_runner_data(
             "total_count": len(events),
             "durable_history_enabled": True,
             "durable": (
-                deepcopy(history.get("durable"))
+                history.get("durable")
                 if isinstance(history, Mapping)
                 else None
             ),
@@ -105,19 +104,20 @@ def write_runner_tool(
         ),
     )
     payload_files = (page_path, data_path, summary_path)
+    payload_records = [_file_record(path, output) for path in payload_files]
     write_json(
         inventory_path,
         {
             "format_version": 1,
-            "files": tuple(_file_record(path, output) for path in payload_files),
+            "files": payload_records,
         },
     )
     checksum_files = (*payload_files, inventory_path)
     write_text(
         checksum_path,
         "".join(
-            f"{_sha256(path)}  {path.relative_to(output).as_posix()}\n"
-            for path in checksum_files
+            f"{record['sha256']}  {record['path']}\n"
+            for record in (*payload_records, _file_record(inventory_path, output))
         ),
     )
     return {
@@ -162,7 +162,7 @@ def _read_deployment_startup(path: Path) -> dict[str, object]:
         or not isinstance(value.get("exit_code"), int)
     ):
         raise ValueError("Compose startup evidence is invalid")
-    return deepcopy(value)
+    return value
 
 
 __all__ = ["collect_runner_data", "write_runner_tool"]

@@ -82,6 +82,13 @@ recompiles.
 Traffic accepts `--physical-frames` and `--planning` alongside Compiler
 evidence. It uses explicit planned Route outcomes to classify success, planned
 unreachable, activation-time transience, and unexplained reachable loss.
+Direct collection reads and replays the sealed Plan semantics once, without
+materializing unused Planner Model inspection objects. Its immediate projection
+reuses reader validation; public mutable-snapshot projection still validates
+replay. Compact Traffic JSON streams complete records without changing fields,
+event retention, viewer behavior or scoring. Planner inspection retains its
+complete Model evidence. Large JSON writing and file hashing avoid full-file
+string/byte copies.
 
 ## Observation taxonomy
 
@@ -127,7 +134,75 @@ detached Runner, Traffic, Observation, or aggregate-index Tool fails, reports a
 warning, and exits with the domain execution status. Missing, stale, malformed,
 mixed-invocation, or incomplete records fail explicitly within the affected
 Tool.
-The synchronous candidate-evidence sink follows authoritative Planner
+The bounded asynchronous candidate-evidence sink follows authoritative Planner
 consumption. Its elapsed time is attributed to inspection capture, and an
 exception is retained as a distinct sink failure before the sink is disabled;
 the already-valid Planner result is not rolled back.
+
+Current finite generation seals required inputs and publishes MATERIALS_READY
+before optional Tools execute. Domain-history v2 permits physical-only evidence
+with zero Plans; semantic Tools require their own cutoff. Planner evidence v3
+retains future contact proofs and GS preparation. The Planner Tool distinguishes
+operational GS assignments from pending preparations and their reserved capacity,
+including the original start and remaining preparation time. Historical schema readers stay
+available. Tool projection performs its own single replay; readers avoid duplicate
+projection replay. Compiler observation input is parsed once per inspection.
+Worker durations overlap other stages and must not be added to rollup wall time.
+Observation distinguishes sampled initialization history from additional physical
+prediction queries. Extra queries do not increase the formal transition count or
+extend the displayed experiment interval; physical-only output has zero Planner
+transitions while retaining every formal PhysicalFrame.
+
+## Sealed deliveries and retained history
+
+Compiler Tool reads the continuous sealed compiler history plus immutable
+execution-definition delivery metadata, displays each delivery range/count and
+lets the reader focus its first boundary on the existing timeline. It does not
+decode runtime binary data to manufacture a lifecycle. Runner Tool reads actual
+batch loading, readiness, activation and reclaim events and draws Maintenance
+spans alongside Main, preserving overlap. The known session boundary count is
+separate from the first artifact’s count and the current resident plan count.
+Planner/physical/Traffic histories retain every formal timestamp and identity
+after runtime maps/plans are reclaimed. Aggregate output navigation only links
+original portals, with dated comparisons clearly distinguished.
+
+Traffic raw v2 generation deltas and Tool v6 compact incarnation ranges preserve
+legacy raw v1 evidence; field definitions and bounded processing are in the
+[Traffic README](../../tools/traffic/README.md#focused-correction-compact-traffic-identity-evidence).
+
+## Final finishing Tool data
+
+Shared Shell/orbit filtering uses recorded `(asn, shell_id, orbit_id)` metadata;
+no display-name parsing establishes ownership. Planner's additive route-index
+fields contain a source node index, typed GS/Zone target and compact activity
+status changes. Stable pairs derive from typed GS→Zone demands, with the current Zone assignment
+selecting the reverse demand. Both outcomes resolve independently at/before the
+cursor; full paths stay in at most two retained shards. Raw demand navigation is
+loaded only when its secondary drawer is expanded.
+The duplicate `showSpecial()` and shadowed drawer code have been removed.
+
+Traffic private browser schema v2 stores static node/flow/segment metadata once,
+positions in per-formal-frame JS chunks and 25 transactions per focused shard.
+The episode/probe selection persists across segments while play/speed/seek advance
+sampled geometry and schematic request/reply markers. Every frame selection fences
+obsolete callbacks, including cache hits. Each observed step references its packet
+index and records ingress-supported
+arrival, direction, sampled frame, unresolved association and explicit gaps.
+Redirect intent does not establish peer arrival; repeated node visits survive.
+The full replay remains v6 and raw telemetry v2. External request timestamps use
+a unique episode/segment/sequence association and retain null on ambiguity or
+missing observation. Compiler's optional spatial context embeds Physical World
+and forwards only its existing boundary cursor. No Tool executes Models.
+
+Offline refresh provenance is separate from the retained runtime source. Old
+browser/visual gate evidence applies to its original Tool source only; the final
+finishing changes have nonvisual validation and pending user visual review.
+
+Zone service is globally unique across the world: one Zone has at most one current
+serving satellite, not one per Shell. In the current example, ISLs stay within
+Shells and GSs cannot be transit nodes. Geographic three-GS associations and
+independent GS allocation do not guarantee those GSs have operational access to
+the Zone's serving Shell. Stable logical pairs therefore differ from the underlying
+GS→Zone and changing serving-satellite→GS demands. Coordinated Zone/GS selection
+and cross-Shell communication research are deferred; this Tool correction changes
+neither allocation nor routing or topology.

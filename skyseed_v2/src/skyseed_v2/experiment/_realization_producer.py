@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict, deque
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
-from threading import RLock
+from threading import RLock, get_ident
+from contextlib import contextmanager
 from time import perf_counter
 from collections.abc import Callable
 from typing import Any
@@ -22,7 +23,7 @@ from skyseed_v2.shared._domain_history import (
     _validate_domain_history_manifest_data,
     _write_domain_history_manifest_atomic,
 )
-from skyseed_v2.shared._durable_evidence import _append_jsonl, _reset_jsonl
+from skyseed_v2.shared._durable_evidence import _append_jsonl, _reset_jsonl, _OrderedEvidenceWriter
 from skyseed_v2.shared._execution_observation import _ExecutionObserver
 from skyseed_v2.simulator import (
     PhysicalFrame,
@@ -73,6 +74,8 @@ class _IncrementalRealizationProducer:
         "_finished",
         "_closed",
         "_lock",
+        "_operation_owner",
+        "_operation_depth",
         "_formal_frame_count",
         "_prehistory_frame_count",
         "_observation_count",
@@ -91,6 +94,10 @@ class _IncrementalRealizationProducer:
         "_formal_observation_sink_seconds",
         "_domain_evidence_persistence_seconds",
         "_sealed",
+        "_prediction_counts",
+        "_evidence_writer",
+        "_prediction_prepared",
+        "_current_formal_input",
     )
 
     def __init__(
@@ -151,6 +158,8 @@ class _IncrementalRealizationProducer:
         self._finished = False
         self._closed = False
         self._lock = RLock()
+        self._operation_owner = None
+        self._operation_depth = 0
         self._formal_frame_count = 0
         self._prehistory_frame_count = 0
         self._observation_count = 0
@@ -169,15 +178,39 @@ class _IncrementalRealizationProducer:
         self._formal_observation_sink_seconds = 0.0
         self._domain_evidence_persistence_seconds = 0.0
         self._sealed = False
+        self._prediction_prepared = False
+        self._current_formal_input = None
+        self._prediction_counts = {}
+        self._evidence_writer = _OrderedEvidenceWriter()
         if evidence_path is not None:
             self._initialize_evidence(Path(evidence_path))
 
+    @contextmanager
+    def _operation(self):
+        # The chronological cursor has one caller. Lock only the ownership
+        # claim, never geometry, compilation, file I/O, or worker joins.
+        caller = get_ident()
+        with self._lock:
+            if self._operation_owner not in (None, caller):
+                raise RuntimeError("producer cursor already has an active caller")
+            self._operation_owner = caller
+            self._operation_depth += 1
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._operation_depth -= 1
+                if not self._operation_depth:
+                    self._operation_owner = None
+
     def produce_next_realization(
         self,
+        *,
+        delivery_end: datetime | None = None,
     ) -> BpfCompiledRealization | None:
         """Return the next realization, advancing formal frames as needed."""
 
-        with self._lock:
+        with self._operation():
             if self._closed:
                 raise RuntimeError("realization producer is closed")
             self._select_mode("compiler")
@@ -187,7 +220,7 @@ class _IncrementalRealizationProducer:
             prehistory_frames_before = self._prehistory_frame_count
             evidence_records_before = self._evidence_record_count
             try:
-                plan = self._pull_next_plan()
+                plan = self._pull_next_plan(delivery_end=delivery_end)
                 if plan is None:
                     self._record_producer_total(
                         started,
@@ -234,6 +267,23 @@ class _IncrementalRealizationProducer:
                     pass
                 raise
 
+    def produce_next_observation(self):
+        """Advance the physical cutoff of the same finite generation path."""
+        with self._operation():
+            if self._closed:
+                raise RuntimeError('realization producer is closed')
+            self._select_mode('physical-world')
+            try:
+                self._ensure_prediction()
+                if self._advance_one_formal_frame():
+                    return self._current_formal_input
+                self._finished = True
+                self._seal_domain_history()
+                return None
+            except BaseException:
+                self.close()
+                raise
+
     def produce_next_plan(self) -> Plan | None:
         """Return the next Plan without invoking the Compiler.
 
@@ -241,7 +291,7 @@ class _IncrementalRealizationProducer:
         cursor. Once either pull mode is selected, the other is prohibited.
         """
 
-        with self._lock:
+        with self._operation():
             if self._closed:
                 raise RuntimeError("realization producer is closed")
             self._select_mode("planner")
@@ -270,8 +320,8 @@ class _IncrementalRealizationProducer:
                 raise
 
     def _select_mode(self, mode: str) -> None:
-        if mode not in {"planner", "compiler"}:
-            raise ValueError("producer mode must be planner or compiler")
+        if mode not in {"physical-world", "planner", "compiler"}:
+            raise ValueError("unknown producer stage cutoff")
         if self._mode is None:
             self._mode = mode
             return
@@ -280,9 +330,26 @@ class _IncrementalRealizationProducer:
                 "producer cannot mix Planner-only and realization pull modes"
             )
 
-    def _pull_next_plan(self) -> Plan | None:
+    def _pull_next_plan(self, *, delivery_end: datetime | None = None) -> Plan | None:
+        if delivery_end is not None:
+            start, end = self._timeline.start_time, self._timeline.end_time
+            interval = self._timeline.observation_interval
+            if (not isinstance(delivery_end, datetime)
+                or delivery_end.tzinfo is None
+                or not start <= delivery_end <= end
+                or (delivery_end - start) % interval):
+                raise ValueError("delivery_end must be a formal Timeline timestamp")
+            if self._latest_plan is not None and delivery_end < self._latest_plan.end_timestamp:
+                raise ValueError("delivered coverage cannot move backwards")
         self._ensure_primed()
         while not self._plans:
+            next_time = (self._timeline.start_time
+                         + self._formal_frame_count * self._timeline.observation_interval)
+            if delivery_end is not None and delivery_end < self._timeline.end_time and next_time > delivery_end:
+                self._plans.extend(self._planner.flush())
+                if not self._plans:
+                    return None
+                break
             if self._advance_one_formal_frame():
                 continue
             self._finish_planner()
@@ -304,7 +371,7 @@ class _IncrementalRealizationProducer:
     def latest_plan(self) -> Plan:
         """Return the latest successfully produced Plan."""
 
-        with self._lock:
+        with self._operation():
             if self._latest_plan is None:
                 raise RuntimeError("no Plan has been produced")
             return self._latest_plan
@@ -319,7 +386,7 @@ class _IncrementalRealizationProducer:
         second frame or invoking a potentially stateful PhysicalLinkModel twice.
         """
 
-        with self._lock:
+        with self._operation():
             if (
                 self._first_formal_frame is None
                 or self._first_formal_observation is None
@@ -330,9 +397,12 @@ class _IncrementalRealizationProducer:
     def snapshot(self) -> dict[str, object]:
         """Return bounded cursor/frontier bookkeeping without live objects."""
 
-        with self._lock:
+        with self._operation():
             frontiers = self._planner.get_frontiers()
             return {
+                "physical_prediction": dict(self._prediction_counts),
+                "evidence_queue_peak": self._evidence_writer.peak_pending,
+                "evidence_queue_wait_seconds": self._evidence_writer.wait_seconds,
                 "formal_frame_count": self._formal_frame_count,
                 "prehistory_frame_count": self._prehistory_frame_count,
                 "physical_link_observation_count": self._observation_count,
@@ -345,7 +415,7 @@ class _IncrementalRealizationProducer:
                 "buffered_plan_count": len(self._plans),
                 "pull_mode": self._mode,
                 "formal_input_exhausted": self._formal_exhausted,
-                "planner_finished": self._finished,
+                "planner_finished": self._finished and self._mode != "physical-world",
                 "domain_history_sealed": self._sealed,
                 "closed": self._closed,
                 "latest_plan_id": (
@@ -370,7 +440,8 @@ class _IncrementalRealizationProducer:
                 ),
                 "frontiers": {
                     "physical_observation": _optional_timestamp(
-                        frontiers.physical_observation
+                        (self._current_formal_input[0].timestamp if self._mode == "physical-world" and self._current_formal_input is not None
+                         else frontiers.physical_observation)
                     ),
                     "planning": _optional_timestamp(frontiers.planning),
                     "publication": _optional_timestamp(
@@ -399,11 +470,14 @@ class _IncrementalRealizationProducer:
     def close(self) -> None:
         """Shut down Planner-owned workers exactly once."""
 
-        with self._lock:
+        with self._operation():
             if self._closed:
                 return
-            self._planner.shutdown(wait=True)
-            self._closed = True
+            try:
+                self._evidence_writer.finish()
+            finally:
+                self._planner.shutdown(wait=True)
+                self._closed = True
 
     def __enter__(self) -> _IncrementalRealizationProducer:
         return self
@@ -411,10 +485,58 @@ class _IncrementalRealizationProducer:
     def __exit__(self, exc_type, exc, traceback) -> None:
         self.close()
 
+    def _ensure_prediction(self) -> None:
+        if self._prediction_prepared:
+            return
+        self._request = self._planner.create_physical_link_request()
+        interval = self._timeline.observation_interval
+        required = self._planner.required_prehistory
+        prediction = getattr(self._physical_link_model, 'predict_contacts', None)
+        isl_tail, ground_tail = self._planner._physical_prediction_requirements()
+        if callable(prediction):
+            started = perf_counter()
+            self._prediction_counts = prediction(
+                self._physical_world, self._request,
+                start_timestamp=self._timeline.start_time-required,
+                end_timestamp=self._timeline.end_time,
+                observation_interval=interval,
+                inter_satellite_tail=isl_tail, ground_station_tail=ground_tail,
+            )
+            observer = self._execution_observer()
+            if observer is not None:
+                observer.record(component='physical-link', stage='physical-contact-prediction',
+                    phase='one-shot', duration_seconds=perf_counter()-started,
+                    work=self._prediction_counts, started_monotonic=started)
+        self._prediction_prepared = True
+
+    def _compute_physical_observation(self, frame):
+        request = self._planner._candidate_search_request(self._request)
+        expansions = 0
+        decision_seconds = 0.0
+        search_started = perf_counter()
+        while True:
+            observation = self._physical_link_model.compute_observation(self._physical_world, frame, request)
+            decision_started = perf_counter()
+            expanded = self._planner._expanded_candidate_request(request, observation)
+            decision_seconds += perf_counter() - decision_started
+            if expanded is None:
+                observer = self._execution_observer()
+                if observer is not None:
+                    observer.record(component="physical-link", stage="candidate-search", phase="one-shot",
+                        duration_seconds=decision_seconds, scope={"timestamp": frame.timestamp.isoformat()},
+                        work={"ground_search_expansions": expansions,
+                              "ground_candidate_limit": request.ground_station_candidate_limit or 0})
+                    observer.record(component="physical-link", stage="candidate-search-total", phase="one-shot",
+                        duration_seconds=perf_counter()-search_started, duration_role="rollup",
+                        started_monotonic=search_started, scope={"timestamp": frame.timestamp.isoformat()})
+                return observation
+            request = expanded
+            expansions += 1
+
     def _ensure_primed(self) -> None:
         if self._primed:
             return
-        self._request = self._planner.create_physical_link_request()
+        self._ensure_prediction()
         interval = self._timeline.observation_interval
         required = self._planner.required_prehistory
         offsets = []
@@ -425,11 +547,7 @@ class _IncrementalRealizationProducer:
         for value in reversed(offsets):
             timestamp = self._timeline.start_time - value
             frame = self._physical_world.frame_at(timestamp)
-            observation = self._physical_link_model.compute_observation(
-                self._physical_world,
-                frame,
-                self._request,
-            )
+            observation = self._compute_physical_observation(frame)
             self._require_observation_timestamp(frame.timestamp, observation)
             self._planner.prime(
                 frame,
@@ -450,13 +568,11 @@ class _IncrementalRealizationProducer:
         assert self._request is not None
         frame = self._physical_world.frame_at(timestamp)
         self._persist_physical_frame(frame)
-        observation = self._physical_link_model.compute_observation(
-            self._physical_world,
-            frame,
-            self._request,
-        )
+        observation = self._compute_physical_observation(frame)
         self._require_observation_timestamp(frame.timestamp, observation)
-        self._plans.extend(self._planner.observe(frame, observation))
+        if self._mode != "physical-world":
+            self._plans.extend(self._planner.observe(frame, observation))
+        self._current_formal_input = (frame, observation)
         if self._formal_observation_sink is not None:
             capture_started = perf_counter()
             captured = True
@@ -546,12 +662,16 @@ class _IncrementalRealizationProducer:
         )
 
     def _persist_physical_frame(self, frame) -> None:
+        if self._physical_frame_history_path is not None:
+            self._evidence_writer.submit(self._write_physical_frame, frame)
+            self._evidence_record_count += 1
+
+    def _write_physical_frame(self, frame) -> None:
         if self._physical_frame_history_path is None:
             return
         path = self._physical_frame_history_path
-        size_before = _safe_file_size(path)
         started = perf_counter()
-        _append_jsonl(
+        serialized_bytes = self._evidence_writer.append(
             path,
             {
                 "record_type": "physical_frame",
@@ -578,35 +698,39 @@ class _IncrementalRealizationProducer:
                 ],
             },
         )
-        self._evidence_record_count += 1
         self._record_evidence_serialization(
             started,
             family="physical-frame",
             path=path,
-            size_before=size_before,
+            size_before=0,
+            serialized_bytes=serialized_bytes,
             scope={"timestamp": frame.timestamp.isoformat()},
             work={"positions": len(frame.positions)},
         )
 
     def _persist_planning_evidence(self, evidence) -> None:
+        if self._planning_history_path is not None:
+            self._evidence_writer.submit(self._write_planning_evidence, evidence)
+            self._evidence_record_count += 1
+
+    def _write_planning_evidence(self, evidence) -> None:
         if self._planning_history_path is None:
             return
         path = self._planning_history_path
-        size_before = _safe_file_size(path)
         started = perf_counter()
-        _append_jsonl(
+        serialized_bytes = self._evidence_writer.append(
             path,
             {
                 "record_type": "published_planning_evidence",
                 "data": published_planning_evidence_to_data(evidence),
             },
         )
-        self._evidence_record_count += 1
         self._record_evidence_serialization(
             started,
             family="planning",
             path=path,
-            size_before=size_before,
+            size_before=0,
+            serialized_bytes=serialized_bytes,
             scope={"plan_id": evidence.plan.plan_id},
             work={
                 "plans": 1,
@@ -615,22 +739,28 @@ class _IncrementalRealizationProducer:
             },
         )
 
-    def _persist_compiler_lineage(
+    def _persist_compiler_lineage(self, plan, realization) -> None:
+        if self._compiler_history_path is not None:
+            self._evidence_writer.submit(self._write_compiler_lineage,
+                plan, realization, self._realization_count)
+            self._evidence_record_count += 1
+
+    def _write_compiler_lineage(
         self,
         plan: Plan,
         realization: BpfCompiledRealization,
+        realization_index: int,
     ) -> None:
         if self._compiler_history_path is None:
             return
         path = self._compiler_history_path
-        size_before = _safe_file_size(path)
         started = perf_counter()
         compact = _compact_compiler_evidence(plan, realization)
-        _append_jsonl(
+        serialized_bytes = self._evidence_writer.append(
             path,
             {
                 "record_type": "compiled_realization",
-                "realization_index": self._realization_count,
+                "realization_index": realization_index,
                 "source_plan_id": plan.plan_id,
                 "source_previous_plan_id": plan.previous_plan_id,
                 "physical_world_fingerprint": (
@@ -658,15 +788,15 @@ class _IncrementalRealizationProducer:
                 **compact,
             },
         )
-        self._evidence_record_count += 1
         self._record_evidence_serialization(
             started,
             family="compiler",
             path=path,
-            size_before=size_before,
+            size_before=0,
+            serialized_bytes=serialized_bytes,
             scope={
                 "plan_id": plan.plan_id,
-                "realization_index": self._realization_count,
+                "realization_index": realization_index,
             },
             work={
                 "realizations": 1,
@@ -677,18 +807,20 @@ class _IncrementalRealizationProducer:
         )
 
     def _seal_domain_history(self) -> None:
+        self._evidence_writer.finish()
         if self._evidence_root is None or self._sealed:
             return
         if (
             not self._formal_exhausted
             or not self._finished
             or self._plans
-            or self._mode not in {"planner", "compiler"}
+            or self._mode not in {"physical-world", "planner", "compiler"}
         ):
             raise RuntimeError(
                 "domain-history can be sealed only after terminal exhaustion"
             )
-        if self._latest_plan is None or self._first_plan_id is None:
+        physical_only = self._mode == "physical-world"
+        if not physical_only and (self._latest_plan is None or self._first_plan_id is None):
             raise RuntimeError("domain-history has no terminal Plan lineage")
         if self._mode == "planner" and self._realization_count != 0:
             raise RuntimeError(
@@ -709,12 +841,12 @@ class _IncrementalRealizationProducer:
                 "bounded Timeline end must be observation-interval aligned"
             )
         expected_formal_frames = span // interval + 1
-        expected_prehistory_frames = self._planner.required_prehistory // interval
+        expected_prehistory_frames = 0 if physical_only else self._planner.required_prehistory // interval
         if self._formal_frame_count != expected_formal_frames:
             raise RuntimeError("formal domain-history coverage is incomplete")
         if self._prehistory_frame_count != expected_prehistory_frames:
             raise RuntimeError("prehistory domain-history coverage is incomplete")
-        if self._transition_count != self._formal_frame_count:
+        if self._transition_count != (0 if physical_only else self._formal_frame_count):
             raise RuntimeError("Plan transition coverage is incomplete")
 
         paths = {
@@ -757,25 +889,23 @@ class _IncrementalRealizationProducer:
                 "realizations": self._realization_count,
             },
             "frontiers": {
-                "physical_observation": _required_timestamp(
-                    frontiers.physical_observation,
-                    "physical-observation",
-                ),
-                "planning": _required_timestamp(
+                "physical_observation": (end.isoformat() if physical_only else _required_timestamp(
+                    frontiers.physical_observation, "physical-observation")),
+                "planning": None if physical_only else _required_timestamp(
                     frontiers.planning, "planning"
                 ),
-                "publication": _required_timestamp(
+                "publication": None if physical_only else _required_timestamp(
                     frontiers.publication, "publication"
                 ),
             },
             "lineage": {
                 "first_plan_id": self._first_plan_id,
-                "last_plan_id": self._latest_plan.plan_id,
+                "last_plan_id": None if physical_only else self._latest_plan.plan_id,
                 "last_plan_previous_plan_id": (
-                    self._latest_plan.previous_plan_id
+                    None if physical_only else self._latest_plan.previous_plan_id
                 ),
                 "last_plan_output_state_fingerprint": (
-                    self._latest_plan.output_state_fingerprint
+                    None if physical_only else self._latest_plan.output_state_fingerprint
                 ),
                 "last_realization_plan_id": (
                     None
@@ -819,6 +949,7 @@ class _IncrementalRealizationProducer:
         size_before: int,
         scope: dict[str, object],
         work: dict[str, int | float],
+        serialized_bytes: int | None = None,
     ) -> None:
         duration_seconds = perf_counter() - started
         self._domain_evidence_persistence_seconds += duration_seconds
@@ -834,9 +965,9 @@ class _IncrementalRealizationProducer:
             work={
                 **work,
                 "records": 1,
-                "output_bytes": max(
-                    0, _safe_file_size(path) - size_before
-                ),
+                **({"serialized_bytes": serialized_bytes} if serialized_bytes is not None else {
+                    "output_bytes": max(0, _safe_file_size(path) - size_before),
+                }),
             },
             started_monotonic=started,
         )

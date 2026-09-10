@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from time import perf_counter
 from typing import Mapping
 
 from .inspection import write_runner_tool
@@ -24,6 +25,7 @@ def main() -> int:
     parser.add_argument("--deployment-startup", type=Path)
     arguments = parser.parse_args()
 
+    started = perf_counter()
     value = json.loads(arguments.handoff.read_text(encoding="utf-8"))
     if not isinstance(value, dict) or value.get("format_version") != 1:
         raise ValueError("unsupported Runner inspection handoff format")
@@ -36,6 +38,11 @@ def main() -> int:
         event_history_path=arguments.events,
         deployment_startup_path=arguments.deployment_startup,
     )
+    print(json.dumps({
+        "artifact_type": "runner-tool-completion",
+        "scope": "CLI input read and Tool function; excludes Python startup",
+        "artifact_metrics": {"wall_seconds": perf_counter() - started},
+    }))
     return 0
 
 

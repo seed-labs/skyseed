@@ -152,7 +152,7 @@ def render_runner_page(data: dict[str, Any]) -> str:
   <details><summary>Per-boundary counts, timestamps and lifecycle accounting</summary><div id="detailed-timing-evidence"></div></details>
 </section>
 
-<section class="card scroll"></section>
+<section class="card scroll" id="delivery-section"><h2>Delivery and Maintenance / 交付与后台维护</h2><p>One B0 and one fixed runtime origin. Main activates every formal boundary. Bounded Maintenance loads sealed successors and reclaims eligible retired data; retained historical evidence remains readable.</p><div id="delivery-summary"></div><div id="delivery-events"></div></section>
 
 <section>
   <h2>Scale safety / 规模安全</h2>
@@ -202,7 +202,7 @@ const STRINGS={
     guideTitle:"如何阅读 / How to read",guideIntro:"普通用户建议依次阅读 Overview、图形执行时间轴、Timing 和 Cleanup；raw JSON 与深层 evidence 主要用于 debugging。",
     guideTerms:[
       ["ACTIVE","最后已经真正生效的 nominal network state。cleanup 后它只是一项历史事实。"],
-      ["Runner artifact","运行前已密封且完整验证的有限 precomputed execution artifact。"],
+      ["Runner artifact","生成时检查序列关系并密封的有限交付；入口核对身份/hash，Preparation 或 Maintenance 打开并完整解码该批。"],
       ["Headroom","准备完成时距 nominal boundary 尚余的时间；正值越大，准备余量越多。"],
       ["Runtime foundation","Runner 已冻结并 attach 的具体 live Compose deployment instances。"],
       ["PID / netns binding","节点容器 incarnation 的进程与 network namespace identity，用于 runtime correctness 与 stale detection。"],
@@ -229,10 +229,10 @@ const STRINGS={
       ["Traffic telemetry","本 Tool 不收集 packet/byte/flow/path telemetry。"],
       ["Active validation","本 Tool 不生成 synthetic traffic，也不执行 expected-vs-actual assertion。"]
     ],
-    categories:{All:"全部",Preparation:"Preparation",Main:"Main",Failure:"Failure",Cleanup:"Cleanup"},
+    categories:{Maintenance:"Maintenance",All:"全部",Preparation:"Preparation",Main:"Main",Failure:"Failure",Cleanup:"Cleanup"},
     graphGroups:{lifecycle:"Lifecycle",work:"Runner work"},
-    graphRows:{preparation_phase:"Preparation",automatic_run_phase:"Automatic run",cleanup_phase:"Cleanup",main_activation:"切换当前网络状态"},
-    graphKinds:{preparation_phase:"Preparation 生命周期阶段",automatic_run_phase:"Automatic scheduling/waiting 生命周期阶段",cleanup_phase:"Cleanup 生命周期阶段",main_activation:"Main activation 工作",runtime_foundation_ready:"Runtime foundation 已就绪"},
+    graphRows:{batch_loading:"Load / prewrite batch",maintenance_reclaim:"Reclaim eligible retired data",preparation_phase:"Preparation",automatic_run_phase:"Automatic run",cleanup_phase:"Cleanup",main_activation:"切换当前网络状态"},
+    graphKinds:{batch_loading:"Background batch load / prewrite",maintenance_reclaim:"Bounded Maintenance reclaim",preparation_phase:"Preparation 生命周期阶段",automatic_run_phase:"Automatic scheduling/waiting 生命周期阶段",cleanup_phase:"Cleanup 生命周期阶段",main_activation:"Main activation 工作",runtime_foundation_ready:"Runtime foundation 已就绪"},
     localDetail:{title:"局部细节",hint:"悬停图中的 work、foundation 分隔；点击可固定。",pinned:"已固定",unpin:"取消固定",event:"查看详细事件",window:"局部时间窗口",actual:"实际事件时间",duration:"工作耗时",boundary:"Nominal time",generation:"Generation",none:"—"},
     eventHeadlines:{preparation_start:"Preparation 开始",preparation_end:"初始 preparation 完成",runtime_foundation_ready:"Runtime foundation ready",automatic_run_start:"Automatic execution 开始",automatic_run_end:"Automatic execution 完成",boundary_scheduled:"Nominal boundary 已调度",activation_end:"Main activation 完成",capacity_audit_failure:"Capacity audit 失败",failure:"Runner failure 已记录",runtime_cleanup_end:"Dataplane cleanup 完成",cleanup_end:"Runner cleanup 完成"},
     words:{yes:"是",no:"否",none:"无",unknown:"未知",bootstrap:"bootstrap",boundary:"Boundary",nominalBoundary:"Nominal boundary",predecessor:"predecessor",headroom:"headroom",duration:"Duration",connections:"connections",nextAction:"下一动作",lastActive:"Last active frontier",recorded:"已记录的 Runner lifecycle evidence",in:"用时",generation:"Generation",details:"记录详情",empty:"没有记录值。",noEvents:"此分类没有事件。",bounded:"bounded full range",notAvailable:"尚不可用",actual:"实际"},
@@ -244,7 +244,7 @@ const STRINGS={
     guideTitle:"How to read / 如何阅读",guideIntro:"Most users should read Overview, the graphical timeline, Timing, and Cleanup first. Raw JSON and deep evidence are mainly for debugging.",
     guideTerms:[
       ["ACTIVE","The last nominal network state that actually became active. After cleanup it is historical only."],
-      ["Runner artifact","The finite precomputed execution artifact sealed and fully validated before runtime."],
+      ["Runner artifact","A finite sealed delivery: the writer checks sequence relationships; entry verifies identity/hash; Preparation or Maintenance opens and fully decodes the batch."],
       ["Headroom","Time remaining before the nominal boundary when preparation completed; a larger positive value means more margin."],
       ["Runtime foundation","The concrete live Compose deployment instances frozen and attached by the Runner."],
       ["PID / netns binding","The process and network-namespace identity of a node container incarnation, used for runtime correctness and stale detection."],
@@ -271,10 +271,10 @@ const STRINGS={
       ["Traffic telemetry","This Tool collects no packet/byte/flow/path telemetry."],
       ["Active validation","This Tool performs no synthetic traffic or expected-vs-actual assertion."]
     ],
-    categories:{All:"All",Preparation:"Preparation",Main:"Main",Failure:"Failure",Cleanup:"Cleanup"},
+    categories:{Maintenance:"Maintenance",All:"All",Preparation:"Preparation",Main:"Main",Failure:"Failure",Cleanup:"Cleanup"},
     graphGroups:{lifecycle:"Lifecycle",work:"Runner work"},
-    graphRows:{preparation_phase:"Preparation",automatic_run_phase:"Automatic run",cleanup_phase:"Cleanup",main_activation:"Activate current network state"},
-    graphKinds:{preparation_phase:"Preparation lifecycle phase",automatic_run_phase:"Automatic scheduling/waiting lifecycle phase",cleanup_phase:"Cleanup lifecycle phase",main_activation:"Main activation work",runtime_foundation_ready:"Runtime foundation ready"},
+    graphRows:{batch_loading:"Load / prewrite batch",maintenance_reclaim:"Reclaim eligible retired data",preparation_phase:"Preparation",automatic_run_phase:"Automatic run",cleanup_phase:"Cleanup",main_activation:"Activate current network state"},
+    graphKinds:{batch_loading:"Background batch load / prewrite",maintenance_reclaim:"Bounded Maintenance reclaim",preparation_phase:"Preparation lifecycle phase",automatic_run_phase:"Automatic scheduling/waiting lifecycle phase",cleanup_phase:"Cleanup lifecycle phase",main_activation:"Main activation work",runtime_foundation_ready:"Runtime foundation ready"},
     localDetail:{title:"Local detail",hint:"Hover over work, the foundation separator; click to pin it.",pinned:"Pinned",unpin:"Unpin",event:"View detailed event",window:"Local time window",actual:"Actual event time",duration:"Work duration",boundary:"Nominal time",generation:"Generation",none:"—"},
     eventHeadlines:{preparation_start:"Preparation started",preparation_end:"Initial preparation completed",runtime_foundation_ready:"Runtime foundation ready",automatic_run_start:"Automatic execution started",automatic_run_end:"Automatic execution completed",boundary_scheduled:"Nominal boundary scheduled",activation_end:"Main activation completed",capacity_audit_failure:"Capacity audit failed",failure:"Runner failure recorded",runtime_cleanup_end:"Dataplane cleanup completed",cleanup_end:"Runner cleanup completed"},
     words:{yes:"yes",no:"no",none:"none",unknown:"unknown",bootstrap:"bootstrap",boundary:"Boundary",nominalBoundary:"Nominal boundary",predecessor:"predecessor",headroom:"headroom",duration:"Duration",connections:"connections",nextAction:"Next action",lastActive:"Last active frontier",recorded:"Recorded Runner lifecycle evidence",in:"in",generation:"Generation",details:"Recorded details",empty:"No recorded values.",noEvents:"No events in this category.",bounded:"bounded full range",notAvailable:"not yet available",actual:"actual"},
@@ -322,7 +322,7 @@ function renderOverview(){
     card(l[0],enumText(overview.outcome),s().overviewDetails.exit(overview.exit_code)),card(l[1],enumText(overview.lifecycle_state)),card(l[2],enumText(overview.execution_mode)),
     card(l[3],enumText(overview.execution_contract)),card(l[4],fmtTime(overview.frontiers.last_active),overview.lifecycle_state==="cleaned"?s().overviewDetails.historical:s().overviewDetails.lastActivation),
     card(l[5],fmtTime(overview.frontiers.artifact_end)),
-    card(l[6],overview.artifact.boundary_count),card(l[7],overview.activation_count),card(l[8],fmtSeconds(overview.preparation_duration_seconds)),card(l[9],enumText(overview.cleanup_status),fmtSeconds(overview.cleanup_duration_seconds))
+    card(l[6],overview.known_boundary_count??overview.artifact.boundary_count),card(l[7],overview.activation_count),card(l[8],fmtSeconds(overview.preparation_duration_seconds)),card(l[9],enumText(overview.cleanup_status),fmtSeconds(overview.cleanup_duration_seconds))
   ].join("");
 }
 
@@ -481,8 +481,14 @@ function renderEvidence(){
   document.getElementById("evidence-boundaries").innerHTML=s().boundaryCards.map(([title,description])=>`<div><strong>${esc(title)}</strong><p>${esc(description)}</p></div>`).join("");
 }
 
+function renderDelivery(){
+  const delivery=DATA.delivery||{};
+  document.getElementById('delivery-summary').innerHTML=evidenceCard('Session / reclaimed runtime data',{...delivery.session,...delivery.reclamation});
+  const events=delivery.batches||[];
+  document.getElementById('delivery-events').innerHTML='<table><thead><tr><th>Event</th><th>Batch</th><th>Nominal time</th><th>Load + construction / prewrite (s)</th><th>Ready margin (s)</th></tr></thead><tbody>'+events.map(v=>`<tr><td>${esc(v.event)}</td><td>${esc(v.batch_index)}</td><td>${esc(v.boundary_timestamp||v.timeline?.start||'—')}</td><td>${esc(v.total_seconds??'—')}</td><td>${esc(v.readiness_margin_seconds??'—')}</td></tr>`).join('')+'</tbody></table>';
+}
 function renderAll(){
-  setStaticText();renderGuide();renderOverview();renderGraph();renderTimelineFilters();renderDetailedTimeline();renderTiming();renderScaleSafety();renderFoundation();renderEvidence();document.getElementById("raw-json").textContent=pretty(DATA.raw);
+  setStaticText();renderDelivery();renderGuide();renderOverview();renderGraph();renderTimelineFilters();renderDetailedTimeline();renderTiming();renderScaleSafety();renderFoundation();renderEvidence();document.getElementById("raw-json").textContent=pretty(DATA.raw);
   document.querySelectorAll("[data-language]").forEach(button=>{button.classList.toggle("active",button.dataset.language===currentLanguage);button.setAttribute("aria-pressed",button.dataset.language===currentLanguage?"true":"false");});
 }
 

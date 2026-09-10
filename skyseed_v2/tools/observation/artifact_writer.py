@@ -81,18 +81,19 @@ def write_observation_artifacts(
         summary_data_path,
         summary_path,
     )
+    payload_records = [_file_record(path, output) for path in payload_files]
     bundle_inventory = {
         "format_version": 1,
         "representation": "detached-jsonl-plus-external-browser-records",
-        "files": [_file_record(path, output) for path in payload_files],
+        "files": payload_records,
     }
     write_json(inventory_path, bundle_inventory)
     checksum_files = (*payload_files, inventory_path)
     write_text(
         checksum_path,
         "".join(
-            f"{_sha256(path)}  {path.relative_to(output).as_posix()}\n"
-            for path in checksum_files
+            f"{record['sha256']}  {record['path']}\n"
+            for record in (*payload_records, _file_record(inventory_path, output))
         ),
     )
     return {

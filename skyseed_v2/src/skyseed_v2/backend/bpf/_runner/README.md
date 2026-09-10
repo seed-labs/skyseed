@@ -1,16 +1,17 @@
 # BpfRunner private implementation
 
 This directory groups private capabilities owned by `../runner.py`. It adds no
-public type, lifecycle owner, dataplane plugin, or execution mode.
+public type, independent lifecycle owner or dataplane plugin.
 
 The sibling `../_runner_artifact.py` owns backend artifact packaging and reading.
-Its indexed decoding capability is consumed in full during Runner Preparation.
+Each finite batch is fully decoded in initial Preparation or admitted Maintenance;
+indexed reader capability does not imply Main decoding.
 Prepared/derived records and finite capacity accumulation in these private
 files do not constitute new domain components.
 
 | File | Responsibility |
 |---|---|
-| `runtime_realization.py` | Validate finite capacity, materialize all plans in Preparation, prewrite semantic generations, and submit immutable Main deltas. |
+| `runtime_realization.py` | Initialize fixed capacity once, admit/construct finite batches, share/prewrite node versions, reclaim eligible generations, and submit immutable Main deltas. |
 | `privileged_runtime_command.py` | Own the persistent privileged command loop, retained namespace sockets/BPF descriptors, publication barriers, raw BPF loader, bounded deletion workers and retirement ledger. |
 | `kernel_netlink.py` | Encode Linux rtnetlink UAPI requests for veth, link, qdisc, BPF attachment, route, neighbour and address mutations; require kernel ACKs. |
 | `process_incarnation.py` | Capture and validate the complete startup PID/start-time/netns identity set. |
@@ -19,15 +20,24 @@ files do not constitute new domain components.
 | `traffic_telemetry_collector.py` | Read pinned ring/loss maps and provide final-drain evidence. |
 | `traffic_telemetry_abi.py` | Define the existing private packet-event layout shared by producer and collector. |
 
-`BpfRunner` owns one-shot Preparation, formal Main, cleanup, and realized-state
-snapshots. Preparation opens the sealed finite artifact, validates its metadata
-and binary structure, decodes every record, and builds the complete sequence of
-immutable delta plans and their activation JSON wire representation.
+`BpfRunner` owns initial Preparation, formal Main, optional continued-batch
+Maintenance, cleanup, and realized-state snapshots. Preparation opens and fully
+decodes the first sealed finite delivery, checks its metadata and binary
+structure, and constructs all of that delivery's immutable delta plans and
+activation JSON commands. Single-delivery execution prepares the whole sequence;
+continued execution does not initially decode or prewrite its successor.
 Artifact-local caches reuse decoded identities/timestamps; Preparation reuses
 previous route/access state, stable names/slots, and route-by-interface indexes.
 It discovers container incarnations once, retains
 namespace descriptors and rtnetlink sockets, initializes maps/programs at the
-sealed cumulative capacity, and prewrites every generation-semantic entry.
+sealed cumulative capacity for one delivery, or fixed resident reservations
+based on the first delivery and configured capacity factor for continuation.
+Continued per-node entry envelopes use first-batch peaks of the same typed
+entity kind; they allow peer work migration while retaining fixed limits
+and exact sealed-demand accounting. The extra reservation consumes memory.
+It prewrites the first delivery's generation semantics. Equal per-node content
+shares an immutable node version across generations; unchanged entries are not
+written again. The static demand index is built once per admitted batch.
 Preparation then physically executes boundary 0, from no network to the initial
 network, before returning. The formal clock begins in `run()`, whose first
 possible activation is boundary 1. A one-boundary experiment has no formal
@@ -35,7 +45,10 @@ network activation.
 
 Main consumes a prepared immutable delta: changed connections, affected nodes,
 and normalized operation nodes. Each veth creation includes both deterministic
-MACs, one RX/TX queue per endpoint, and its exact future retirement cohort.
+MACs, one RX/TX queue per endpoint, and its owned retirement group.
+Single finite execution groups known future retirement cohorts; continuation
+uses stable per-connection groups, preserving ownership across unknown future
+withdrawals and re-establishment.
 Interfaces start down; Main configures qdisc/BPF and readiness, changes
 routes/neighbours and live port bindings, then commits
 `active_generation`, then withdraws obsolete routes/bindings and deletes
@@ -45,17 +58,21 @@ Exactly one endpoint per pair carries the nonzero group. Independent namespace
 batches use bounded persistent helper workers initialized in Preparation; one
 worker owns each socket and all batches join before Main completes. Cleanup
 uses the same owned cohorts, retains uncertain ownership, and closes the workers.
-Worker reuse never carries deletion jobs across Main boundaries or creates an
-independent deletion service.
 Candidate rollback deletes individual new pairs because their future groups can
-also contain previously live pairs. Generation-semantic maps remain immutable throughout formal
-runtime. Future veths remain absent until their own boundary.
+also contain previously live pairs. Published generation content is immutable;
+Maintenance writes only future content and reclaims only eligible retired
+versions. Future veths remain absent until their own boundary.
 
-There is no Maintenance thread, READY producer/wait, deferred generation
-completion, or generation reclaim. All finite semantic entries stay resident
-until cleanup. Capacity or identity failures stop generation/Preparation;
-formal Main handles the return status of actual mutations without full-network
-validation or PID/netns rediscovery.
+Single-delivery execution retains finite semantic entries until Cleanup.
+For append-only continuation, Runner/backend Maintenance loads and prewrites the
+next sealed batch, then marks it READY. It reclaims eligible older plans and
+map versions after actual activation, preserving in-flight readers and retained
+references. Main alone executes boundaries, including timely withdrawals and
+joined physical deletion. It never waits for READY past the nominal deadline:
+missing/late READY or Maintenance failure produces an explicit failed/incomplete
+run, without clock shifts, skipped boundaries or a successful fallback.
+Capacity and identity failures are fail-closed. Formal Main handles actual
+mutation results without full-network validation or PID/netns rediscovery.
 
 One privileged command stream is established in Preparation. Its long-lived
 process uses retained namespace rtnetlink sockets and BPF file descriptors.
@@ -147,6 +164,8 @@ flowchart LR
     R --> J[Join physical deletion results]
     J --> A[Main completion and formal ACTIVE]
     A --> D
+    A -.actual activation.-> M[Maintenance: bounded load and safe reclaim]
+    M -.READY before deadline.-> D
     A --> C[Cleanup: owned cohorts, BPF, workers, descriptors]
 ```
 
@@ -155,22 +174,44 @@ flowchart LR
 The private BPF logical port is a non-zero uint32 allocated by the finite
 artifact writer for one node-side connection endpoint. The manifest stores each
 connection and both endpoint IDs explicitly; IDs survive withdrawal/recreation
-across every generation of that artifact. They are not public domain values or
+across generations and continued artifacts in the same fixed-node session. They are not public domain values or
 root exports. Live ifindexes occur only in small per-node binding maps.
 
 | Map | Key | Value |
 |---|---|---|
-| `active_generation` | `0` | generation |
-| per-node `active_links` | `(generation, logical_ingress_port_id)` | `1` |
-| per-node `routes` | `(generation, destination_ipv4_u32)` | logical egress port; `0` for local |
+| `active_generation` ARRAY | `0` | generation |
+| per-node `generation_versions` | generation | immutable node content version |
+| continued-session `generation_readers` | generation | in-flight reader count |
+| per-node `active_links` | `(node_version, logical_ingress_port_id)` | `1` |
+| per-node `routes` | `(node_version, destination_ipv4_u32)` | logical egress port; `0` for local |
 | per-node `ingress_bindings` | live ifindex | logical port |
 | per-node `egress_bindings` | logical port | live ifindex |
 
-The packet program reads the active generation, translates ingress ifindex,
-checks the generation's active logical ingress, resolves the destination, passes
+The packet program reads the active generation and its node content version,
+translates ingress ifindex, checks the version’s active logical ingress, resolves
+the destination, passes
 local routes, and translates a non-local logical egress before redirecting.
 Missing generation, active link, route, or required live binding drops the
 packet. Prewritten future entries remain invisible until generation publication.
 Binding capacities use the add-before-withdraw interface high-water; semantic
-map capacities use complete finite cumulative demand. No generation is reclaimed
-during formal runtime.
+map capacities use finite cumulative demand for one delivery or fixed admitted
+resident reservations for continuation. Continued generations use bounded
+reader accounting and retained version references for safe runtime reclaim;
+single-delivery entries remain until Cleanup.
+
+## Continued-delivery implementation
+
+These same helpers support Runner-owned Maintenance. `runtime_realization.py`
+separates one-time foundation initialization from admitted batch construction
+and bounded prewrite, reusing equal per-node content. The private command
+process retains generation→node-version references and generation reader
+counters for safe bounded reclaim. `runner.py` owns the Main-priority channel,
+READY deadline and fixed runtime clock. Maintenance never executes a formal
+withdrawal, and helper deletion jobs still join inside Main.
+
+Single finite execution retains future retirement cohorts. Continuation assigns
+stable per-connection retirement groups at creation, preserving ownership across
+unknown future withdrawals. `_runner_artifact.py` (in the parent package)
+packages and reads finite sealed batches, carrying continuation identity and
+capacity accumulation; these records add no domain component. The observation
+writer retains historical identity evidence after runtime versions are reclaimed.

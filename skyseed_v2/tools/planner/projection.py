@@ -19,8 +19,14 @@ from skyseed_v2.simulator import (
 from skyseed_v2.simulator.planning import (
     plan_transition_to_data,
     planned_operational_state_to_data,
-    published_planning_evidence_to_data,
 )
+
+from skyseed_v2.simulator.planning.evidence import (
+    _frame_evidence_to_data, _frontiers_to_data, _timedelta_to_data,
+    _candidate_summary_to_data, _work_counts_to_data, _inspection_to_data,
+)
+
+from skyseed_v2.simulator.planning.values import _route_demand_material
 
 from .reader import PlannerInspectionRead
 from tools._inspection_evidence import iter_physical_link_inspection
@@ -71,6 +77,7 @@ def project_planner_data(
     streamed_chunk_paths: list[Path] = []
     frame_index_rows: list[dict[str, Any]] = []
     route_timelines: dict[str, dict[str, Any]] = {}
+    demand_records = {}
     publications = []
     frames = []
     state = None
@@ -102,15 +109,14 @@ def project_planner_data(
             raise ValueError(
                 "Planner Tool replay differs from Plan input fingerprint"
             )
-        encoded_evidence = published_planning_evidence_to_data(evidence)
-        plan_data = encoded_evidence["plan"]
         plan_frame_count = 0
         for transition_index, (transition, frame_evidence) in enumerate(
             zip(plan.transitions, evidence.frames, strict=True)
         ):
             previous_state = state
             state = apply_plan_transition(state, transition)
-            frame_data = encoded_evidence["frames"][transition_index]
+            frame_data = (_frame_evidence_to_data(frame_evidence) if retain_internal_detail
+                          else _frame_projection_facts(frame_evidence))
             event_count = len(semantic_event_references(transition))
             total_events += event_count
             selected = frame_data["selected_inter_satellite_links"]
@@ -138,27 +144,30 @@ def project_planner_data(
                 "selected": {
                     "inter_satellite": selected,
                     "acquiring_inter_satellite_count": sum(
-                        not value["operational"] for value in selected
+                        not value.operational for value in frame_evidence.selected_inter_satellite_links
                     ),
                     "operational_inter_satellite_count": sum(
-                        value["operational"] for value in selected
+                        value.operational for value in frame_evidence.selected_inter_satellite_links
                     ),
                     "ground_station_accesses": frame_data[
                         "selected_ground_station_accesses"
+                    ],
+                    "ground_station_preparations": frame_data[
+                        "ground_station_preparations"
                     ],
                     "zone_service_candidates": frame_data[
                         "selected_zone_service_candidates"
                     ],
                 },
                 "state_summary": state_summary,
-                "transition": plan_transition_to_data(transition),
+                "transition": plan_transition_to_data(transition) if retain_internal_detail else None,
                 "semantic_event_count": event_count,
                 "inspection": frame_data["inspection"],
                 "state_fingerprint": planned_operational_state_fingerprint(
                     state
                 ),
             }
-            frame["stages"] = _stage_chain(frame)
+            frame["stages"] = _stage_chain(frame, transition, frame_evidence)
             candidate_record = None
             if candidate_records is not None:
                 try:
@@ -196,8 +205,8 @@ def project_planner_data(
                 node_index,
             )
             _extend_route_timelines(
-                route_timelines,
-                frame["transition"]["route_outcome_transitions"],
+                route_timelines, demand_records,
+                transition.route_outcome_transitions,
                 global_frame_index,
                 node_index,
             )
@@ -243,9 +252,7 @@ def project_planner_data(
                             )
                         }
                     ),
-                    "selected": _compact_selected(
-                        frame["selected"], node_index, zone_records
-                    ),
+                    "selected": _compact_selected(frame_evidence, node_index),
                     "operational_connections": tuple(
                         _compact_connection(value, node_index)
                         for value in state.operational_connections
@@ -309,7 +316,13 @@ def project_planner_data(
             != plan.output_state_fingerprint
         ):
             raise ValueError("Planner Tool replay differs from Plan output fingerprint")
-        precedences = tuple(plan_data["semantic_event_precedences"])
+        if retain_internal_detail:
+            event_indexes = {event: i for i, event in enumerate(
+                event for transition in plan.transitions for event in semantic_event_references(transition))}
+            precedences = tuple([event_indexes[p.predecessor], event_indexes[p.successor]]
+                                for p in plan.semantic_event_precedences)
+        else:
+            precedences = plan.semantic_event_precedences
         total_precedences += len(precedences)
         publications.append(
             {
@@ -319,15 +332,11 @@ def project_planner_data(
                 "physical_world_fingerprint": plan.physical_world_fingerprint,
                 "input_state_fingerprint": plan.input_state_fingerprint,
                 "output_state_fingerprint": plan.output_state_fingerprint,
-                "observation_interval": deepcopy(
-                    plan_data["observation_interval"]
-                ),
+                "observation_interval": _timedelta_to_data(plan.observation_interval),
                 "start_timestamp": plan.start_timestamp.isoformat(),
                 "end_timestamp": plan.end_timestamp.isoformat(),
                 "transition_count": len(plan.transitions),
-                "frontiers": deepcopy(
-                    encoded_evidence["frontiers"]
-                ),
+                "frontiers": _frontiers_to_data(evidence.frontiers),
                 **(
                     {"semantic_event_precedences": precedences}
                     if retain_internal_detail
@@ -344,7 +353,7 @@ def project_planner_data(
         previous_plan_id = plan.plan_id
 
     assert state is not None
-    final_state = planned_operational_state_to_data(state)
+    final_state = planned_operational_state_to_data(state) if retain_internal_detail else None
     final_summary = _state_summary(state)
     data["semantic_layers"] = (
         {
@@ -499,16 +508,23 @@ def project_planner_data(
             "key": key,
             "label": value["label"],
             "shard": value["shard"],
+            "source": node_index[_node_value(value["demand"]["source"])],
+            "target": ({"kind": "zone", "zone_id": value["demand"]["target"]["zone_id"]}
+                       if value["demand"]["target"]["kind"] == "zone" else
+                       {"kind": "ground-station", "node": node_index[_node_value(value["demand"]["target"]["ground_station_id"])]}),
+            # Activity/status changes are tiny; full paths stay in focused shards.
+            "activity": _route_activity(value["timeline"]),
         }
         for key, value in sorted(route_timelines.items())
     )
+    data["pair_index"] = _pair_index(data["route_index"], data["spatial_index"]["nodes"])
     data["large_data_layout"] = {
         "frame_chunks": formal_transition_count,
         "route_shards": len(
             {value["shard"] for value in route_timelines.values()}
         ),
         "browser_policy": (
-            "load one formal boundary and one focused Route shard on demand"
+            "load one formal boundary and at most two focused directional Route shards"
         ),
         "exact_candidate_stream": physical_link_inspection_path is not None,
     }
@@ -558,26 +574,12 @@ def _compact_transition(
     previous_state: PlannedOperationalState | None,
     node_index: dict[str, int],
 ) -> dict[str, Any]:
-    previous = {
-        (
-            value.connection_id.kind.value,
-            value.connection_id.endpoint_a.value,
-            value.connection_id.endpoint_b.value,
-        ): value
-        for value in (
-            () if previous_state is None else previous_state.operational_connections
-        )
-    }
+    previous = ({value.connection_id: value for value in previous_state.operational_connections}
+                if previous_state is not None and transition.parameter_updated_connections else {})
     parameter_changes = []
     for value in transition.parameter_updated_connections:
         identity = value.connection_id
-        prior = previous.get(
-            (
-                identity.kind.value,
-                identity.endpoint_a.value,
-                identity.endpoint_b.value,
-            )
-        )
+        prior = previous.get(identity)
         parameter_changes.append(
             {
                 "connection": _compact_connection_id(identity, node_index),
@@ -623,123 +625,84 @@ def _compact_transition(
     }
 
 
-def _compact_selected(
-    selected: dict[str, Any],
-    node_index: dict[str, int],
-    zone_records: tuple[dict[str, object], ...],
-) -> dict[str, Any]:
-    del zone_records
-    isl = []
-    for value in selected["inter_satellite"]:
-        candidate = value["candidate"]
-        isl.append(
-            [
-                _node_number(
-                    node_index, _node_value(candidate["endpoint_a"])
-                ),
-                _node_number(
-                    node_index, _node_value(candidate["endpoint_b"])
-                ),
-                int(value["operational"]),
-                value["selected_since"],
-                value["acquisition_duration"],
-                value["remaining_acquisition"],
-                candidate["distance_m"],
-                candidate["propagation_delay_us"],
-            ]
-        )
-    ground = tuple(
-        [
-            _node_number(
-                node_index, _node_value(value["ground_station_id"])
-            ),
-            _node_number(node_index, _node_value(value["satellite_id"])),
-            value["distance_m"],
-            value["elevation_deg"],
-            value["propagation_delay_us"],
-        ]
-        for value in selected["ground_station_accesses"]
-    )
-    zone = tuple(
-        [
-            value["zone_id"],
-            _node_number(node_index, _node_value(value["satellite_id"])),
-            value["distance_m"],
-            value["elevation_deg"],
-            value["propagation_delay_us"],
-        ]
-        for value in selected["zone_service_candidates"]
-    )
+def _frame_projection_facts(evidence):
+    """Serialize small summaries; keep validated selections in their native form."""
     return {
-        "inter_satellite": tuple(isl),
-        "ground_station": ground,
-        "zone_service": zone,
-        "acquiring_inter_satellite_count": selected[
-            "acquiring_inter_satellite_count"
-        ],
-        "operational_inter_satellite_count": selected[
-            "operational_inter_satellite_count"
-        ],
+        "inter_satellite_candidate_summary": _candidate_summary_to_data(evidence.inter_satellite_candidate_summary),
+        "ground_station_access_candidate_summary": _candidate_summary_to_data(evidence.ground_station_access_candidate_summary),
+        "zone_service_candidate_summary": _candidate_summary_to_data(evidence.zone_service_candidate_summary),
+        "physical_link_work_counts": _work_counts_to_data(evidence.physical_link_work_counts),
+        "selected_inter_satellite_links": evidence.selected_inter_satellite_links,
+        "selected_ground_station_accesses": evidence.selected_ground_station_accesses,
+        "selected_zone_service_candidates": evidence.selected_zone_service_candidates,
+        "ground_station_preparations": evidence.ground_station_preparations,
+        "inspection": _inspection_to_data(evidence.inspection),
     }
 
 
-def _extend_route_timelines(
-    timelines: dict[str, dict[str, Any]],
-    transitions: list[dict[str, Any]],
-    frame_index: int,
-    node_index: dict[str, int],
-) -> None:
-    for value in transitions:
-        demand = value["demand"]
-        canonical = json.dumps(demand, sort_keys=True, separators=(",", ":"))
-        key = sha256(canonical.encode("utf-8")).hexdigest()
-        source = _node_value(demand["source"])
-        target = demand["target"]
-        label = (
-            f"{source} → Zone {target['zone_id']}"
-            if target["kind"] == "zone"
-            else f"{source} → {_node_value(target['ground_station_id'])}"
-        )
-        record = timelines.setdefault(
-            key,
-            {
-                "label": label,
-                "demand": demand,
-                "shard": int(key[:2], 16) % 32,
-                "timeline": [],
-            },
-        )
-        current = value["current"]
+def _compact_selected(evidence, node_index):
+    def node(value):
+        return _node_number(node_index, value.value)
+    return {
+        "inter_satellite": tuple([
+            node(v.candidate.endpoint_a), node(v.candidate.endpoint_b), int(v.operational),
+            v.selected_since.isoformat(), _timedelta_to_data(v.acquisition_duration),
+            _timedelta_to_data(v.remaining_acquisition), v.candidate.distance_m,
+            v.candidate.propagation_delay_us,
+        ] for v in evidence.selected_inter_satellite_links),
+        "ground_station": tuple([
+            node(v.ground_station_id), node(v.satellite_id), v.distance_m,
+            v.elevation_deg, v.propagation_delay_us,
+        ] for v in evidence.selected_ground_station_accesses),
+        "ground_station_preparations": tuple([
+            node(v.candidate.ground_station_id), node(v.candidate.satellite_id), int(v.operational),
+            v.selected_since.isoformat(), _timedelta_to_data(v.acquisition_duration),
+            _timedelta_to_data(v.remaining_acquisition),
+        ] for v in evidence.ground_station_preparations),
+        "zone_service": tuple([
+            v.zone_id, node(v.satellite_id), v.distance_m, v.elevation_deg, v.propagation_delay_us,
+        ] for v in evidence.selected_zone_service_candidates),
+        "acquiring_inter_satellite_count": sum(not v.operational for v in evidence.selected_inter_satellite_links),
+        "operational_inter_satellite_count": sum(v.operational for v in evidence.selected_inter_satellite_links),
+    }
+
+
+def _extend_route_timelines(timelines, demand_records, transitions, frame_index, node_index):
+    for change in transitions:
+        record = demand_records.get(change.demand)
+        if record is None:
+            demand = _route_demand_material(change.demand)
+            canonical = json.dumps(demand, sort_keys=True, separators=(",", ":"))
+            key = sha256(canonical.encode("utf-8")).hexdigest()
+            source, target = _node_value(demand["source"]), demand["target"]
+            label = (f"{source} → Zone {target['zone_id']}" if target["kind"] == "zone"
+                     else f"{source} → {_node_value(target['ground_station_id'])}")
+            record = {"label": label, "demand": demand, "shard": int(key[:2], 16) % 32, "timeline": []}
+            demand_records[change.demand] = timelines[key] = record
+        current = change.current
         if current is None:
             compact = None
-        elif current["kind"] == "reachable":
-            compact = [
-                "reachable",
-                _node_number(node_index, _node_value(current["next_hop"])),
-                tuple(
-                    _node_number(node_index, _node_value(node))
-                    for node in current["path"]
-                ),
-            ]
+        elif isinstance(current, ReachableRouteOutcome):
+            compact = ["reachable", _node_number(node_index, current.next_hop.value),
+                       tuple(_node_number(node_index, node.value) for node in current.path)]
         else:
-            compact = ["unreachable", current["reason"]]
+            compact = ["unreachable", current.reason.value]
         record["timeline"].append([frame_index, compact])
 
 
-def _stage_chain(frame: dict[str, Any]) -> tuple[dict[str, Any], ...]:
+def _stage_chain(frame: dict[str, Any], transition, evidence) -> tuple[dict[str, Any], ...]:
     """Expose the accepted order using only already-retained stage facts."""
 
     physical = frame["physical_candidates"]
     selected = frame["selected"]
-    transition = frame["transition"]
     state = frame["state_summary"]
     established_by_kind: dict[str, int] = {}
-    for value in transition["established_connections"]:
-        kind = value["connection_id"]["kind"]
+    for value in transition.established_connections:
+        kind = value.connection_id.kind.value
         established_by_kind[kind] = established_by_kind.get(kind, 0) + 1
     withdrawn_by_kind: dict[str, int] = {}
-    for value in transition["withdrawn_connection_ids"]:
-        kind = value["kind"]
+    for value in transition.withdrawn_connection_ids:
+        kind = value.kind.value
         withdrawn_by_kind[kind] = withdrawn_by_kind.get(kind, 0) + 1
     return (
         {
@@ -780,7 +743,9 @@ def _stage_chain(frame: dict[str, Any]) -> tuple[dict[str, Any], ...]:
             "input": physical["ground_station"],
             "model": "GroundStationAccessPlanningModel",
             "result": {
-                "selected": len(selected["ground_station_accesses"])
+                "selected": len(selected["ground_station_accesses"]),
+                "reserved": len(selected["ground_station_preparations"]),
+                "preparing": sum(not value.operational for value in evidence.ground_station_preparations),
             },
             "change": {},
         },
@@ -804,7 +769,7 @@ def _stage_chain(frame: dict[str, Any]) -> tuple[dict[str, Any], ...]:
                 "unserved": state["zones_unserved"],
             },
             "change": {
-                "transitions": len(transition["zone_service_transitions"])
+                "transitions": len(transition.zone_service_transitions)
             },
         },
         {
@@ -818,7 +783,7 @@ def _stage_chain(frame: dict[str, Any]) -> tuple[dict[str, Any], ...]:
             "result": {},
             "change": {
                 "updates": len(
-                    transition["parameter_updated_connections"]
+                    transition.parameter_updated_connections
                 )
             },
         },
@@ -835,7 +800,7 @@ def _stage_chain(frame: dict[str, Any]) -> tuple[dict[str, Any], ...]:
                 "unreachable": state["unreachable_route_count"],
             },
             "change": {
-                "transitions": len(transition["route_outcome_transitions"])
+                "transitions": len(transition.route_outcome_transitions)
             },
         },
         {
@@ -851,8 +816,8 @@ def _stage_chain(frame: dict[str, Any]) -> tuple[dict[str, Any], ...]:
             "model": "canonical PlanTransition application",
             "result": {"state": frame["state_fingerprint"]},
             "change": {
-                "established": len(transition["established_connections"]),
-                "withdrawn": len(transition["withdrawn_connection_ids"]),
+                "established": len(transition.established_connections),
+                "withdrawn": len(transition.withdrawn_connection_ids),
             },
         },
     )
@@ -878,3 +843,32 @@ def _state_summary(value: PlannedOperationalState) -> dict[str, int]:
 
 
 __all__ = ["project_planner_data"]
+
+
+def _route_activity(timeline):
+    result = []
+    for index, outcome in timeline:
+        status = None if outcome is None else outcome[0]
+        if not result or result[-1][1] != status:
+            result.append([index, status])
+    return result
+
+
+def _pair_index(routes, nodes):
+    """Index recorded GS→Zone demands; serving identities remain frame facts.
+
+    The reverse demand is resolved against the current Zone assignment by the
+    view, never manufactured by reversing a path or interpreting a display name.
+    """
+    pairs = {}
+    for i, route in enumerate(routes):
+        source, target = route['source'], route['target']
+        if nodes[source]['kind'] != 'ground-station' or target['kind'] != 'zone':
+            continue
+        identity = (target['zone_id'], nodes[source]['node_id'])
+        if identity in pairs:
+            raise ValueError('multiple recorded demands for one typed Zone–GS pair')
+        pairs[identity] = {'key': json.dumps(identity, separators=(',', ':')),
+                           'zone_id': target['zone_id'], 'ground_station': source,
+                           'forward': i}
+    return tuple(pairs[key] for key in sorted(pairs))

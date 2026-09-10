@@ -5,7 +5,8 @@ followed by live replay. `skyseed_v2.experiment._realization_producer` owns the
 private cross-domain compute cursor; it never exists inside `BpfRunner`.
 
 The public input is `BpfRunner(*, compose_project_name: str,
-runtime_artifact: Path)`, with a `pathlib.Path` to the sealed manifest. Backend
+runtime_artifact: Path, batch_lead_fraction=0.75, batch_capacity_factor=2)`,
+with a `pathlib.Path` to the sealed manifest. Backend
 `_runner_artifact.py` replaces the removed experiment realization handoff; it
 packages and reads compiled facts without becoming a new domain owner.
 
@@ -33,8 +34,9 @@ policy lowering.
 
 Generation's `_RunnerArtifactWriter.append()` calls `_validate_sequence_pair`
 for predecessor/world/state-fingerprint continuity, equal cadence and exact
-next starts; it also validates normalized boundary references and the packed
-round trip. Finalization seals those generation-time checks. The execution
+next starts; it also validates normalized boundary references. Full packed
+encode/decode/object comparison now belongs to focused codec tests and offline
+qualification. Finalization seals the required generation-time checks. The execution
 entry and artifact reader do not repeat this sequence-relationship validation.
 
 The artifact consists of:
@@ -51,12 +53,12 @@ sealed Runner artifact as the semantic payload owner.
 
 Before `BpfRunner` construction, generated execution verifies
 `runtime/execution.json`, source and input fingerprints, manifest hash, version,
-seal, binary length/hash, and timeline metadata. Runner opens the verified file
-read-only with `mmap` during Preparation, validates the binary header/index
-bounds, and decodes all indexed boundaries before formal runtime. It does not
+seal, binary length/hash, and timeline metadata. Runner opens each verified file
+read-only with `mmap` during initial Preparation or admitted Maintenance,
+validates binary header/index bounds, and fully decodes that delivery. It does not
 reconstruct rich `BpfCompiledRealization` or `PlannedOperationalState` objects. The complete
-finite sequence is materialized into private immutable activation delta plans
-only during Preparation.
+finite batch is fully materialized into private immutable activation delta plans
+during that batch's construction, never on demand in Main.
 Decoding checks each record's hash and operation count. Metadata/hash validation
 and these binary checks are distinct from generation-time sequence validation.
 Indexed access is a reader capability, not a lazy Runner execution lifecycle.
@@ -74,22 +76,38 @@ The separate producer evidence remains:
 | `compiler.jsonl` | compact Plan/realization lineage, fingerprints, timestamps, and intent counts |
 | `domain-history-manifest.json` | terminal cadence/count/frontier and stream byte/hash seals |
 
-The domain-history manifest is published only after `produce_next_realization()`
-returns `None`. The compact Compiler stream names the artifact through its
+The domain-history manifest is published only after final Timeline drain.
+`produce_next_realization(delivery_end=...)` may return `None` at an intermediate
+sealed-delivery prefix without finishing the Planner or sealing whole history. The compact Compiler stream names the artifact through its
 `semantic_payload_owner`; it is not a duplicate runtime payload. Detached
 readers reject incomplete or mixed evidence.
 
 ## Runner lifecycle
 
-`BpfRunner` owns one-shot Preparation, formal Main, cleanup, and realized-state
-snapshots. Preparation opens the sealed finite artifact, validates its metadata
-and binary structure, decodes every record, and builds the complete sequence of
-immutable delta plans and their activation JSON wire representation.
+`BpfRunner` owns initial Preparation, formal Main, optional continued-batch
+Maintenance, cleanup, and realized-state snapshots. Preparation opens and fully
+decodes the first sealed finite delivery, checks its metadata and binary
+structure, and constructs all of that delivery's immutable delta plans and
+activation JSON commands. Single-delivery execution prepares the whole sequence;
+continued execution does not initially decode or prewrite its successor.
 Artifact-local caches reuse decoded identities/timestamps; Preparation reuses
 previous route/access state, stable names/slots, and route-by-interface indexes.
+One private `_BoundaryStateIndexes` applies resource, parameter, forwarding and
+Zone deltas through the finite pass; unchanged frozen components are reused.
+Generation capacity accumulation uses the same delta application with
+destination reference counts and interface occupancy, without constructing
+every complete route/state snapshot just to count it. These derived indexes
+remain inside the existing backend owners.
 It discovers container incarnations once, retains
 namespace descriptors and rtnetlink sockets, initializes maps/programs at the
-sealed cumulative capacity, and prewrites every generation-semantic entry.
+sealed cumulative capacity for one delivery, or fixed resident reservations
+based on the first delivery and configured capacity factor for continuation.
+Continued per-node entry envelopes use first-batch peaks of the same typed
+entity kind; they allow peer work migration while retaining fixed limits
+and exact sealed-demand accounting. The extra reservation consumes memory.
+It prewrites the first delivery's generation semantics. Equal per-node content
+shares an immutable node version across generations; unchanged entries are not
+written again. The static demand index is built once per admitted batch.
 Preparation then physically executes boundary 0, from no network to the initial
 network, before returning. The formal clock begins in `run()`, whose first
 possible activation is boundary 1. A one-boundary experiment has no formal
@@ -97,7 +115,10 @@ network activation.
 
 Main consumes a prepared immutable delta: changed connections, affected nodes,
 and normalized operation nodes. Each veth creation includes both deterministic
-MACs, one RX/TX queue per endpoint, and its exact future retirement cohort.
+MACs, one RX/TX queue per endpoint, and its owned retirement group.
+Single finite execution groups known future retirement cohorts; continuation
+uses stable per-connection groups, preserving ownership across unknown future
+withdrawals and re-establishment.
 Interfaces start down; Main configures qdisc/BPF and readiness, changes
 routes/neighbours and live port bindings, then commits
 `active_generation`, then withdraws obsolete routes/bindings and deletes
@@ -110,14 +131,20 @@ uses the same owned cohorts, retains uncertain ownership, and closes the workers
 The workers and retirement ledger belong to this existing helper. There is no
 cross-boundary deletion service.
 Candidate rollback deletes individual new pairs because their future groups can
-also contain previously live pairs. Generation-semantic maps remain immutable throughout formal
-runtime. Future veths remain absent until their own boundary.
+also contain previously live pairs. Published generation content is immutable;
+Maintenance writes only future content and reclaims only eligible retired
+versions. Future veths remain absent until their own boundary.
 
-There is no Maintenance thread, READY producer/wait, deferred generation
-completion, or generation reclaim. All finite semantic entries stay resident
-until cleanup. Capacity or identity failures stop generation/Preparation;
-formal Main handles the return status of actual mutations without full-network
-validation or PID/netns rediscovery.
+Single-delivery execution retains finite semantic entries until Cleanup.
+For append-only continuation, Runner/backend Maintenance loads and prewrites the
+next sealed batch, then marks it READY. It reclaims eligible older plans and
+map versions after actual activation, preserving in-flight readers and retained
+references. Main alone executes boundaries, including timely withdrawals and
+joined physical deletion. It never waits for READY past the nominal deadline:
+missing/late READY or Maintenance failure produces an explicit failed/incomplete
+run, without clock shifts, skipped boundaries or a successful fallback.
+Capacity and identity failures are fail-closed. Formal Main handles actual
+mutation results without full-network validation or PID/netns rediscovery.
 
 One privileged command stream is established in Preparation. Its long-lived
 process uses retained namespace rtnetlink sockets and BPF file descriptors.
@@ -291,25 +318,30 @@ measurements. The sum of phase percentiles is not the percentile of total Main.
 The private BPF logical port is a non-zero uint32 allocated by the finite
 artifact writer for one node-side connection endpoint. The manifest stores each
 connection and both endpoint IDs explicitly; IDs survive withdrawal/recreation
-across every generation of that artifact. They are not public domain values or
+across generations and continued artifacts in the same fixed-node session. They are not public domain values or
 root exports. Live ifindexes occur only in small per-node binding maps.
 
 | Map | Key | Value |
 |---|---|---|
-| `active_generation` | `0` | generation |
-| per-node `active_links` | `(generation, logical_ingress_port_id)` | `1` |
-| per-node `routes` | `(generation, destination_ipv4_u32)` | logical egress port; `0` for local |
+| `active_generation` ARRAY | `0` | generation |
+| per-node `generation_versions` | generation | immutable node content version |
+| continued-session `generation_readers` | generation | in-flight reader count |
+| per-node `active_links` | `(node_version, logical_ingress_port_id)` | `1` |
+| per-node `routes` | `(node_version, destination_ipv4_u32)` | logical egress port; `0` for local |
 | per-node `ingress_bindings` | live ifindex | logical port |
 | per-node `egress_bindings` | logical port | live ifindex |
 
-The packet program reads the active generation, translates ingress ifindex,
-checks the generation's active logical ingress, resolves the destination, passes
+The packet program reads the active generation and its node content version,
+translates ingress ifindex, checks the version’s active logical ingress, resolves
+the destination, passes
 local routes, and translates a non-local logical egress before redirecting.
 Missing generation, active link, route, or required live binding drops the
 packet. Prewritten future entries remain invisible until generation publication.
 Binding capacities use the add-before-withdraw interface high-water; semantic
-map capacities use complete finite cumulative demand. No generation is reclaimed
-during formal runtime.
+map capacities use finite cumulative demand for one delivery or fixed admitted
+resident reservations for continuation. Continued generations use bounded
+reader accounting and retained version references for safe runtime reclaim;
+single-delivery entries remain until Cleanup.
 
 ## Runtime observations and Tools
 
@@ -319,3 +351,68 @@ are detached non-authoritative consumers. Tool failure cannot replace a
 successful runtime outcome.
 
 There is deliberately no hypothetical online execution seam in the v1 contract.
+
+## Finite computation pipeline and readiness
+
+The single producer supports physical-world, Planner and Compiler cutoffs.
+Physical cutoff prepares admission prediction and emits every formal frame and
+observation; it never progresses Planner or Compiler. Domain-history manifest
+v2 can seal this cutoff with zero semantic records and null Plan lineage/planning
+frontiers. Its Planner/Compiler streams contain headers only. Physical Tools can
+consume that sealed physical history; semantic Tools still require their own
+minimum cutoff. Historical manifest v1 and Planner evidence v2 remain readable;
+new Planner evidence v3 retains contact proofs and GS preparation.
+
+Producer claims its chronological cursor under a short lock and rejects a
+concurrent caller. It releases the lock during physical/semantic work and worker
+joins. Each owned evidence stream uses one ordered serialization worker with at
+most four pending immutable jobs; candidate evidence uses at most two. Terminal
+seals require successful writer drain and stream closure. Errors propagate for
+required domain evidence; optional inspection failure is recorded separately.
+Streams reuse compression/file handles; per-record `serialized_bytes` is JSON
+size before compression, not bytes already flushed to disk.
+
+Starlink overlaps the next semantic batch with ordered artifact/Traffic packaging
+(maximum two pending batches, one writer). No domain state crosses into those
+workers. Compiler uses previous realization indexes, a per-transition directed
+connection index and one replay during lowering. Artifact normalization indexes
+operations and constraints once per batch, preserving cross-boundary checks
+and counts. Capacity accumulation updates interface/route counts from relevant
+deltas. Traffic consumes the same Plan/realization pair once; runtime
+publication moves the sealed artifact directory rather than copying/replaying it.
+The existing Compose build-context deduplication remains in use.
+
+`generation-status.json` publishes `MATERIALS_READY` after required domain and
+artifact seals, Traffic plan, runtime package and generated controls are ready.
+Optional observation persistence and Tools report failures without revoking those
+materials. Static and finite detached Tools then publish explicit completion or
+failure status; the qualification CLI collects all results. A consumer can use
+the ready package before Tool completion. This is not an executor shutdown hidden
+inside the material-completion boundary, and creates no daemon.
+
+Material readiness, Tool completion and total elapsed time have separate clocks.
+Artifact stages distinguish sequence verification, semantic normalization,
+capacity/logical-port derivation, typed encoding, record hashing and buffered
+record-file writes. Final binary assembly/sealing is measured separately. Worker
+serialization/package durations overlap semantic progression; neither their sum
+nor rollups plus children is serial wall time. Detached Planner projection owns
+one semantic replay (the reader avoids a duplicate replay), projects frame data
+once and shares immutable fingerprint/event results. Compiler Tool parses the
+observation stream once per inspection.
+
+Planner Tool directly projects native evidence to compact browser records and
+serializes each demand identity once. Traffic Tool similarly owns one semantic
+replay after its integrity reader. Runner Tool detaches caller data once in
+projection; fresh observation JSON needs no extra copy. Each bundle writer
+shares payload hashes between its inventory and checksum publication. Required
+integrity, replay and input-isolation checks remain at their responsible pass.
+
+## Consecutive finite delivery
+
+Single-delivery mode retains one-shot Preparation. Continued mode registers one
+next sealed artifact through `BpfRunner.append_batch(Path)` and loads it in
+Maintenance. See [accepted delivery contract](../accepted-design.md#consecutive-finite-delivery).
+The Producer retains one Timeline cursor and all Planner/Compiler continuation
+state. `Planner.flush()` publishes a prefix; it does not synthesize a transition
+or end a contact. Prediction covers the full known Timeline plus policy tails.
+A delivered batch is distinct from publication frames and resident capacity.

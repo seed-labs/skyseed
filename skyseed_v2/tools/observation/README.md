@@ -5,6 +5,11 @@ the observed work. It preserves invocation owner, component, stage, scope,
 duration role, work fields, resource fields, Tool wall/RSS/input/output
 accounting, and raw records.
 
+PhysicalFrame counts distinguish formal sampled frames, sampled prehistory and
+additional physical prediction queries. Prediction queries do not extend the
+displayed experiment interval or create formal Planner transitions. The physical
+cutoff retains formal frames while the Planner transition count remains zero.
+
 Current grouping covers physical projection, physical-link observation, ISL
 selection, acquisition/lifecycle, GroundStation selection/ranking, validation,
 evidence projection and the non-additive planning rollup, Zone planning,
@@ -47,3 +52,8 @@ non-navigating audit overview. Only measured spans have timeline geometry;
 aggregate totals are labelled as such and have none. This separates semantic
 production, inspection capture, persistence, detached Tool work, and remaining
 orchestration without process polling.
+
+Freshly parsed observation records are already detached from their source file;
+the reader validates and returns them without another deep copy. Bundle inventory
+and checksum publication reuse each payload hash. These changes preserve record
+ordering, completeness checks and the existing observation owner.

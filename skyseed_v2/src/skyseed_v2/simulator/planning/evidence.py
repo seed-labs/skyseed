@@ -11,10 +11,12 @@ from ..physical import (
     GroundStationAccessCandidate,
     InterSatelliteLinkCandidate,
     PhysicalLinkWorkCounts,
+    PhysicalContactWindow,
     ZoneServiceCandidate,
 )
 from .planner import (
     InterSatelliteLifecycleEvidence,
+    GroundStationLifecycleEvidence,
     PlanningCandidateHistogram,
     PlanningCandidateSummary,
     PlanningFrameEvidence,
@@ -45,8 +47,6 @@ from .values import (
     ZoneServiceTransition,
     _plan_transition_material,
     _planned_operational_state_material,
-    _route_demand_material,
-    _route_outcome_material,
     semantic_event_references,
 )
 
@@ -56,20 +56,8 @@ def plan_transition_to_data(value: PlanTransition) -> dict[str, object]:
 
     if not isinstance(value, PlanTransition):
         raise TypeError("value must be a PlanTransition")
-    result = _plan_transition_material(value)
+    result = _plan_transition_material(value, compact_routes=True)
     result["schema"] = "skyseed-v2-plan-transition-evidence-v2"
-    compact_routes = []
-    for change in value.route_outcome_transitions:
-        previous = _optional_route_outcome_without_demand(change.previous)
-        current = _optional_route_outcome_without_demand(change.current)
-        compact_routes.append(
-            {
-                "demand": _route_demand_to_data(change.demand),
-                "previous": previous,
-                "current": current,
-            }
-        )
-    result["route_outcome_transitions"] = compact_routes
     return result
 
 
@@ -296,7 +284,7 @@ def published_planning_evidence_to_data(
     if not isinstance(value, PublishedPlanningEvidence):
         raise TypeError("value must be PublishedPlanningEvidence")
     return {
-        "schema": "skyseed-v2-published-planning-evidence-v2",
+        "schema": "skyseed-v2-published-planning-evidence-v3",
         "plan": plan_to_data(value.plan),
         "transition_fingerprints": list(value.transition_fingerprints),
         "frames": [
@@ -322,11 +310,12 @@ def published_planning_evidence_from_data(
         },
         "PublishedPlanningEvidence",
     )
-    _schema(
-        record,
-        "skyseed-v2-published-planning-evidence-v2",
-        "PublishedPlanningEvidence",
-    )
+    if record["schema"] not in {"skyseed-v2-published-planning-evidence-v2", "skyseed-v2-published-planning-evidence-v3"}:
+        raise ValueError("unsupported PublishedPlanningEvidence schema")
+    if record["schema"] == "skyseed-v2-published-planning-evidence-v3" and any(
+        "ground_station_preparations" not in frame for frame in _records(record["frames"], "frames")
+    ):
+        raise ValueError("v3 evidence requires GS preparation records")
     fingerprint_values = _list(
         record["transition_fingerprints"], "transition_fingerprints"
     )
@@ -486,19 +475,20 @@ def _route_demand_from_data(value: Mapping[str, object]) -> RouteDemand:
     )
 
 
-def _route_outcome_from_data(value: Mapping[str, object]) -> RouteOutcome:
+def _route_outcome_from_data(value: Mapping[str, object], *, demand=None) -> RouteOutcome:
     record = _record(value, None, "RouteOutcome")
     kind = _string(record.get("kind"), "RouteOutcome.kind")
+    demand_fields = {"demand"} if demand is None else set()
+    if demand is None:
+        demand = _route_demand_from_data(_mapping(record.get("demand"), "demand"))
     if kind == "reachable":
         _exact_keys(
             record,
-            {"demand", "kind", "next_hop", "path"},
+            demand_fields | {"kind", "next_hop", "path"},
             "ReachableRouteOutcome",
         )
         return ReachableRouteOutcome(
-            demand=_route_demand_from_data(
-                _mapping(record["demand"], "demand")
-            ),
+            demand=demand,
             next_hop=_node_from_data(
                 _mapping(record["next_hop"], "next_hop")
             ),
@@ -510,40 +500,16 @@ def _route_outcome_from_data(value: Mapping[str, object]) -> RouteOutcome:
     if kind == "unreachable":
         _exact_keys(
             record,
-            {"demand", "kind", "reason"},
+            demand_fields | {"kind", "reason"},
             "UnreachableRouteOutcome",
         )
         return UnreachableRouteOutcome(
-            demand=_route_demand_from_data(
-                _mapping(record["demand"], "demand")
-            ),
+            demand=demand,
             reason=RouteUnreachableReason(
                 _string(record["reason"], "reason")
             ),
         )
     raise ValueError("RouteOutcome.kind is unsupported")
-
-
-def _optional_route_outcome_from_data(
-    value: object, field_name: str
-) -> RouteOutcome | None:
-    if value is None:
-        return None
-    return _route_outcome_from_data(_mapping(value, field_name))
-
-
-def _route_demand_to_data(value: RouteDemand) -> dict[str, object]:
-    return _route_demand_material(value)
-
-
-def _optional_route_outcome_without_demand(
-    value: RouteOutcome | None,
-) -> dict[str, object] | None:
-    if value is None:
-        return None
-    result = dict(_route_outcome_material(value))
-    result.pop("demand")
-    return result
 
 
 def _optional_compact_route_outcome_from_data(
@@ -559,9 +525,11 @@ def _optional_compact_route_outcome_from_data(
         None,
         field_name,
     )
-    return _route_outcome_from_data(
-        {"demand": _route_demand_to_data(demand), **compact}
-    )
+    # Legacy records can still contain their own explicit demand; the enclosing
+    # RouteOutcomeTransition checks that it matches. Compact records reuse the
+    # already validated immutable demand instead of serializing and parsing it.
+    return (_route_outcome_from_data(compact) if "demand" in compact
+            else _route_outcome_from_data(compact, demand=demand))
 
 
 def _precedence_from_indexes(
@@ -612,6 +580,9 @@ def _frame_evidence_to_data(
             _zone_candidate_to_data(item)
             for item in value.selected_zone_service_candidates
         ],
+        "ground_station_preparations": [
+            _ground_lifecycle_to_data(item) for item in value.ground_station_preparations
+        ],
         "inspection": _inspection_to_data(value.inspection),
     }
 
@@ -620,8 +591,9 @@ def _frame_evidence_from_data(
     value: Mapping[str, object],
 ) -> PlanningFrameEvidence:
     record = _record(
-        value,
+        {"ground_station_preparations": [], **value},
         {
+            "ground_station_preparations",
             "timestamp",
             "inter_satellite_candidate_summary",
             "ground_station_access_candidate_summary",
@@ -681,6 +653,10 @@ def _frame_evidence_from_data(
                 "selected_zone_service_candidates",
             )
         ),
+        ground_station_preparations=tuple(
+            _ground_lifecycle_from_data(item)
+            for item in _records(record["ground_station_preparations"], "ground_station_preparations")
+        ),
         inspection=_inspection_from_data(
             _mapping(record["inspection"], "inspection")
         ),
@@ -691,6 +667,7 @@ def _isl_candidate_to_data(
     value: InterSatelliteLinkCandidate,
 ) -> dict[str, object]:
     return {
+        "contact_window": _contact_window_to_data(value.contact_window),
         "endpoint_a": _node_to_data(value.endpoint_a),
         "endpoint_b": _node_to_data(value.endpoint_b),
         "same_plane": value.same_plane,
@@ -767,8 +744,9 @@ def _isl_candidate_from_data(
     value: Mapping[str, object],
 ) -> InterSatelliteLinkCandidate:
     record = _record(
-        value,
+        {"contact_window": None, **value},
         {
+            "contact_window",
             "endpoint_a",
             "endpoint_b",
             "same_plane",
@@ -779,6 +757,7 @@ def _isl_candidate_from_data(
         "InterSatelliteLinkCandidate",
     )
     return InterSatelliteLinkCandidate(
+        contact_window=_contact_window_from_data(record["contact_window"]),
         endpoint_a=_node_from_data(
             _mapping(record["endpoint_a"], "endpoint_a")
         ),
@@ -800,6 +779,7 @@ def _ground_candidate_to_data(
     value: GroundStationAccessCandidate,
 ) -> dict[str, object]:
     return {
+        "contact_window": _contact_window_to_data(value.contact_window),
         "ground_station_id": _node_to_data(value.ground_station_id),
         "satellite_id": _node_to_data(value.satellite_id),
         "distance_m": value.distance_m,
@@ -812,8 +792,9 @@ def _ground_candidate_from_data(
     value: Mapping[str, object],
 ) -> GroundStationAccessCandidate:
     record = _record(
-        value,
+        {"contact_window": None, **value},
         {
+            "contact_window",
             "ground_station_id",
             "satellite_id",
             "distance_m",
@@ -823,6 +804,7 @@ def _ground_candidate_from_data(
         "GroundStationAccessCandidate",
     )
     return GroundStationAccessCandidate(
+        contact_window=_contact_window_from_data(record["contact_window"]),
         ground_station_id=_node_from_data(
             _mapping(record["ground_station_id"], "ground_station_id")
         ),
@@ -886,6 +868,8 @@ _WORK_COUNT_FIELDS = (
     "zone_service_pairs_requested",
     "zone_service_pairs_evaluated",
     "zone_service_pairs_feasible",
+    "ground_station_pairs_not_returned",
+    "inter_satellite_pairs_not_returned",
 )
 
 
@@ -897,7 +881,8 @@ def _work_counts_from_data(
     value: Mapping[str, object],
 ) -> PhysicalLinkWorkCounts:
     record = _record(
-        value, set(_WORK_COUNT_FIELDS), "PhysicalLinkWorkCounts"
+        {"ground_station_pairs_not_returned": 0, "inter_satellite_pairs_not_returned": 0, **value},
+        set(_WORK_COUNT_FIELDS), "PhysicalLinkWorkCounts"
     )
     return PhysicalLinkWorkCounts(
         **{name: _integer(record[name], name) for name in _WORK_COUNT_FIELDS}
@@ -936,6 +921,51 @@ def _lifecycle_evidence_from_data(
     )
     return InterSatelliteLifecycleEvidence(
         candidate=_isl_candidate_from_data(
+            _mapping(record["candidate"], "candidate")
+        ),
+        selected_since=_timestamp(record["selected_since"], "selected_since"),
+        acquisition_duration=_timedelta_from_data(
+            _mapping(record["acquisition_duration"], "acquisition_duration")
+        ),
+        remaining_acquisition=_timedelta_from_data(
+            _mapping(record["remaining_acquisition"], "remaining_acquisition")
+        ),
+        operational=_boolean(record["operational"], "operational"),
+    )
+
+
+def _ground_lifecycle_to_data(
+    value: GroundStationLifecycleEvidence,
+) -> dict[str, object]:
+    return {
+        "candidate": _ground_candidate_to_data(value.candidate),
+        "selected_since": value.selected_since.isoformat(),
+        "acquisition_duration": _timedelta_to_data(
+            value.acquisition_duration
+        ),
+        "remaining_acquisition": _timedelta_to_data(
+            value.remaining_acquisition
+        ),
+        "operational": value.operational,
+    }
+
+
+def _ground_lifecycle_from_data(
+    value: Mapping[str, object],
+) -> GroundStationLifecycleEvidence:
+    record = _record(
+        value,
+        {
+            "candidate",
+            "selected_since",
+            "acquisition_duration",
+            "remaining_acquisition",
+            "operational",
+        },
+        "GroundStationLifecycleEvidence",
+    )
+    return GroundStationLifecycleEvidence(
+        candidate=_ground_candidate_from_data(
             _mapping(record["candidate"], "candidate")
         ),
         selected_since=_timestamp(record["selected_since"], "selected_since"),
@@ -1196,3 +1226,20 @@ __all__ = [
     "published_planning_evidence_from_data",
     "published_planning_evidence_to_data",
 ]
+
+
+def _contact_window_to_data(value: PhysicalContactWindow | None):
+    if value is None:
+        return None
+    return {"start_timestamp": value.start_timestamp.isoformat(),
+            "end_timestamp": None if value.end_timestamp is None else value.end_timestamp.isoformat()}
+
+
+def _contact_window_from_data(value):
+    if value is None:
+        return None
+    record = _record(_mapping(value, "contact_window"), {"start_timestamp", "end_timestamp"}, "PhysicalContactWindow")
+    return PhysicalContactWindow(
+        _timestamp(record["start_timestamp"], "start_timestamp"),
+        None if record["end_timestamp"] is None else _timestamp(record["end_timestamp"], "end_timestamp"),
+    )

@@ -26,13 +26,13 @@ from skyseed_v2.simulator import (
     ParameterKindConfiguration,
     Plan,
     Planner,
-    QualityFirstGroundStationAccessPlanningModel,
+    CoverageFirstGroundStationAccessPlanningModel,
     RetainFirstInterSatelliteConfiguration,
     RetainFirstInterSatelliteConnectionPlanningModel,
     SimulationDefinition,
     SimulationTimeline,
     Simulator,
-    TimeHorizonPlanningWindowPolicy,
+    FrameBatchPlanningWindowPolicy,
 )
 
 
@@ -52,9 +52,8 @@ MAXIMUM_GROUND_STATION_ACCESS_COUNT = 2
 GROUND_STATION_MAXIMUM_DISTANCE_M = 3_000_000.0
 ZONE_COVERAGE_MINIMUM_ELEVATION_DEG = 10.0
 PROPAGATION_SPEED_M_PER_S = 299_792_458.0
-PLANNING_HORIZON = timedelta(seconds=50)
-PUBLICATION_HORIZON = timedelta(seconds=20)
-ACQUISITION_DURATION = timedelta(seconds=20)
+PLAN_BATCH_FRAMES = 32
+ACQUISITION_DURATION = timedelta(seconds=5)
 
 
 def create_mini_satellite_internet_simulator(
@@ -100,16 +99,16 @@ def create_mini_satellite_internet_planner(
             ParameterKindConfiguration(
                 bandwidth_bps=1_000_000_000,
                 packet_loss_ppm=100,
-                delay_deadband_us=250,
-                persistence=timedelta(0),
+                delay_relative_threshold=0.10,
+                max_staleness=timedelta(seconds=120),
             )
         ),
         OperationalConnectionKind.GROUND_STATION_ACCESS: (
             ParameterKindConfiguration(
                 bandwidth_bps=500_000_000,
                 packet_loss_ppm=200,
-                delay_deadband_us=250,
-                persistence=timedelta(0),
+                delay_relative_threshold=0.10,
+                max_staleness=timedelta(seconds=120),
             )
         ),
     }
@@ -134,13 +133,16 @@ def create_mini_satellite_internet_planner(
                     desired_cross_plane_links=2,
                     maximum_cross_plane_separation=3,
                     acquisition_duration=ACQUISITION_DURATION,
+                    minimum_service_duration=timedelta(seconds=180),
                 )
             )
         ),
-        ground_station_model=QualityFirstGroundStationAccessPlanningModel(
+        ground_station_model=CoverageFirstGroundStationAccessPlanningModel(
             default_ground_station_limit=(
                 MAXIMUM_GROUND_STATION_ACCESS_COUNT
-            )
+            ),
+            acquisition_duration=ACQUISITION_DURATION,
+            minimum_service_duration=timedelta(seconds=60),
         ),
         zone_service_model=HighestElevationZoneServicePlanningModel(),
         parameter_model=AccumulatedDeadbandParameterPlanningModel(
@@ -150,10 +152,8 @@ def create_mini_satellite_internet_planner(
             gateway_candidate_count=1
         ),
         coordination_policy=DefaultCoordinationPolicy(),
-        planning_window_policy=TimeHorizonPlanningWindowPolicy(
-            planning_horizon=PLANNING_HORIZON,
-            publication_horizon=PUBLICATION_HORIZON,
-            maximum_prehistory=ACQUISITION_DURATION,
+        planning_window_policy=FrameBatchPlanningWindowPolicy(
+            frames_per_batch=PLAN_BATCH_FRAMES,
         ),
     )
 
@@ -228,11 +228,10 @@ def mini_satellite_internet_configuration() -> dict[str, object]:
             DEFAULT_OBSERVATION_INTERVAL.total_seconds()
         ),
         "formal_boundary_count": FORMAL_BOUNDARY_COUNT,
-        "planning_horizon_seconds": PLANNING_HORIZON.total_seconds(),
-        "publication_horizon_seconds": PUBLICATION_HORIZON.total_seconds(),
+        "frames_per_batch": PLAN_BATCH_FRAMES,
         "acquisition_duration_seconds": ACQUISITION_DURATION.total_seconds(),
         "isl_policy": "retain-first 2 same-plane + 2 cross-plane / K3",
-        "ground_station_policy": "quality-first allocation",
+        "ground_station_policy": "coverage first, then continuity, then quality",
         "zone_policy": "highest elevation with explicit unserved state",
         "parameter_policy": "accumulated delay deadband",
         "route_policy": "gateway demand-bounded hop count",

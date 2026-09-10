@@ -283,6 +283,51 @@ def test_incremental_capacity_matches_retired_full_range_test_oracle() -> None:
     assert actual["physical_connection_high_water"] == 2
     assert actual["terminal"]["active_connection_count"] == 0
 
+
+def test_continued_admission_allows_peer_work_migration_but_keeps_fixed_limits(monkeypatch):
+    from copy import deepcopy
+    projection, boundaries = _capacity_transition_sequence()
+    first = _capacity_demand(projection, boundaries[:3])
+    original = deepcopy(first)
+    kernel = _Kernel(monkeypatch)
+    bindings = {node: SimpleNamespace(pid=i + 100, process_start_time_ticks=i + 200, netns_inode=i + 300)
+                for i, node in enumerate(projection.node_ids)}
+    runtime = _TcBpfRuntimeRealization(executor=kernel, pin_root="/pins", bindings=bindings,
+                                       continuation_enabled=True, batch_capacity_factor=2)
+    try:
+        runtime.initialize(projection, zone_prefixes=(), runtime_capacity_demand=first)
+        caps = dict(runtime._map_capacities)
+        future = deepcopy(first)
+        idle = min(future["per_node"], key=lambda node: node["cumulative_route_entries"])
+        assert idle["cumulative_route_entries"] == 1
+        idle["cumulative_route_entries"] = 3
+        idle["maximum_generation_route_entries"] = 3
+        idle["terminal_route_entries"] = 3
+        runtime._admit_batch(future)
+        assert runtime._capacity_demand["per_node"] == future["per_node"]
+        idle["cumulative_route_entries"] = runtime._batch_admission_limits[idle["key"]]["cumulative_route_entries"] + 1
+        with pytest.raises(runtime_module._CapacityAuditError, match="fixed per-node admission"):
+            runtime._admit_batch(future)
+        assert runtime._map_capacities == caps
+        assert first == original
+    finally:
+        runtime.cleanup()
+
+
+def test_continued_entry_limits_keep_entity_kinds_separate_and_single_exact():
+    sat = NodeId(65001, "satellite", "a")
+    ground = NodeId(65001, "ground-station", "b")
+    fields = ("cumulative_active_link_entries", "cumulative_route_entries", "physical_interface_high_water")
+    demand = {"per_node": [{"key": sat.value, **dict.fromkeys(fields, 10)},
+                           {"key": ground.value, **dict.fromkeys(fields, 0)}]}
+    nodes = {node.value: node for node in (sat, ground)}
+    continued = runtime_module._batch_entry_limits(demand, nodes, factor=2, continued=True)
+    assert set(continued[sat.value].values()) == {20}
+    assert set(continued[ground.value].values()) == {2}
+    single = runtime_module._batch_entry_limits(demand, nodes, factor=1, continued=False)
+    assert set(single[sat.value].values()) == {10}
+    assert set(single[ground.value].values()) == {1}
+
 def test_incremental_capacity_collision_audit_covers_transition_union(
     monkeypatch,
 ) -> None:
@@ -487,7 +532,13 @@ class _Kernel:
         monkeypatch.setattr(command, "_OWNED_RETIREMENTS", {})
         monkeypatch.setattr(command, "_LIVE_NODES", self.nodes)
         monkeypatch.setattr(command, "_GENERATION_FD", "generation")
+        monkeypatch.setattr(command, "_GENERATION_READERS_FD", -1)
+        monkeypatch.setattr(command, "_GENERATIONS", {})
+        monkeypatch.setattr(command, "_VERSIONS", {})
+        monkeypatch.setattr(command, "_READY_GENERATIONS", set())
         monkeypatch.setattr(command, "_lookup_map", lambda fd, key: self.maps[fd].get(key))
+        monkeypatch.setattr(command, "_lookup_u64_map", lambda fd, key: self.maps[fd].get(key))
+        monkeypatch.setattr(command, "_update_u64_map", self.update)
         monkeypatch.setattr(command, "_update_map", self.update)
         monkeypatch.setattr(command, "_delete_map", self.delete)
         monkeypatch.setattr(command, "_update_map_entries", self.update_entries)
@@ -517,9 +568,12 @@ class _Kernel:
             request = json.loads(request)["request"]
         self.actions.append((action, request))
         if action == "initialize":
+            if request.get("continuation_enabled"):
+                command._GENERATION_READERS_FD = 1000000
+                self.maps[1000000] = {}
             for number, value in enumerate(request["nodes"]):
                 key = value["key"]
-                maps = {name: (key, name) for name in ("active_links", "routes", "ingress_bindings", "egress_bindings", "tc_ingress")}
+                maps = {name: (key, name) for name in ("active_links", "routes", "ingress_bindings", "egress_bindings", "tc_ingress", "generation_versions")}
                 for fd in maps.values():
                     self.maps[fd] = {}
                 self.nodes[key] = {**value, "namespace_fd": number,
@@ -796,6 +850,7 @@ def test_actual_runner_records_preserve_boundaries_generations_and_traffic_ident
     recorder.start(helper=SimpleNamespace(start_telemetry_collector=lambda request: process), foundation=foundation)
     runner = runner_module.BpfRunner(compose_project_name="test", runtime_artifact=tmp_path / "manifest.json")
     runner._runtime_realization = runtime
+    runner._helper = transport
     runner._prepared_plans = plans
     runner._artifact_boundary_count = len(plans)
     runner._nominal_origin = plans[0].nominal_time
@@ -847,9 +902,10 @@ def test_actual_runner_records_preserve_boundaries_generations_and_traffic_ident
     if boundary_count > 1:
         assert {packet["sample_point"] for packet in transient} == {"before", "after"}
     if boundary_count > 1:
-        first = telemetry["interfaces"][0]
-        last = next(value for value in telemetry["interfaces"] if value["generation"] == 3 and value["logical_port_id"] == first["logical_port_id"])
-        assert first["ifindex"] != last["ifindex"]
+        endpoint = telemetry["interfaces"]["endpoints"][0]
+        first = next(value for value in endpoint["incarnations"] if value[0] == 0)
+        last = next(value for value in endpoint["incarnations"] if value[1] == 3)
+        assert first[2] != last[2]
         for boundary in telemetry["boundaries"][1:3]:
             assert not boundary["generation_publication_occurred"]
             assert "generation_switch_start_monotonic_ns" not in boundary

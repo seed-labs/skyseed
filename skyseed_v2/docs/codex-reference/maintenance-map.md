@@ -32,10 +32,10 @@ Change the owning contract, tests, examples, and docs together.
 | `simulator/{timeline,simulator}.py` | Timeline and one-owner lifecycle tests |
 | `experiment/_realization_producer.py` | cursor/prehistory/counts/buffering/cleanup and canonical producer qualification |
 | `backend/bpf/compiler.py`, compiled realization | bootstrap/steady lineage, semantic lowering, no-op activation, wrong-source tests |
-| Runner artifact/execution | deterministic typed persistence, seals, mmap open, precomputed-only Runner execution |
+| Runner artifact/execution | typed seals/lineage, mmap open, continuous-vs-batched semantics, bounded admission/reclaim, READY deadline and Main overlap |
 | Traffic | explicit planned-unreachable and reachable-loss classification |
 | `tools/` | detached reader/projection/schema tests and browser visual gate |
-| maintained examples | complete, Mini, S3 contract, packaging, stage progression |
+| maintained examples | complete, Mini, single-Shell and S1–S5 shared-network composition, packaging, stage progression |
 | public `__init__.py` | package import, `__all__`, import graph, this map |
 | current architecture docs | documentation gate, Mermaid/browser gate, link audit |
 
@@ -49,3 +49,37 @@ and architecture review in the same change.
 Do not create empty future directories, forwarding modules, duplicate public
 imports, runtime selectors, or blanket documentation duplication. Exact
 qualification evidence stays outside the repository.
+
+## Private computation implementation locations
+
+`simulator/models/_batched_geometry.py` and `_contact_prediction.py` implement
+array queries and compact contact proof inside the existing physical Model.
+`planning/models.py` retains selection/preparation policy, delay memory and
+Zone/Route reuse; `_route_computation.py` owns the existing grouped worker engine.
+Compiler's private indexes remain in backend realization/compiler code. Ordered
+serialization in `shared/_durable_evidence.py` is authority-free I/O used by the
+existing Producer and inspection writer. Domain-history v2 extends the same
+seal to physical-only cutoff; it creates no new public component. `_runner_artifact.py`
+still packages/reads backend input, kernel_netlink.py executes private Linux work,
+and process_incarnation.py captures startup identity. No dependency direction or
+Runner lifecycle changed. The owner and dependency diagrams therefore keep their
+existing ownership edges; member inventories track the changed public contracts.
+
+The final optimization round keeps these responsibilities in their existing
+owners: `_ground_station_allocation.py` certifies retained coverage and seeds an
+exact global residual solve; `_route_computation.py` retains only current-request
+paths with explicit ISL/GS dependencies. `_runner_artifact.py` groups batch facts
+once, while `_runner/runtime_realization.py::_BoundaryStateIndexes` supports the
+finite capacity and Preparation passes. Capacity destinations use reference
+counts so shared forwarding does not inflate demand. Tool projection and bundle
+writers own their direct compact records, input detachment and payload hashes.
+These helpers are private derived representations, not additions to public
+owner/class diagrams.
+
+The generated shared-image representation and unique image checks remain private
+in `compose/launcher.py`; the optional public launcher still consumes an
+already-generated project. Traffic's semantic-only history record is private to
+`tools/planner/reader.py` and reused by `tools/traffic/reader.py`; it does not add
+a domain contract. `tools/_html.py` owns atomic streaming JSON output, including
+record-wise compact Traffic encoding. Starlink's existing `main.py`/`simu.py`
+expose the authorized shell/cadence choices and derive counts from Timeline.

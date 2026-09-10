@@ -170,7 +170,7 @@ EXPECTED_SIMULATOR_EXPORTS = {
     "RoutePlanningModel",
     "CoordinationPolicy",
     "PlanningWindowPolicy",
-    "TimeHorizonPlanningWindowPolicy",
+    "FrameBatchPlanningWindowPolicy",
     "apply_plan_transition",
     "apply_plan",
 }
@@ -277,10 +277,10 @@ def _require_current_architecture_text() -> None:
             "PhysicalLinkObservation",
             "PlannedOperationalState",
             "BpfCompiledRealization",
-            "50-second planning horizon",
-            "20-second publication horizon",
+            "frames_per_batch=32",
+            "independent publication lookahead",
             "121 formal transitions",
-            "30 Plans",
+            "4 Plans",
             "persisted-only",
             "Before `BpfRunner` construction",
             "sealed Runner artifact as the semantic payload owner",
@@ -298,9 +298,9 @@ def _require_current_architecture_text() -> None:
         "planning": (
             "apply_plan_transition",
             "apply_plan",
-            "planning_horizon = 50 seconds",
-            "publication_horizon = 20 seconds",
-            "121 disjoint formal transitions across 30 Plans",
+            "frames_per_batch = 32",
+            "no independent lookahead wait",
+            "121 disjoint formal transitions across 4 Plans",
         ),
         "compiler": (
             "compile_bpf(plan, physical_world, previous_realization)",
@@ -555,7 +555,10 @@ def _runtime_public_members(contract: object) -> set[str]:
 
 
 def _direct_required_public_members(contract: object) -> set[str]:
-    required: set[str] = set()
+    required: set[str] = {
+        name for name in getattr(contract, "__annotations__", {})
+        if not name.startswith("_")
+    }
     if is_dataclass(contract):
         required.update(
             field.name for field in fields(contract)
@@ -942,6 +945,7 @@ def _class_fields(module: ast.Module, class_name: str) -> tuple[str, ...]:
                 for child in node.body
                 if isinstance(child, ast.AnnAssign)
                 and isinstance(child.target, ast.Name)
+                and not child.target.id.startswith("_")
             )
     raise AssertionError(f"class {class_name} not found")
 

@@ -170,22 +170,22 @@ classDiagram
     class CircularOrbitPositionModel
     class GeometricPhysicalLinkModel
     class RetainFirstInterSatelliteConnectionPlanningModel
-    class QualityFirstGroundStationAccessPlanningModel
+    class CoverageFirstGroundStationAccessPlanningModel
     class HighestElevationZoneServicePlanningModel
     class AccumulatedDeadbandParameterPlanningModel
     class GatewayHopCountRoutePlanningModel
     class DefaultCoordinationPolicy
-    class TimeHorizonPlanningWindowPolicy
+    class FrameBatchPlanningWindowPolicy
 
     CircularOrbitPositionModel ..|> PositionModel
     GeometricPhysicalLinkModel ..|> PhysicalLinkModel
     RetainFirstInterSatelliteConnectionPlanningModel ..|> InterSatelliteConnectionPlanningModel
-    QualityFirstGroundStationAccessPlanningModel ..|> GroundStationAccessPlanningModel
+    CoverageFirstGroundStationAccessPlanningModel ..|> GroundStationAccessPlanningModel
     HighestElevationZoneServicePlanningModel ..|> ZoneServicePlanningModel
     AccumulatedDeadbandParameterPlanningModel ..|> ParameterPlanningModel
     GatewayHopCountRoutePlanningModel ..|> RoutePlanningModel
     DefaultCoordinationPolicy ..|> CoordinationPolicy
-    TimeHorizonPlanningWindowPolicy ..|> PlanningWindowPolicy
+    FrameBatchPlanningWindowPolicy ..|> PlanningWindowPolicy
 ```
 
 ## Exact high-level public mapping
@@ -213,3 +213,17 @@ inventory.
 
 Public import paths are listed in
 [`../codex-reference/public-imports.md`](../codex-reference/public-imports.md).
+
+The finite compute round changes members and policy implementations within these
+owners. Physical candidates may carry `PhysicalContactWindow` proof; Planner owns
+ISL/GS preparation and `GroundStationLifecycleEvidence`. Frame batching replaces
+independent publication windows. These are evidence/configuration contracts, not
+new owners; full members are maintained only in the corresponding owner README.
+
+Consecutive finite delivery retains this owner/cardinality diagram. The existing
+Planner adds prefix `flush()` without ending its lifecycle; the existing Runner
+adds `append_batch(Path)` and owns background Maintenance alongside Main.
+Batch manifests, node versions, reservations and reader/retirement ledgers are
+private representations, not additional diagram entities or domain owners.
+See [the accepted continuation contract](../accepted-design.md#consecutive-finite-delivery)
+and the owner package member diagrams for the public methods.

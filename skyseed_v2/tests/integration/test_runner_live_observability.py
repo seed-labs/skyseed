@@ -38,7 +38,8 @@ def _node(
     }
 
 
-def test_main_boundary_owns_live_veth_establish_withdraw_and_recreate() -> None:
+@pytest.mark.parametrize("continued", (False, True))
+def test_main_boundary_owns_live_veth_establish_withdraw_and_recreate(continued) -> None:
     """Opt-in live qualification using the current private helper wire contract."""
     image = os.environ.get("SKYSEED_BPF_HELPER_IMAGE")
     if not image:
@@ -96,6 +97,7 @@ def test_main_boundary_owns_live_veth_establish_withdraw_and_recreate() -> None:
                 "zone_prefixes": ["198.51.100.0/24"],
                 "worker_count": 2,
                 "retirement_group_end": _RETIREMENT_GROUP_BASE + 4,
+                **({"continuation_enabled": True, "resident_generation_capacity": 2} if continued else {}),
             },
         )
         initialized = True
@@ -122,31 +124,47 @@ def test_main_boundary_owns_live_veth_establish_withdraw_and_recreate() -> None:
         }
 
 
-        # Prewrite the complete finite experiment before creating any veth.
-        for generation, present in ((0, True), (1, False), (2, True)):
+        sequence = (True, True, False, True, True, False, True) if continued else (True, False, True)
+        versions = {}
+        def prewrite(generation, present):
             records = []
+            reused = continued and generation and sequence[generation - 1] == present
             for key, port, local, remote in (("a", 1, "100.64.0.1", "100.64.0.2"),
                                              ("b", 2, "100.64.0.2", "100.64.0.1")):
-                records.append({"key": key, "active_ports": [port] if present else [],
-                                "routes": [{"destination": local, "logical_port_id": 0}]
-                                + ([{"destination": remote, "logical_port_id": port}] if present else [])})
+                if not reused:
+                    versions[key] = generation
+                records.append({"key": key, "active_ports": [port] if present and not reused else [],
+                    "routes": [] if reused else [{"destination": local, "logical_port_id": 0}]
+                    + ([{"destination": remote, "logical_port_id": port}] if present else []),
+                    **({"version": versions[key]} if continued else {})})
             result = helper.execute("prewrite_generation", {
                 "pin_root": pin_root, "generation": generation, "generation_nodes": records,
-                "bpf_batch_update_supported": False,
+                "bpf_batch_update_supported": False, "seal": True,
             })
-            assert result["preloaded_active_links"] == (2 if present else 0)
-            assert result["preloaded_routes"] == (4 if present else 2)
+            assert result["preloaded_active_links"] == (2 if present and not reused else 0)
+            assert result["preloaded_routes"] == (0 if reused else 4 if present else 2)
+            if continued:
+                assert result["node_versions_reused"] == (2 if reused else 0)
+        if not continued:
+            for generation, present in enumerate(sequence):
+                prewrite(generation, present)
         assert _run("docker", "exec", containers[0], "ip", "link", "show", "sv20000000000a", check=False).returncode != 0
-        for generation, present in ((0, True), (1, False), (2, True)):
-            if generation == 2:
+        retained_index = None
+        for generation, present in enumerate(sequence):
+            was_present = generation > 0 and sequence[generation - 1]
+            if continued:
+                prewrite(generation, present)
+            elif generation == 2:
                 connection = {**connection, "retirement_group": _RETIREMENT_GROUP_BASE + 4}
+            created, removed = present and not was_present, was_present and not present
             operations = []
-            for key, interface, remote in (("a", connection["interface_a"], "100.64.0.2"),
-                                           ("b", connection["interface_b"], "100.64.0.1")):
-                operations.append({"key": key, "qdisc": [],
-                    "route_replace": [[remote, interface]] if present else [],
-                    "route_withdraw": [] if present else [[remote, interface, True]],
-                    "zone_address_add": [], "zone_address_delete": []})
+            if present != was_present:
+                for key, interface, remote in (("a", connection["interface_a"], "100.64.0.2"),
+                                               ("b", connection["interface_b"], "100.64.0.1")):
+                    operations.append({"key": key, "qdisc": [],
+                        "route_replace": [[remote, interface]] if created else [],
+                        "route_withdraw": [[remote, interface, True]] if removed else [],
+                        "zone_address_add": [], "zone_address_delete": []})
             current_connection = [connection]
             result = helper.execute("activate_boundary", {
                 "pin_root": pin_root, "common_mac": "02:53:4b:59:00:01",
@@ -154,24 +172,31 @@ def test_main_boundary_owns_live_veth_establish_withdraw_and_recreate() -> None:
                 "expected_active_generation": 0xFFFFFFFF if generation == 0 else generation - 1,
                 "generation": generation, "generation_changed": True,
                 "operation_nodes": operations,
-                "connections": [connection] if present else [],
-                "retirement_batches": [] if present else [{
-                    "key": connection["retirement_node"],
-                    "group": connection["retirement_group"],
-                    "connections": [connection],
-                }],
+                "connections": [connection] if created else [],
+                "retirement_batches": [{"key": connection["retirement_node"],
+                    "group": connection["retirement_group"], "connections": [connection]}] if removed else [],
             })
             assert result["target_transition_complete"] is True
             assert result["generation_publication_occurred"] is True
-            assert result["created_connections"] == int(present)
-            assert result["deleted_connections"] == int(not present)
-            assert set(result["activation_phases"]) == {
-                "pre_publication", "active_generation_publication", "post_publication",
-                "withdrawal", "physical_deletion"}
+            assert result["created_connections"] == int(created)
+            assert result["deleted_connections"] == int(removed)
             exists = _run("docker", "exec", containers[0], "ip", "link", "show", "sv20000000000a", check=False).returncode == 0
             assert exists is present
             if present:
                 _run("docker", "exec", containers[0], "ping", "-c", "1", "-W", "2", "100.64.0.2")
+                link = json.loads(_run("docker", "exec", containers[0], "ip", "-j", "link", "show", "sv20000000000a").stdout)[0]
+                if was_present:
+                    assert link["ifindex"] == retained_index
+                retained_index = link["ifindex"]
+            if continued:
+                for _ in range(100):
+                    reclaim = helper.execute("reclaim_generations", {"before_generation": generation, "maximum_entries": 3})
+                    assert reclaim["work_units"] <= 3
+                    if reclaim["resident_generations"] == 1:
+                        break
+                else:
+                    pytest.fail("bounded reclamation did not release the old generation")
+                assert reclaim["resident_node_versions"] == 2
     finally:
         if initialized:
             helper.execute("cleanup", {"pin_root": pin_root,

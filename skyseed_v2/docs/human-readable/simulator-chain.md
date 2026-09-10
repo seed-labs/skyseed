@@ -36,18 +36,19 @@ timeline.iter_timestamps()
 
 Planner first creates a bounded physical-link request. The physical Model
 evaluates only that request and returns sparse feasible candidates. Planner
-advances ISL lifecycle, selects GroundStation accesses, assigns Zone service,
+admits new ISL/GS candidates using physical contact proofs, advances both kinds
+of capacity-reserving preparation, assigns Zone service,
 updates effective parameters, plans Routes over operational Connections, and
 creates one formal transition.
 
 The physical-observation frontier may advance ahead of the publication
-frontier. Canonical window policy plans with 50 seconds of context and publishes
-the earliest contiguous 20-second prefix. Each event retains its 5-second
-formal timestamp.
+frontier. Canonical batching publishes each 32-frame prefix immediately and
+flushes the last short batch once. Each event retains its 5-second formal time.
 
 ## Warm start and finish
 
-The producer samples at most the Planner-required bounded prehistory and calls
+The physical Model first predicts finite contacts with dependency-derived
+admission tails. The producer samples the Planner-required preparation history and calls
 `prime` before formal progression. Warm samples do not become formal
 transitions. When the Timeline iterator ends, the producer calls `finish` once
 and drains the remaining Plans.
@@ -56,17 +57,18 @@ and drains the remaining Plans.
 
 While the producer advances, the private BPF artifact writer incrementally
 normalizes each compiled realization into deterministic typed packed runtime
-records and accumulates finite capacity demand. After complete producer drain,
-it validates and seals the finite artifact. Generated execution verifies source
+records and accumulates finite capacity demand. After each finite delivery drain,
+it validates and seals the batch, retaining continuation state for its successor. Generated execution verifies source
 and input identity plus artifact hashes and metadata before Runner construction.
 
-`BpfRunner` receives the sealed artifact path. Its one-shot Preparation opens
-the binary read-only with `mmap`, decodes the complete indexed sequence, derives
-all immutable activation deltas and wire commands, prewrites semantic
-generations, and physically activates B0. Reader indexing does not defer
+`BpfRunner` receives the sealed artifact path. Preparation opens the first binary read-only with `mmap`, fully decodes that
+delivery, constructs its immutable activation commands, prewrites semantics and
+activates B0. For continuation, Maintenance repeats only admitted batch work
+against the same initialized runtime and fixed clock. Reader indexing does not defer
 decoding into formal execution. `run()` begins the formal clock and executes
 B1 and later prepared deltas. There is no realization-object tuple handoff,
-runtime producer, or Maintenance phase.
+runtime semantic producer or second planning authority. Maintenance loads sealed
+successors and safely reclaims retired runtime data; Main alone activates.
 
 The example entry points in `examples/` expose this same chain at different
 scales; none implements a second planning or compilation algorithm.

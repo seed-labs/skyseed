@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from math import isfinite
 from typing import Protocol, runtime_checkable
 
@@ -34,8 +34,31 @@ class PhysicalLinkRequest:
     inter_satellite_pairs: tuple[_NodePair, ...] = ()
     include_ground_station_access: bool = True
     include_zone_service: bool = True
+    ground_station_candidate_limit: int | None = None
+    ground_station_minimum_contact_duration: timedelta = timedelta(0)
+    inter_satellite_minimum_contact_duration: timedelta = timedelta(0)
+    retained_ground_station_pairs: tuple[_NodePair, ...] = ()
+    cross_plane_neighbor_count: int | None = None
+    retained_inter_satellite_pairs: tuple[_NodePair, ...] = ()
 
     def __post_init__(self) -> None:
+        for name in ("ground_station_minimum_contact_duration", "inter_satellite_minimum_contact_duration"):
+            value = getattr(self, name)
+            if not isinstance(value, timedelta) or value < timedelta(0):
+                raise ValueError(f"{name} must be a non-negative timedelta")
+        for name in ("ground_station_candidate_limit", "cross_plane_neighbor_count"):
+            value = getattr(self, name)
+            if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 1):
+                raise ValueError(f"{name} must be positive or None")
+        for name, first_kind in (("retained_ground_station_pairs", "ground-station"),
+                                 ("retained_inter_satellite_pairs", "satellite")):
+            values = tuple(getattr(self, name))
+            for first, second in values:
+                _require_node_kind(first, first_kind, name)
+                _require_node_kind(second, "satellite", name)
+                if first == second:
+                    raise ValueError("retained pair endpoints must be distinct")
+            object.__setattr__(self, name, tuple(sorted(set(values), key=lambda p: (_node_key(p[0]), _node_key(p[1])))))
         if not isinstance(self.include_ground_station_access, bool):
             raise TypeError("include_ground_station_access must be a bool")
         if not isinstance(self.include_zone_service, bool):
@@ -75,6 +98,35 @@ class PhysicalLinkRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class PhysicalContactWindow:
+    """A proven usable physical interval, not a selected connection lifetime.
+
+    Layer: public immutable Simulator physical evidence value.
+    The physical link Model creates this immutable value for Planner admission.
+    ``end_timestamp=None`` means an analytical all-future proof; a finite end
+    is a prediction coverage bound, never an asserted link-loss event. Absence
+    of a window on a candidate means future feasibility is unknown.
+    """
+
+    start_timestamp: datetime
+    end_timestamp: datetime | None
+
+    def __post_init__(self) -> None:
+        start = normalize_utc_datetime(self.start_timestamp, "start_timestamp")
+        end = (None if self.end_timestamp is None else
+               normalize_utc_datetime(self.end_timestamp, "end_timestamp"))
+        if end is not None and end < start:
+            raise ValueError("contact end must not precede its start")
+        object.__setattr__(self, "start_timestamp", start)
+        object.__setattr__(self, "end_timestamp", end)
+
+    def covers(self, start: datetime, end: datetime) -> bool:
+        """Return whether the complete requested interval has physical proof."""
+        return (self.start_timestamp <= start <= end and
+                (self.end_timestamp is None or end <= self.end_timestamp))
+
+
+@dataclass(frozen=True, slots=True)
 class InterSatelliteLinkCandidate:
     """Record one requested ISL relationship that is physically feasible.
 
@@ -90,8 +142,13 @@ class InterSatelliteLinkCandidate:
     cyclic_plane_separation: int
     distance_m: float
     propagation_delay_us: int
+    contact_window: PhysicalContactWindow | None = None
 
     def __post_init__(self) -> None:
+        if self.contact_window is not None and not isinstance(
+            self.contact_window, PhysicalContactWindow
+        ):
+            raise TypeError("contact_window must be PhysicalContactWindow or None")
         _require_node_kind(self.endpoint_a, "satellite", "endpoint_a")
         _require_node_kind(self.endpoint_b, "satellite", "endpoint_b")
         if self.endpoint_a == self.endpoint_b:
@@ -136,8 +193,13 @@ class GroundStationAccessCandidate:
     distance_m: float
     elevation_deg: float
     propagation_delay_us: int
+    contact_window: PhysicalContactWindow | None = None
 
     def __post_init__(self) -> None:
+        if self.contact_window is not None and not isinstance(
+            self.contact_window, PhysicalContactWindow
+        ):
+            raise TypeError("contact_window must be PhysicalContactWindow or None")
         _require_node_kind(
             self.ground_station_id,
             "ground-station",
@@ -206,8 +268,14 @@ class PhysicalLinkWorkCounts:
     zone_service_pairs_requested: int = 0
     zone_service_pairs_evaluated: int = 0
     zone_service_pairs_feasible: int = 0
+    ground_station_pairs_not_returned: int = 0
+    inter_satellite_pairs_not_returned: int = 0
 
     def __post_init__(self) -> None:
+        for name in ("ground_station_pairs_not_returned", "inter_satellite_pairs_not_returned"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{name} must be non-negative")
         for prefix in (
             "inter_satellite_pairs",
             "ground_station_pairs",
@@ -337,11 +405,12 @@ def _validated_candidates(
         raise TypeError(f"{field_name} must be iterable") from error
     if any(not isinstance(value, expected_type) for value in copied):
         raise TypeError(f"{field_name} contains an invalid value")
-    ordered = tuple(sorted(copied, key=key))
-    identities = tuple(key(value) for value in ordered)
+    keyed = sorted(((key(value), value) for value in copied),
+                   key=lambda item: item[0])
+    identities = tuple(identity for identity, _ in keyed)
     if len(set(identities)) != len(identities):
         raise ValueError(f"{field_name} contains a duplicate relationship")
-    return ordered
+    return tuple(value for _, value in keyed)
 
 
 def _canonical_pair(first: NodeId, second: NodeId) -> _NodePair:
@@ -416,6 +485,7 @@ __all__ = [
     "PhysicalLinkModel",
     "PhysicalLinkObservation",
     "PhysicalLinkRequest",
+    "PhysicalContactWindow",
     "PhysicalLinkWorkCounts",
     "ZoneServiceCandidate",
 ]

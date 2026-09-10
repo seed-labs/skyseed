@@ -474,3 +474,33 @@ def test_physical_link_contracts_are_exported_by_their_owner_facades() -> None:
         assert name in simulator.__all__
     assert simulator.GeometricPhysicalLinkModel is GeometricPhysicalLinkModel
     assert "GeometricPhysicalLinkModel" in simulator.__all__
+
+
+def test_query_rank_changes_keep_retained_pairs_and_distinguish_not_returned():
+    from dataclasses import replace
+    world, satellites, station = _physical_world_fixture()
+    model = _model()
+    frame = world.frame_at(EPOCH)
+    wide = model.compute_observation(world, frame, PhysicalLinkRequest())
+    retained = (station.node_id, satellites[3].node_id)
+    narrow = model.compute_observation(world, frame, PhysicalLinkRequest(
+        ground_station_candidate_limit=1, retained_ground_station_pairs=(retained,)))
+    assert len(narrow.ground_station_access_candidates) == 2
+    assert retained in {(c.ground_station_id,c.satellite_id) for c in narrow.ground_station_access_candidates}
+    assert narrow.work_counts.ground_station_pairs_not_returned == len(wide.ground_station_access_candidates)-2
+    assert model.compute_observation(world,frame,PhysicalLinkRequest()) == wide
+
+
+def test_contact_proof_keys_survive_changed_pair_query_order():
+    from skyseed_v2.simulator.models._contact_prediction import _ContactPrediction
+    from skyseed_v2.simulator.physical import PhysicalContactWindow
+    world, satellites, _ = _physical_world_fixture()
+    first=(satellites[0].node_id,satellites[1].node_id)
+    second=(satellites[0].node_id,satellites[2].node_id)
+    proof=_ContactPrediction.__new__(_ContactPrediction)
+    proof.pair_indexes={first:0};proof.start=EPOCH;proof.stable=frozenset({0})
+    proof._stable_window=PhysicalContactWindow(EPOCH,None);proof.windows={'isl':{}}
+    assert proof.window('isl',first,EPOCH).end_timestamp is None
+    # An unpredicted pair at numeric index zero in another query must not
+    # inherit the original pair's all-future analytical proof.
+    assert proof.window('isl',second,EPOCH) is None

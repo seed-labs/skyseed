@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from math import ceil
 from statistics import median
 from typing import Any
@@ -447,20 +447,35 @@ def _timeline_summary(
 
     formal_or_all = formal_timestamps or set(timestamps)
     physical_frame_timestamps = all_physical_frame_timestamps & formal_timestamps
-    prehistory_frame_timestamps = (
-        all_physical_frame_timestamps - formal_timestamps
+    start = _parse_timestamp(metadata.get("timeline_start"))
+    end = _parse_timestamp(metadata.get("timeline_end"))
+    if start is None and formal_timestamps:
+        start = min(formal_timestamps)
+    if end is None and formal_timestamps:
+        end = max(formal_timestamps)
+    prehistory_frame_timestamps: set[datetime] = set()
+    if start is not None and formal_interval_seconds is not None:
+        cadence = timedelta(seconds=formal_interval_seconds)
+        sampled = {timestamp for timestamp in all_physical_frame_timestamps
+                   if cadence > timedelta(0) and (timestamp-start) % cadence == timedelta(0)}
+        prehistory_frame_timestamps = {timestamp for timestamp in sampled if timestamp < start}
+        if end is not None:
+            physical_frame_timestamps = {timestamp for timestamp in sampled if start <= timestamp <= end}
+    additional_query_timestamps = (
+        all_physical_frame_timestamps - physical_frame_timestamps - prehistory_frame_timestamps
     )
     return {
         "simulation_start_timestamp": (
-            min(formal_or_all).isoformat() if formal_or_all else None
+            start.isoformat() if start is not None else min(formal_or_all).isoformat() if formal_or_all else None
         ),
         "simulation_end_timestamp": (
-            max(formal_or_all).isoformat() if formal_or_all else None
+            end.isoformat() if end is not None else max(formal_or_all).isoformat() if formal_or_all else None
         ),
         "formal_interval_seconds": formal_interval_seconds,
         "formal_transition_unit_count": len(formal_timestamps),
         "physical_frame_unit_count": len(physical_frame_timestamps),
         "prehistory_physical_frame_unit_count": len(prehistory_frame_timestamps),
+        "additional_physical_query_unit_count": len(additional_query_timestamps),
         "plan_publication_unit_count": len(plan_publications),
         "compiler_realization_unit_count": len(compiler_realizations),
         "producer_invocation_unit_count": len(producer_invocations),

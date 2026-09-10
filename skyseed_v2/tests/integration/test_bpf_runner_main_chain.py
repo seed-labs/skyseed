@@ -3,12 +3,10 @@ from __future__ import annotations
 import inspect
 from pathlib import Path
 
-from examples.mini_satellite_internet import main as mini_main
 from examples.starlink_gen1_satellite_internet import main as starlink_main
 from skyseed_v2.backend.bpf.runner import BpfRunner
 from skyseed_v2.experiment import execution
 from skyseed_v2.backend.bpf._runner_artifact import (
-    _RunnerArtifactWriter,
     _open_runner_artifact,
 )
 
@@ -22,27 +20,38 @@ def test_generated_execution_passes_only_artifact_path_to_runner() -> None:
     assert "validated_sequence" not in source
 
 
-def test_runner_production_api_is_precomputed_only() -> None:
-    parameters = inspect.signature(BpfRunner).parameters
-    assert tuple(parameters) == ("compose_project_name", "runtime_artifact")
-    source = inspect.getsource(BpfRunner)
-    assert "supplier" not in source
-    assert "input_exhausted" not in source
-    assert "lookahead" not in source
-    assert "boundary_depth" not in source
+def test_generated_finite_deliveries_are_sealed_before_runner_construction(tmp_path, monkeypatch):
+    from contextlib import closing
+    from datetime import timedelta
+    import json
+    from examples.complete_static_emulator.emu import build_emulator
+    from examples.complete_static_emulator.simu import create_complete_static_simulator, create_complete_static_planner
+    from skyseed_v2.backend.bpf import runner as module
 
-
-def test_examples_drain_producer_before_execution_definition() -> None:
-    mini = inspect.getsource(mini_main.main)
-    starlink = inspect.getsource(starlink_main._run_compiler_stage)
-    assert mini.index("produce_next_realization()") < mini.index(
-        "_write_runner_artifact("
-    )
-    assert starlink.index("produce_next_realization()") < starlink.index(
-        "writer.finalize()"
-    )
-    assert "_RunnerArtifactWriter" in inspect.getsource(starlink_main)
-    assert "_write_runner_artifact" in inspect.getsource(mini_main)
+    simulator = create_complete_static_simulator(build_emulator())
+    create_complete_static_planner(simulator)
+    timeline = simulator.get_timeline()
+    _, snapshot, _, _ = starlink_main._run_compiler_stage(
+        simulator, tmp_path, delivery_ends=(timeline.start_time + timedelta(seconds=10), timeline.end_time))
+    paths = [Path(value["manifest"]) for value in snapshot["delivered_batches"]]
+    assert len(paths) == 2
+    timestamps = []
+    for index, path in enumerate(paths):
+        seal = json.loads(path.read_text())
+        assert seal["terminal"] is True
+        assert seal["delivery"]["final"] is (index == 1)
+        with closing(_open_runner_artifact(path)) as artifact:
+            timestamps.extend(b.nominal_time for b in artifact.boundaries())
+    assert timestamps == list(timeline.iter_timestamps())
+    # Construction/registration accepts only persisted finite materials and
+    # performs no deployment or kernel work. Preparation is a separate call.
+    monkeypatch.setattr(module, "_execute", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("runtime started during construction")))
+    runner = BpfRunner(compose_project_name="finite-test", runtime_artifact=paths[0],
+                       batch_lead_fraction=.75, batch_capacity_factor=2)
+    runner.append_batch(paths[1])
+    import pytest
+    with pytest.raises(TypeError):
+        BpfRunner(compose_project_name="finite-test", runtime_artifact=lambda: paths[0])
 
 
 def test_runner_artifact_open_is_mmap_and_not_rich_reconstruction() -> None:

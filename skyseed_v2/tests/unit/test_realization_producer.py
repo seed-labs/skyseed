@@ -51,7 +51,7 @@ def test_common_producer_persists_detached_formal_history(tmp_path) -> None:
     assert snapshot["formal_frame_count"] == 4
     assert snapshot["prehistory_frame_count"] == 0
     assert snapshot["physical_link_observation_count"] == 4
-    assert snapshot["plan_count"] == len(plans) == len(realizations) == 2
+    assert snapshot["plan_count"] == len(plans) == len(realizations) == 1
     assert snapshot["transition_count"] == 4
     assert snapshot["pull_mode"] == "compiler"
     assert snapshot["domain_history_sealed"] is True
@@ -99,9 +99,9 @@ def test_common_producer_persists_detached_formal_history(tmp_path) -> None:
         "expected_formal_frames": 4,
         "prehistory_frames": 0,
         "formal_frames": 4,
-        "plans": 2,
+        "plans": 1,
         "transitions": 4,
-        "realizations": 2,
+        "realizations": 1,
     }
     for stream_name, filename in (
         ("physical_frames", "physical-frames.jsonl"),
@@ -259,7 +259,7 @@ def test_terminal_domain_history_manifest_is_deterministic(tmp_path) -> None:
     assert stream_hashes[0] == stream_hashes[1]
 
 
-def test_planner_only_cursor_seals_121_transitions_in_30_plans(
+def test_planner_only_cursor_seals_121_transitions_in_four_batches(
     tmp_path,
 ) -> None:
     timeline = SimulationTimeline(
@@ -295,7 +295,7 @@ def test_planner_only_cursor_seals_121_transitions_in_30_plans(
     finally:
         producer.close()
 
-    assert len(plans) == snapshot["plan_count"] == 30
+    assert len(plans) == snapshot["plan_count"] == 4
     assert sum(len(plan.transitions) for plan in plans) == 121
     assert snapshot["formal_frame_count"] == 121
     assert snapshot["transition_count"] == 121
@@ -307,7 +307,7 @@ def test_planner_only_cursor_seals_121_transitions_in_30_plans(
     )
     assert manifest["through"] == "planner"
     assert manifest["counts"]["expected_formal_frames"] == 121
-    assert manifest["counts"]["plans"] == 30
+    assert manifest["counts"]["plans"] == 4
     assert manifest["counts"]["transitions"] == 121
     assert manifest["counts"]["realizations"] == 0
     assert len(_records(evidence / "compiler.jsonl")) == 1
@@ -391,46 +391,43 @@ def test_common_producer_observes_truthful_owned_timing_and_accounting(
     assert not owned("planner", "physical-link-observation")
     assert not owned("planner", "publication")
 
-    assert len(publications) == len(plans) == 2
+    assert len(publications) == len(plans) == 1
     assert tuple(value["scope"]["plan_id"] for value in publications) == tuple(
         plan.plan_id for plan in plans
     )
-    assert tuple(value["work"]["transitions"] for value in publications) == (
-        3,
-        1,
-    )
+    assert tuple(value["work"]["transitions"] for value in publications) == (4,)
     assert all(value["duration_role"] == "rollup" for value in publications)
     assert tuple(value["scope"]["plan_id"] for value in creations) == tuple(
         plan.plan_id for plan in plans
     )
 
-    assert len(compiler_totals) == len(realizations) == 2
+    assert len(compiler_totals) == len(realizations) == 1
     assert all(value["duration_role"] == "rollup" for value in compiler_totals)
     assert tuple(
         value["scope"]["compile_index"] for value in compiler_totals
-    ) == (0, 1)
+    ) == (0,)
 
-    assert len(serializations) == 9
+    assert len(serializations) == 7
     assert tuple(
         value["scope"]["family"] for value in serializations
     ).count("physical-frame") == 4
     assert tuple(
         value["scope"]["family"] for value in serializations
-    ).count("planning") == 2
+    ).count("planning") == 1
     assert tuple(
         value["scope"]["family"] for value in serializations
-    ).count("compiler") == 2
+    ).count("compiler") == 1
     assert tuple(
         value["scope"]["family"] for value in serializations
     ).count("domain-history-manifest") == 1
-    assert all(value["work"]["output_bytes"] > 0 for value in serializations)
+    assert all(value["work"].get("serialized_bytes", value["work"].get("output_bytes", 0)) > 0 for value in serializations)
 
-    assert len(producer_totals) == len(realizations) + 1 == 3
+    assert len(producer_totals) == len(realizations) + 1 == 2
     assert all(value["duration_role"] == "rollup" for value in producer_totals)
     assert producer_totals[-1]["phase"] == "idle"
     assert producer_totals[-1]["scope"]["terminal"] is True
     assert sum(value["work"]["formal_frames"] for value in producer_totals) == 4
-    assert sum(value["work"]["evidence_records"] for value in producer_totals) == 9
+    assert sum(value["work"]["evidence_records"] for value in producer_totals) == 7
 
 
 def test_failed_optional_observer_does_not_change_domain_progression(tmp_path) -> None:
@@ -447,7 +444,7 @@ def test_failed_optional_observer_does_not_change_domain_progression(tmp_path) -
 
     plans, realizations, snapshot = run_complete_static_chain(simulator)
 
-    assert len(plans) == len(realizations) == 2
+    assert len(plans) == len(realizations) == 1
     assert snapshot["formal_frame_count"] == 4
     assert observer._get_recording_failure() is not None
 
@@ -481,7 +478,7 @@ def test_failed_physical_link_inspection_sink_isolated_from_progression(
     finally:
         producer.close()
 
-    assert len(realizations) == 2
+    assert len(realizations) == 1
     assert snapshot["formal_frame_count"] == 4
     assert snapshot["transition_count"] == 4
     assert snapshot["formal_observation_sink_failure_count"] == 1

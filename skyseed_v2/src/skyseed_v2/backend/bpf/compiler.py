@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from ipaddress import IPv4Address, IPv4Network
 from time import perf_counter
+from types import MappingProxyType
 
 from skyseed_v2.shared import NodeId
 from skyseed_v2.shared._execution_observation import _ExecutionObserver
@@ -34,6 +35,7 @@ from skyseed_v2.simulator import (
     apply_plan,
     apply_plan_transition,
     plan_transition_fingerprint,
+    planned_operational_state_fingerprint,
     semantic_event_references,
 )
 
@@ -98,6 +100,8 @@ class _LoweredPlan:
     constraints: tuple[_OrderingConstraint, ...]
     semantic_precedence_folding: tuple[tuple[str, int], ...]
     intended_state: _IntendedState
+    output_state: PlannedOperationalState
+    incremental_indexes: tuple
 
 
 @dataclass(frozen=True, slots=True)
@@ -233,7 +237,8 @@ def _compile_bpf(
         )
 
     world_fingerprint = physical_world.semantic_fingerprint()
-    projection = _physical_world_projection(physical_world)
+    projection = (_physical_world_projection(physical_world) if previous_realization is None
+                  else previous_realization._physical_world_projection)
     _validate_lineage(
         plan,
         world_fingerprint=world_fingerprint,
@@ -245,21 +250,18 @@ def _compile_bpf(
         if previous_realization is None
         else previous_realization.output_planned_state
     )
-    output_state = apply_plan(
-        previous_state,
-        plan,
-        physical_world_fingerprint=world_fingerprint,
-    )
+    if previous_state is not None and planned_operational_state_fingerprint(previous_state) != plan.input_state_fingerprint:
+        raise ValueError('Plan input state fingerprint mismatch')
     scope = _compile_scope(plan, compile_index)
     _observe_compile_stage(
         execution_observer,
-        stage="plan-lineage-and-replay",
+        stage="plan-lineage",
         started=total_started,
         scope=scope,
         work={
             "plan_transitions": len(plan.transitions),
             "semantic_precedences": len(plan.semantic_event_precedences),
-            "replayed_transitions": len(plan.transitions),
+            "replayed_transitions": 0,
         },
     )
 
@@ -269,10 +271,11 @@ def _compile_bpf(
         projection=projection,
         previous=previous_realization,
         previous_state=previous_state,
-        output_state=output_state,
+        output_state=None,
         execution_observer=execution_observer,
         scope=scope,
     )
+    output_state = lowered.output_state
     result = BpfCompiledRealization._create(
         source_plan_id=plan.plan_id,
         source_previous_plan_id=plan.previous_plan_id,
@@ -299,6 +302,7 @@ def _compile_bpf(
         intended_state=lowered.intended_state,
         physical_world_projection=projection,
     )
+    object.__setattr__(result, "_incremental_indexes", lowered.incremental_indexes)
     _observe_compile_stage(
         execution_observer,
         stage="semantic-to-bpf-lowering",
@@ -342,7 +346,7 @@ def _lower_plan(
     projection: _PhysicalWorldProjection,
     previous: BpfCompiledRealization | None,
     previous_state: PlannedOperationalState | None,
-    output_state: PlannedOperationalState,
+    output_state: PlannedOperationalState | None,
     execution_observer: _ExecutionObserver | None = None,
     scope: Mapping[str, object] | None = None,
 ) -> _LoweredPlan:
@@ -410,8 +414,11 @@ def _lower_plan(
             semantic_intents=semantic_intents,
         )
         semantic_state = next_semantic_state
-    if semantic_state != output_state:
+    if output_state is not None and semantic_state != output_state:
         raise ValueError("Compiler transition replay differs from Plan replay")
+    output_state = semantic_state
+    if planned_operational_state_fingerprint(output_state) != plan.output_state_fingerprint:
+        raise ValueError('Plan output state fingerprint mismatch')
     _observe_compile_stage(
         execution_observer,
         stage="transition-lowering",
@@ -477,6 +484,8 @@ def _lower_plan(
         constraints,
         semantic_precedence_folding,
         intended_state,
+        output_state,
+        _freeze_incremental_indexes(state),
     )
 
 
@@ -643,6 +652,20 @@ def _validate_lineage(
         )
 
 
+def _freeze_incremental_indexes(state):
+    # Immutable handoff indexes belong to compilation, never to artifacts or
+    # Planner. A subsequent compile copies mutable working containers once.
+    return (
+        MappingProxyType(dict(state.resources)), MappingProxyType(dict(state.qdiscs)),
+        MappingProxyType({k: frozenset(v) for k, v in state.qdisc_keys_by_connection.items()}),
+        MappingProxyType(dict(state.forwarding)),
+        MappingProxyType({k: frozenset(v) for k, v in state.forwarding_keys_by_connection.items()}),
+        MappingProxyType(dict(state.zone_edges)),
+        MappingProxyType({k: MappingProxyType(dict(v)) for k, v in state.route_bindings.items()}),
+        MappingProxyType({k: MappingProxyType(dict(v)) for k, v in state.forwarding_owners.items()}),
+    )
+
+
 def _initial_state(
     previous: BpfCompiledRealization | None,
     previous_state: PlannedOperationalState | None,
@@ -652,6 +675,14 @@ def _initial_state(
 ) -> _MutableState:
     if previous is None:
         return _MutableState({}, {}, {}, {}, {}, {}, {}, {})
+    if previous._incremental_indexes is not None:
+        values = previous._incremental_indexes
+        return _MutableState(
+            dict(values[0]), dict(values[1]),
+            {k: set(v) for k, v in values[2].items()},
+            dict(values[3]), {k: set(v) for k, v in values[4].items()},
+            dict(values[5]), dict(values[6]),
+            {k: dict(v) for k, v in values[7].items()})
     resources = {
         value.connection.connection_id: value.connection
         for value in previous.intended_resources
@@ -759,19 +790,8 @@ def _lower_transition(
     semantic_intents: dict[SemanticEventReference, set[_IntentReference]],
 ) -> None:
     timestamp = transition.timestamp
-    previous_connections = {
-        value.connection_id: value
-        for value in (
-            ()
-            if previous_semantic_state is None
-            else previous_semantic_state.operational_connections
-        )
-    }
-    next_connections = {
-        value.connection_id: value
-        for value in next_semantic_state.operational_connections
-    }
-
+    previous_connections = {c.connection_id: state.resources.get(c.connection_id)
+                            for c in transition.parameter_updated_connections}
     for connection in transition.established_connections:
         identifier = connection.connection_id
         if identifier in state.resources:
@@ -946,6 +966,8 @@ def _lower_transition(
                 _IntentReference("zone-edge", retirement_index)
             )
 
+    withdrawn = frozenset(transition.withdrawn_connection_ids)
+    next_connections = {k: v for k, v in state.resources.items() if k not in withdrawn} if withdrawn else state.resources
     _lower_route_outcomes(
         transition,
         next_semantic_state,
@@ -988,8 +1010,6 @@ def _lower_transition(
         for key in state.qdisc_keys_by_connection.pop(identifier, ()):
             del state.qdiscs[key]
 
-    if state.resources != next_connections:
-        raise ValueError("compiled Connection state differs after transition")
 
 
 def _lower_route_outcomes(
@@ -1006,6 +1026,11 @@ def _lower_route_outcomes(
     event_index: _TransitionEventIndex,
     semantic_intents: dict[SemanticEventReference, set[_IntentReference]],
 ) -> None:
+    connection_ids_by_pair = {
+        pair: identifier for identifier in next_connections
+        for pair in ((identifier.endpoint_a, identifier.endpoint_b),
+                     (identifier.endpoint_b, identifier.endpoint_a))
+    }
     touched: dict[_ForwardingKey, set[RouteDemand]] = defaultdict(set)
     zone_assignments = {
         value.zone_id: value.satellite_id
@@ -1029,6 +1054,7 @@ def _lower_route_outcomes(
             node_ids=node_ids,
             zone_ids=zone_ids,
             zone_assignments=zone_assignments,
+            connection_ids_by_pair=connection_ids_by_pair,
         )
         if change.current is not None:
             state.route_bindings[change.demand] = current_bindings
@@ -1093,6 +1119,7 @@ def _bindings_for_outcome(
     node_ids: frozenset[NodeId] | None = None,
     zone_ids: frozenset[str] | None = None,
     zone_assignments: Mapping[str, NodeId | None] | None = None,
+    connection_ids_by_pair=None,
 ) -> dict[_ForwardingKey, _ForwardingBinding]:
     if outcome is None:
         return {}
@@ -1144,7 +1171,9 @@ def _bindings_for_outcome(
         raise TypeError("unsupported Route demand target")
     result: dict[_ForwardingKey, _ForwardingBinding] = {}
     for source, next_hop in zip(path, path[1:]):
-        identifier = _connection_id_for_pair(source, next_hop)
+        identifier = (_connection_id_for_pair(source, next_hop)
+                      if connection_ids_by_pair is None
+                      else connection_ids_by_pair.get((source, next_hop)))
         if identifier not in connections:
             raise ValueError(
                 "planned reachable Route uses a non-operational Connection"

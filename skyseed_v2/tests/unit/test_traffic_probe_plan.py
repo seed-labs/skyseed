@@ -14,6 +14,7 @@ import pytest
 from examples.complete_static_emulator.emu import build_emulator
 from examples.complete_static_emulator.simu import (
     create_complete_static_simulator,
+    create_complete_static_planner,
     run_complete_static_chain,
 )
 from skyseed_v2.shared import NodeId
@@ -54,7 +55,10 @@ START = datetime(2026, 1, 1, tzinfo=timezone.utc)
 @pytest.fixture(scope="module")
 def complete_chain():
     simulator = create_complete_static_simulator(build_emulator())
-    plans, realizations, snapshot = run_complete_static_chain(simulator)
+    # This focused lineage fixture deliberately crosses a batch boundary.
+    planner = create_complete_static_planner(simulator)
+    planner._frames_per_batch = 3
+    plans, realizations, snapshot = run_complete_static_chain(simulator, planner=planner)
     return simulator, plans, realizations, snapshot
 
 
@@ -190,7 +194,7 @@ def test_probe_selection_discards_candidate_without_full_route_horizon(
         "zone-a",
     )
 
-    def candidates(plan_values, values, nominal_boundaries):
+    def candidates(plan_values, values, nominal_boundaries, **kwargs):
         return (
             _PairSeed(
                 _DIRECTION_GROUND_TO_ZONE,
@@ -328,7 +332,7 @@ def test_probe_plan_resolves_paths_only_after_bounded_coverage_selection(
     template = base_candidates[0]
     resolved: list[tuple[str, str, str]] = []
 
-    def many_candidates(plan_values, values, nominal_boundaries):
+    def many_candidates(plan_values, values, nominal_boundaries, **kwargs):
         selected = list(
             original_candidates(plan_values, values, nominal_boundaries)
         )
@@ -767,6 +771,44 @@ def _install_fake_docker_processes(
     return processes
 
 
+@pytest.mark.parametrize('second', ['active', 'timeout', 'identity-mismatch'])
+def test_generator_control_timeout_retries_same_identity_and_fails_closed(monkeypatch, second):
+    from types import SimpleNamespace
+    import subprocess
+    from skyseed_v2.experiment.traffic import probe_execution as module
+
+    executor = TrafficProbeExecutor.__new__(TrafficProbeExecutor)
+    executor._docker = 'docker'
+    records = []
+    executor._record = lambda kind, **facts: records.append((kind, facts))
+    executor._drain_io = lambda timeout: None
+    generator = SimpleNamespace(
+        episode=SimpleNamespace(episode_id='episode'), identity=SimpleNamespace(probe_id='probe'),
+        segment_index=2, binding=SimpleNamespace(container_id='immutable-container-id'),
+        pid_file='/tmp/owned-unique-generator.pid', runtime_identity='owned-unique-generator')
+    calls = []
+
+    def invoke(command, **kwargs):
+        calls.append((command, kwargs['timeout']))
+        if len(calls) == 1 or second == 'timeout':
+            raise subprocess.TimeoutExpired(command, kwargs['timeout'])
+        return SimpleNamespace(returncode=0, stdout=second+'\n', stderr='')
+
+    monkeypatch.setattr(module.subprocess, 'run', invoke)
+    if second == 'active':
+        assert executor._generator_control(generator, 'status', expected='active') == 'active'
+    else:
+        with pytest.raises(subprocess.TimeoutExpired if second == 'timeout' else RuntimeError):
+            executor._generator_control(generator, 'status', expected='active')
+    assert len(calls) == 2 and calls[0][0] == calls[1][0]
+    assert calls[0][0][-2:] == (generator.pid_file, generator.runtime_identity)
+    assert [call[1] for call in calls] == [2.0, 8.0]
+    assert all(kind == 'generator_control_timeout' for kind, _ in records)
+    assert records[0][1]['retrying'] is True
+    if second == 'timeout':
+        assert len(records) == 2 and records[-1][1]['retrying'] is False
+
+
 def test_probe_executor_resolves_bindings_parses_ping_and_cleans_every_process(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1156,3 +1198,136 @@ def test_probe_executor_fails_closed_when_required_binding_is_missing(
             runner_snapshot=_runner_snapshot(plan, omit=omitted),
             evidence_path=tmp_path / "probe-execution.jsonl",
         )
+
+
+def test_shell_metadata_coverage_and_global_budget_match_incremental(complete_chain):
+    simulator, plans, realizations, _ = complete_chain
+    world = simulator.get_physical_world()
+    expected = TrafficProbePlanBuilder(physical_world=world).build(plans, realizations)
+    incremental = IncrementalTrafficProbePlanBuilder(physical_world=world)
+    for plan, realization in zip(plans, realizations, strict=True):
+        incremental.append(plan, realization)
+    actual = incremental.finalize()
+    left, right = expected.artifact(), actual.artifact()
+    left['planning']['duration_seconds'] = right['planning']['duration_seconds'] = 0
+    assert left == right
+    assert left['shell_metadata'] and left['shell_coverage']
+    assert len(expected.episodes) <= left['global_budget']['maximum_episodes']
+    assert left['planning']['maximum_concurrent_episode_bound'] <= 8
+    assert left['planning']['estimated_echo_requests'] <= 3600
+    assert read_traffic_probe_plan  # artifact round trip is also checked directly
+    from skyseed_v2.experiment.traffic.probe_plan import TrafficProbePlan
+    assert TrafficProbePlan.from_artifact(left).artifact() == left
+    membership = dict(expected.shell_metadata)
+    for coverage in left['shell_coverage']:
+        for episode in coverage['episodes']:
+            selected = next(e for e in expected.episodes if e.episode_id == episode['episode_id'])
+            assert any(membership.get(n) == coverage['shell_id'] for i in selected.state_intervals
+                       if i.expected_reachable for n in i.path_node_ids)
+        if not coverage['eligible']:
+            assert coverage['reason'] and coverage['status'] == 'no-eligible-candidate'
+
+
+def test_global_selection_covers_five_shells_without_multiplying_workload():
+    from skyseed_v2.experiment.traffic.probe_plan import _budgeted_requests
+    seeds = []
+    for i in range(5):
+        for direction in (_DIRECTION_GROUND_TO_ZONE, _DIRECTION_ZONE_TO_GROUND):
+            seed = _PairSeed(direction, NodeId(1, 'ground-station', f'g{i}'), f'z{i}', {})
+            for case, offset in [('stable', 10), ('transition', 200)]:
+                seed.reason_times[f'shell-coverage:S{i+1}:{case}'] = {START+timedelta(seconds=offset+i*20)}
+            seeds.append(seed)
+    selected = _budgeted_requests(seeds, (), START, START+timedelta(seconds=600), (20, 2, 200), (1., .5))
+    assert len(selected) == 20
+    assert selected == _budgeted_requests(tuple(reversed(seeds)), (), START, START+timedelta(seconds=600), (20, 2, 200), (1., .5))
+    assert {r[0].key for r in selected} == {s.key for s in seeds}
+    for i in range(5):
+        for direction in (_DIRECTION_GROUND_TO_ZONE, _DIRECTION_ZONE_TO_GROUND):
+            assert len([r for r in selected if r[0].zone_id == f'z{i}' and r[0].direction == direction]) == 2
+
+
+@pytest.mark.parametrize('incremental', [False, True])
+def test_shell_eligibility_scan_does_not_resolve_unselected_paths(monkeypatch, complete_chain, incremental):
+    from skyseed_v2.experiment.traffic import probe_plan as module
+    simulator, plans, realizations, _ = complete_chain
+    original = module._resolve_path
+    calls = []
+    def resolve(seed, projection):
+        calls.append((seed.key, projection.nominal_time))
+        return original(seed, projection)
+    monkeypatch.setattr(module, '_resolve_path', resolve)
+    if incremental:
+        builder = IncrementalTrafficProbePlanBuilder(physical_world=simulator.get_physical_world())
+        for plan, realization in zip(plans, realizations, strict=True):
+            builder.append(plan, realization)
+        result = builder.finalize()
+    else:
+        result = TrafficProbePlanBuilder(physical_world=simulator.get_physical_world()).build(plans, realizations)
+    assert result.shell_metadata
+    # This fixture needs 14 selected forward/reverse resolutions; the old
+    # Shell branch added 16 more while scanning eligibility.
+    assert len(calls) == 14
+    assert len({key for key, _ in calls}) <= 2 * len(result.probe_identities)
+
+
+def test_long_controls_credit_only_eligible_windows_within_shared_budget():
+    from types import SimpleNamespace
+    from datetime import datetime, timezone, timedelta
+    from skyseed_v2.experiment.traffic.probe_plan import _budgeted_requests, _PERSISTENT
+    origin = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    seeds = []
+    for shell in range(5):
+        for direction in ('ground-station-to-zone', 'zone-to-ground-station'):
+            index = len(seeds)
+            seeds.append(SimpleNamespace(key=str(index), direction=direction, reason_times={
+                f'shell-coverage:S{shell}:stable': {origin+timedelta(seconds=10+index*20)},
+                f'shell-coverage:S{shell}:transition': {origin+timedelta(seconds=15+index*20)}}))
+    # A nominal long control whose eligible windows are outside its episode
+    # earns no credit; the other one contributes its two supported goals.
+    longs = ((seeds[0], _PERSISTENT, origin, origin, origin+timedelta(seconds=600)),
+             (seeds[1], _PERSISTENT, origin+timedelta(seconds=300), origin+timedelta(seconds=300), origin+timedelta(seconds=600)))
+    result = _budgeted_requests(seeds, longs, origin, origin+timedelta(seconds=600),
+                                (20,8,3600), (1,.25))
+    covered = {(reason, seed.direction) for seed, _, _, begin, end in result
+               for reason,times in seed.reason_times.items() if any(begin <= at < end for at in times)}
+    assert len(covered) == 20
+    assert len(result) == 20
+    assert sum(r[1] == _PERSISTENT for r in result) == 2
+
+
+def test_long_control_outside_reservoir_gets_only_reachable_window_credit():
+    from skyseed_v2.experiment.traffic.probe_plan import _complete_control_coverage
+    ground = NodeId(65001, 'ground-station', 'g')
+    satellites = [NodeId(65001, 'satellite', f's{i}') for i in range(2)]
+    seed = _PairSeed(_DIRECTION_ZONE_TO_GROUND, ground, 'zone', {
+        'long-changing-candidate': {START}, 'persistent-control-candidate': {START}})
+    times = tuple(START + timedelta(seconds=i*5) for i in range(4))
+    def scan(visit):
+        for index, at in enumerate(times):
+            satellite = satellites[index > 0]
+            forward = RouteDemand(ground, ZoneRouteDemandTarget('zone'))
+            reverse = RouteDemand(satellite, GroundStationRouteDemandTarget(ground))
+            outcomes = {forward: ReachableRouteOutcome(forward, satellite, (ground, satellite)),
+                        reverse: ReachableRouteOutcome(reverse, ground, (satellite, ground))}
+            # The return path is unsupported at 10 s; it earns neither goal.
+            if index == 2:
+                outcomes.pop(reverse)
+            visit(SimpleNamespace(nominal_time=at, zone_edges={'zone': ('edge', satellite)},
+                route_outcomes=outcomes, changed_access_ground_stations=[ground] if index == 0 else []))
+        return times
+    _complete_control_coverage(scan, (seed,), times, dict(zip(satellites, ('S1', 'S2'))))
+    assert seed.reason_times['shell-coverage:S1:stable'] == {START+timedelta(seconds=3)}
+    assert 'shell-coverage:S1:transition' not in seed.reason_times
+    assert seed.reason_times['shell-coverage:S2:transition'] == {times[1]}
+    assert seed.reason_times['shell-coverage:S2:stable'] == {times[1]+timedelta(seconds=3)}
+
+
+def test_same_path_access_change_retains_its_transition_boundary():
+    from skyseed_v2.experiment.traffic.probe_plan import _append_state_interval
+    first = _ProbeStateInterval(START, START+timedelta(seconds=5), True, None,
+                                'sat', ('ground', 'sat'), 1, ())
+    second = replace(first, start_time=first.end_time, end_time=START+timedelta(seconds=10),
+                     boundary_reasons=('ground-station-attachment-change',))
+    intervals = [first]
+    _append_state_interval(intervals, second)
+    assert intervals == [first, second]

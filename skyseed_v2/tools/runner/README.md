@@ -9,6 +9,10 @@ For generated S4 output it also accepts the separate small Compose-startup
 evidence file, so deployment startup and Runner Preparation never collapse
 into one timing.
 
+The CLI emits a `runner-tool-completion` JSON line measuring input read and Tool
+writing, excluding interpreter startup. It is detached command evidence and does
+not change Runner activation, cleanup, or the external visualization data.
+
 The implementation responsibilities are deliberately small and distinct:
 
 Legend: `A --> B` means detached output from A is the only input supplied to B;
@@ -28,7 +32,7 @@ flowchart LR
 - `projection.py` stable-sorts the supplied complete event history by monotonic time
   with original list order as the tie-break, curates the human timeline,
   separates lifecycle phases, duration work, and instant milestones, and
-  derives timing/default-dataplane views, one-shot Preparation capacity/identity
+  derives timing/default-dataplane views, initial Preparation and continued-batch capacity/identity
   evidence, Main publication-barrier results, resource health, evidence
   completeness, and teardown evidence. Failed Main projection preserves the
   target, last completed formal ACTIVE frontier, publication, partial-state,
@@ -68,15 +72,20 @@ remains future Tool work.
 Generated execution writes the detached invocation handoff after Runner
 cleanup. The handoff therefore consumes cached sealed-artifact scalars and can
 report a `cleaned` lifecycle without retaining or dereferencing the artifact
-mmap. Preparation includes complete artifact decode and plan materialization,
-capacity and startup identity validation, complete semantic map prewriting, and
+mmap. Preparation includes the first delivery's complete decode and plan materialization,
+capacity and startup identity validation, semantic map prewriting, and
 physical boundary-0 activation. Formal Main begins at boundary 1, records
 compact pre/publication/post barrier timing, and enqueues identity work to a
 background writer. Missing timing remains unavailable.
 
 Current Runner event names remain authoritative. Main duration comes from
 `activation_end.main_seconds`; Preparation duration comes from
-`preparation_end.duration_seconds`. No Maintenance or READY timing path remains.
+`preparation_end.duration_seconds`. Continued execution additionally shows
+`batch_load_start`, `batch_ready`, `batch_activation_start`, bounded
+`generation_reclaim` and `batch_plan_reclaimed` events. Load/prewrite spans may
+overlap Main; their durations must not be added to paced runtime elapsed time.
+The delivery section reports readiness margin and reclaim totals; historical
+Compiler/Planner/Traffic evidence survives runtime reclamation.
 
 Startup boundary 0 remains in the Preparation timeline and `startup_activations`.
 It is excluded from formal activation counts, timing summaries, Main subphases
@@ -103,5 +112,12 @@ counts. `retirement` separately reports actual group deletion requests, confirme
 group batches and summed concurrent task durations; these sums are not elapsed
 Main time. Creation includes endpoint MAC/queue/group attributes, so standalone
 MAC and DOWN calls have known zero attempts. Main activation JSON encoding is
-performed in Preparation. Fixed-origin records retain real start/completion lag;
+performed during batch construction in Preparation or Maintenance.
+Fixed-origin records retain real start/completion lag;
 the superseded recursive-anchor carry residual is unavailable for those records.
+
+Collection adds durable history to a shallow envelope; projection owns the one
+recursive detachment of caller inputs. Its derived views reuse that detached
+content instead of repeatedly copying bindings and events. Inventory and checksum
+publication use each payload digest once. The Tool still reads existing evidence
+and performs no network lifecycle work.

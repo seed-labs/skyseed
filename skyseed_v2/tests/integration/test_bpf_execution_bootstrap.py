@@ -82,7 +82,7 @@ def test_generated_definition_is_persisted_only(tmp_path, compiled_chain) -> Non
     assert handoff["manifest"] == "runtime/runner-artifact/manifest.json"
     assert handoff["format_version"] == 3
     assert handoff["encoding"] == "typed-packed-runtime-tables-v3"
-    assert handoff["realization_count"] == 2
+    assert handoff["realization_count"] == 1
     assert len(handoff["sequence_sha256"]) == 64
     assert len(handoff["manifest_sha256"]) == 64
     assert definition["simulation"]["bounded"] is True
@@ -253,5 +253,51 @@ with open(os.environ["RUNNER_SCRIPT_TEST_LOG"], "a") as stream:
     assert all("main.py" not in " ".join(args) for _, args in execution)
     assert invoke("launch.sh") == start + execution
     cleanup = invoke("cleanup.sh")
-    assert len(cleanup) == 1 and cleanup[0][0] == "docker"
-    assert cleanup[0][1][-2:] == ["down", "--remove-orphans"]
+    assert cleanup and all(executable == "docker" for executable, _ in cleanup)
+    assert all("label=com.docker.compose.project=round-b-bootstrap" in args
+               for _, args in cleanup)
+    assert all(args[0] in {"ps", "network"} for _, args in cleanup)
+
+
+@pytest.mark.parametrize("execution_fails", [False, True])
+def test_checkpoint_write_failure_never_skips_runner_cleanup(tmp_path, monkeypatch, execution_fails):
+    from types import SimpleNamespace
+    from skyseed_v2.experiment import execution as module
+    output = tmp_path / 'output'
+    probe = output / 'inspection/traffic/probe-plan.json'
+    probe.parent.mkdir(parents=True); probe.write_text('{}')
+    calls = []
+    primary = RuntimeError('execution failed')
+    class Runner:
+        def __init__(self, **kwargs): pass
+        def _enable_event_history(self, path): pass
+        def _enable_traffic_telemetry(self, path): pass
+        def prepare(self): calls.append('prepare')
+        def run(self):
+            if execution_fails: raise primary
+        def cleanup(self): calls.append('cleanup')
+        def inspection_snapshot(self): return {}
+    class Traffic:
+        def __init__(self, **kwargs): pass
+        def start(self, runner): pass
+        def stop(self): pass
+    def checkpoint(output, destination, project):
+        if 'before-cleanup' in destination.name:
+            raise OSError('checkpoint write failed')
+    monkeypatch.setattr(module, 'BpfRunner', Runner)
+    monkeypatch.setattr(module, 'TrafficProbeExecutor', Traffic)
+    monkeypatch.setattr(module, 'read_traffic_probe_plan', lambda path: SimpleNamespace(episodes=()))
+    monkeypatch.setattr(module, '_read_and_verify_execution', lambda output: (
+        {'generated_output_identity':'test', 'runner':{}}, tmp_path/'artifact',
+        {'realization_count':1, 'boundary_count':1}))
+    monkeypatch.setattr(module, '_record_container_checkpoint', checkpoint)
+    for name in ('_write_runtime_invocation_index', '_write_runtime_execution_observations', '_write_runner_inspection_handoff'):
+        monkeypatch.setattr(module, name, lambda *a, **kw: None)
+    with pytest.raises((OSError, RuntimeError)) as caught:
+        module._run_generated_bpf_experiment(output, invocation_directory=output/'inspection/runtime-runs/test')
+    assert calls == ['prepare', 'cleanup']
+    if execution_fails:
+        assert caught.value is primary
+        assert any('checkpoint write failed' in note for note in primary.__notes__)
+    else:
+        assert 'checkpoint write failed' in str(caught.value)

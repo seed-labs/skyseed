@@ -50,7 +50,7 @@ def test_mini_chain_splits_zone_handover_around_route_publication() -> None:
         for realization in realizations
         for value in realization.zone_edge_realizations
     )
-    assert len(plans) == len(realizations) == 32
+    assert len(plans) == len(realizations) == 2
     assert snapshot["formal_frame_count"] == 64
     assert any(value.phase is _ZoneEdgePhase.READINESS for value in zone_intents)
     assert any(value.phase is _ZoneEdgePhase.RETIREMENT for value in zone_intents)

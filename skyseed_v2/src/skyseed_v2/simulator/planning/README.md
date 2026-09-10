@@ -86,10 +86,8 @@ planner = Planner(
     parameter_model=parameter_model,
     route_model=route_model,
     coordination_policy=coordination_policy,
-    planning_window_policy=TimeHorizonPlanningWindowPolicy(
-        planning_horizon=timedelta(seconds=50),
-        publication_horizon=timedelta(seconds=20),
-        maximum_prehistory=timedelta(seconds=20),
+    planning_window_policy=FrameBatchPlanningWindowPolicy(
+        frames_per_batch=32,
     ),
 )
 ```
@@ -111,7 +109,7 @@ The producer uses this sequence:
 
 Each prime timestamp must be strictly before one fixed formal start and inside
 the bounded required-prehistory interval. Prime updates only physical and
-selection/acquisition warm state. It never creates a formal transition or a
+ISL and GS preparation/reservation state. It never creates a formal transition or a
 Plan.
 
 ## Model roles
@@ -129,12 +127,12 @@ The replaceable public roles are:
 Reference implementations are directly injected:
 
 - `RetainFirstInterSatelliteConnectionPlanningModel`;
-- `QualityFirstGroundStationAccessPlanningModel`;
+- `CoverageFirstGroundStationAccessPlanningModel`;
 - `HighestElevationZoneServicePlanningModel`;
 - `AccumulatedDeadbandParameterPlanningModel`;
 - `GatewayHopCountRoutePlanningModel`;
 - `DefaultCoordinationPolicy`;
-- `TimeHorizonPlanningWindowPolicy`.
+- `FrameBatchPlanningWindowPolicy`.
 
 There is no registry. Replacing one role does not transfer authority over the
 other roles.
@@ -195,22 +193,14 @@ identity and is encoded as exact days/seconds/microseconds components.
 The bootstrap Plan has no previous Plan or input-state fingerprint and replays
 from explicit empty operational state.
 
-## Window semantics
+## Frame batch semantics
 
-The canonical policy plans 50 seconds ahead of the publication frontier and
-publishes the earliest prefix of at most 20 seconds.
-
-For a 10-minute Timeline sampled every 5 seconds:
-
-- the first normal publication occurs after planning through `t=50`;
-- Plan 1 contains `t=0,5,10,15,20`;
-- Plan 2 contains `t=25,30,35,40` after planning reaches `t=70`;
-- normal publication reaches `t=560` after planning reaches `t=590`;
-- finish flushes `t=565..580` and `t=585..600`;
-- exactly 121 transitions appear in exactly 30 Plans.
-
-The physical-observation and planning frontiers advance on every accepted
-formal input. The publication frontier advances only when a Plan is created.
+The canonical policy publishes each 32-frame prefix immediately. It does not
+wait for a separate physical or publication horizon. For a 10-minute Timeline
+sampled every 5 seconds, complete batches end at t=155,315,475; finish flushes
+t=480..600. Exactly 121 transitions appear in four Plans (32/32/32/25).
+Physical-observation and planning frontiers advance on every accepted formal
+input; the publication frontier advances when the corresponding Plan is created.
 
 ## Fingerprints
 
@@ -265,6 +255,14 @@ relationship is asserted by this inventory block.
 
 ```mermaid
 classDiagram
+    class GroundStationLifecycleEvidence {
+        <<immutable public evidence value>>
+        +acquisition_duration
+        +candidate
+        +operational
+        +remaining_acquisition
+        +selected_since
+    }
     class AccumulatedDeadbandParameterPlanningModel {
         <<reference Model implementation>>
         +plan_effective_parameters()
@@ -318,6 +316,8 @@ relationship is asserted by this inventory block.
 classDiagram
     class GroundStationAccessPlanningModel {
         <<replaceable Protocol role>>
+        +acquisition_duration
+        +minimum_service_duration
         +select_ground_station_accesses()
     }
     class GroundStationRouteDemandTarget {
@@ -330,7 +330,9 @@ classDiagram
     }
     class InterSatelliteConnectionPlanningModel {
         <<replaceable Protocol role>>
+        +acquisition_duration
         +create_inter_satellite_candidate_pairs()
+        +minimum_service_duration
         +select_inter_satellite_links()
     }
     class InterSatelliteLifecycleEvidence {
@@ -375,18 +377,15 @@ classDiagram
     class ParameterKindConfiguration {
         <<immutable public value>>
         +bandwidth_bps
-        +delay_deadband_us
+        +delay_relative_threshold
         +max_staleness
         +packet_loss_ppm
-        +persistence
     }
     class ParameterPlanningMemory {
         <<immutable public value>>
         +connection_id
         +effective
         +last_update
-        +pending_delay_us
-        +pending_since
     }
     class ParameterPlanningModel {
         <<replaceable Protocol role>>
@@ -417,6 +416,7 @@ classDiagram
         <<stateful semantic Planner owner>>
         +create_physical_link_request()
         +finish()
+        +flush()
         +get_frontiers()
         +get_last_transition()
         +get_last_transition_fingerprint()
@@ -459,6 +459,7 @@ classDiagram
     class PlanningFrameEvidence {
         <<immutable detached frame evidence>>
         +ground_station_access_candidate_summary
+        +ground_station_preparations
         +inspection
         +inter_satellite_candidate_summary
         +physical_link_work_counts
@@ -495,9 +496,7 @@ classDiagram
     }
     class PlanningWindowPolicy {
         <<replaceable Protocol role>>
-        +planning_horizon
-        +publication_horizon
-        +required_prehistory()
+        +frames_per_batch
         +validate_observation_interval()
     }
     class PlanTransition {
@@ -534,8 +533,11 @@ classDiagram
         +plan
         +transition_fingerprints
     }
-    class QualityFirstGroundStationAccessPlanningModel {
+    class CoverageFirstGroundStationAccessPlanningModel {
         <<reference Model implementation>>
+        +initial_candidate_count
+        +acquisition_duration
+        +minimum_service_duration
         +select_ground_station_accesses()
     }
     class ReachableRouteOutcome {
@@ -547,14 +549,18 @@ classDiagram
     class RetainFirstInterSatelliteConfiguration {
         <<immutable public value>>
         +acquisition_duration
+        +cross_plane_neighbor_count
+        +same_plane_neighbor_span
         +desired_cross_plane_links
         +desired_same_plane_links
         +maximum_cross_plane_separation
+        +minimum_service_duration
     }
     class RetainFirstInterSatelliteConnectionPlanningModel {
         <<reference Model implementation>>
         +acquisition_duration
         +create_inter_satellite_candidate_pairs()
+        +minimum_service_duration
         +select_inter_satellite_links()
     }
     class RouteDemand {
@@ -618,12 +624,9 @@ classDiagram
         +timestamp
         +zone_id
     }
-    class TimeHorizonPlanningWindowPolicy {
+    class FrameBatchPlanningWindowPolicy {
         <<reference Model implementation>>
-        +maximum_prehistory
-        +planning_horizon
-        +publication_horizon
-        +required_prehistory()
+        +frames_per_batch
         +validate_observation_interval()
     }
     class UnreachableRouteOutcome {
@@ -676,35 +679,35 @@ classDiagram
 | `DefaultCoordinationPolicy` | `skyseed_v2.simulator.planning.DefaultCoordinationPolicy` | `coordinate()` |
 | `EffectiveConnectionParameters` | `skyseed_v2.simulator.planning.EffectiveConnectionParameters` | `bandwidth_bps`, `delay_us`, `packet_loss_ppm` |
 | `GatewayHopCountRoutePlanningModel` | `skyseed_v2.simulator.planning.GatewayHopCountRoutePlanningModel` | `create_route_demands()`, `plan_route_outcomes()`, `shutdown()` |
-| `GroundStationAccessPlanningModel` | `skyseed_v2.simulator.planning.GroundStationAccessPlanningModel` | `select_ground_station_accesses()` |
+| `GroundStationAccessPlanningModel` | `skyseed_v2.simulator.planning.GroundStationAccessPlanningModel` | `acquisition_duration`, `minimum_service_duration`, `select_ground_station_accesses()` |
 | `GroundStationRouteDemandTarget` | `skyseed_v2.simulator.planning.GroundStationRouteDemandTarget` | `ground_station_id` |
 | `HighestElevationZoneServicePlanningModel` | `skyseed_v2.simulator.planning.HighestElevationZoneServicePlanningModel` | `assign_zone_service()` |
-| `InterSatelliteConnectionPlanningModel` | `skyseed_v2.simulator.planning.InterSatelliteConnectionPlanningModel` | `create_inter_satellite_candidate_pairs()`, `select_inter_satellite_links()` |
+| `InterSatelliteConnectionPlanningModel` | `skyseed_v2.simulator.planning.InterSatelliteConnectionPlanningModel` | `acquisition_duration`, `create_inter_satellite_candidate_pairs()`, `minimum_service_duration`, `select_inter_satellite_links()` |
 | `InterSatelliteLifecycleEvidence` | `skyseed_v2.simulator.planning.InterSatelliteLifecycleEvidence` | `acquisition_duration`, `candidate`, `operational`, `remaining_acquisition`, `selected_since` |
 | `InterSatelliteSelection` | `skyseed_v2.simulator.planning.InterSatelliteSelection` | `decisions`, `selected_candidates`, `underfilled_slots` |
 | `OperationalConnection` | `skyseed_v2.simulator.planning.OperationalConnection` | `connection_id`, `endpoint_a_to_b`, `endpoint_b_to_a` |
 | `OperationalConnectionId` | `skyseed_v2.simulator.planning.OperationalConnectionId` | `endpoint_a`, `endpoint_b`, `kind` |
 | `OperationalConnectionKind` | `skyseed_v2.simulator.planning.OperationalConnectionKind` | `GROUND_STATION_ACCESS`, `INTER_SATELLITE` |
-| `ParameterKindConfiguration` | `skyseed_v2.simulator.planning.ParameterKindConfiguration` | `bandwidth_bps`, `delay_deadband_us`, `max_staleness`, `packet_loss_ppm`, `persistence` |
-| `ParameterPlanningMemory` | `skyseed_v2.simulator.planning.ParameterPlanningMemory` | `connection_id`, `effective`, `last_update`, `pending_delay_us`, `pending_since` |
+| `ParameterKindConfiguration` | `skyseed_v2.simulator.planning.ParameterKindConfiguration` | `bandwidth_bps`, `delay_relative_threshold`, `max_staleness`, `packet_loss_ppm` |
+| `ParameterPlanningMemory` | `skyseed_v2.simulator.planning.ParameterPlanningMemory` | `connection_id`, `effective`, `last_update` |
 | `ParameterPlanningModel` | `skyseed_v2.simulator.planning.ParameterPlanningModel` | `plan_effective_parameters()` |
 | `ParameterPlanningResult` | `skyseed_v2.simulator.planning.ParameterPlanningResult` | `connections`, `established_connections`, `memory`, `parameter_updated_connections`, `withdrawn_connection_ids` |
 | `Plan` | `skyseed_v2.simulator.planning.Plan` | `end_timestamp`, `input_state_fingerprint`, `observation_interval`, `output_state_fingerprint`, `physical_world_fingerprint`, `plan_id`, `previous_plan_id`, `semantic_event_precedences`, `start_timestamp`, `transitions` |
-| `Planner` | `skyseed_v2.simulator.planning.Planner` | `create_physical_link_request()`, `finish()`, `get_frontiers()`, `get_last_transition()`, `get_last_transition_fingerprint()`, `get_published_evidence()`, `get_route_recomputation_count()`, `get_state()`, `get_state_fingerprint()`, `observe()`, `prime()`, `release_published_through()`, `required_prehistory`, `set_route_demands()`, `shutdown()` |
+| `Planner` | `skyseed_v2.simulator.planning.Planner` | `create_physical_link_request()`, `finish()`, `flush()`, `get_frontiers()`, `get_last_transition()`, `get_last_transition_fingerprint()`, `get_published_evidence()`, `get_route_recomputation_count()`, `get_state()`, `get_state_fingerprint()`, `observe()`, `prime()`, `release_published_through()`, `required_prehistory`, `set_route_demands()`, `shutdown()` |
 | `PlanningCandidateHistogram` | `skyseed_v2.simulator.planning.PlanningCandidateHistogram` | `bins`, `name`, `sample_count` |
 | `PlanningCandidateSummary` | `skyseed_v2.simulator.planning.PlanningCandidateSummary` | `feasible_count`, `histograms` |
 | `PlanningFrontiers` | `skyseed_v2.simulator.planning.PlanningFrontiers` | `physical_observation`, `planning`, `publication` |
-| `PlanningFrameEvidence` | `skyseed_v2.simulator.planning.PlanningFrameEvidence` | `ground_station_access_candidate_summary`, `inspection`, `inter_satellite_candidate_summary`, `physical_link_work_counts`, `selected_ground_station_accesses`, `selected_inter_satellite_links`, `selected_zone_service_candidates`, `timestamp`, `zone_service_candidate_summary` |
+| `PlanningFrameEvidence` | `skyseed_v2.simulator.planning.PlanningFrameEvidence` | `ground_station_access_candidate_summary`, `ground_station_preparations`, `inspection`, `inter_satellite_candidate_summary`, `physical_link_work_counts`, `selected_ground_station_accesses`, `selected_inter_satellite_links`, `selected_zone_service_candidates`, `timestamp`, `zone_service_candidate_summary` |
 | `PlanningHistogramBin` | `skyseed_v2.simulator.planning.PlanningHistogramBin` | `count`, `label` |
 | `PlanningInspection` | `skyseed_v2.simulator.planning.PlanningInspection` | `acquiring_isls`, `acquisition_completed`, `acquisition_reset`, `acquisition_started`, `feasible_isl_candidates`, `ground_station_accesses`, `operational_isls`, `rejected_isls`, `route_recomputed`, `routes_reachable`, `routes_unreachable`, `selected_isls`, `stages`, `timestamp`, `underfilled_isl_slots`, `zones_served`, `zones_unserved` |
-| `PlanningWindowPolicy` | `skyseed_v2.simulator.planning.PlanningWindowPolicy` | `planning_horizon`, `publication_horizon`, `required_prehistory()`, `validate_observation_interval()` |
+| `PlanningWindowPolicy` | `skyseed_v2.simulator.planning.PlanningWindowPolicy` | `frames_per_batch`, `validate_observation_interval()` |
 | `PlanTransition` | `skyseed_v2.simulator.planning.PlanTransition` | `established_connections`, `parameter_updated_connections`, `route_outcome_transitions`, `route_relevant`, `timestamp`, `with_route_outcome_transitions()`, `withdrawn_connection_ids`, `zone_service_transitions` |
 | `PlannedOperationalState` | `skyseed_v2.simulator.planning.PlannedOperationalState` | `operational_connections`, `route_outcomes`, `timestamp`, `zone_service_assignments` |
 | `PublishedPlanningEvidence` | `skyseed_v2.simulator.planning.PublishedPlanningEvidence` | `frames`, `frontiers`, `inspections`, `plan`, `transition_fingerprints` |
-| `QualityFirstGroundStationAccessPlanningModel` | `skyseed_v2.simulator.planning.QualityFirstGroundStationAccessPlanningModel` | `select_ground_station_accesses()` |
+| `CoverageFirstGroundStationAccessPlanningModel` | `skyseed_v2.simulator.planning.CoverageFirstGroundStationAccessPlanningModel` | `acquisition_duration`, `minimum_service_duration`, `select_ground_station_accesses()`, `initial_candidate_count` |
 | `ReachableRouteOutcome` | `skyseed_v2.simulator.planning.ReachableRouteOutcome` | `demand`, `next_hop`, `path` |
-| `RetainFirstInterSatelliteConfiguration` | `skyseed_v2.simulator.planning.RetainFirstInterSatelliteConfiguration` | `acquisition_duration`, `desired_cross_plane_links`, `desired_same_plane_links`, `maximum_cross_plane_separation` |
-| `RetainFirstInterSatelliteConnectionPlanningModel` | `skyseed_v2.simulator.planning.RetainFirstInterSatelliteConnectionPlanningModel` | `acquisition_duration`, `create_inter_satellite_candidate_pairs()`, `select_inter_satellite_links()` |
+| `RetainFirstInterSatelliteConfiguration` | `skyseed_v2.simulator.planning.RetainFirstInterSatelliteConfiguration` | `acquisition_duration`, `desired_cross_plane_links`, `desired_same_plane_links`, `maximum_cross_plane_separation`, `minimum_service_duration`, `same_plane_neighbor_span`, `cross_plane_neighbor_count` |
+| `RetainFirstInterSatelliteConnectionPlanningModel` | `skyseed_v2.simulator.planning.RetainFirstInterSatelliteConnectionPlanningModel` | `acquisition_duration`, `create_inter_satellite_candidate_pairs()`, `minimum_service_duration`, `select_inter_satellite_links()` |
 | `RouteDemand` | `skyseed_v2.simulator.planning.RouteDemand` | `source`, `target` |
 | `RouteOutcomeTransition` | `skyseed_v2.simulator.planning.RouteOutcomeTransition` | `current`, `demand`, `previous` |
 | `RoutePlanningModel` | `skyseed_v2.simulator.planning.RoutePlanningModel` | `plan_route_outcomes()`, `shutdown()` |
@@ -713,10 +716,69 @@ classDiagram
 | `SemanticEventKind` | `skyseed_v2.simulator.planning.SemanticEventKind` | `CONNECTION_ESTABLISH`, `CONNECTION_WITHDRAW`, `PARAMETER_READY`, `PARAMETER_UPDATE`, `ROUTE_CHANGE`, `ROUTE_REACHABLE`, `ROUTE_UNREACHABLE`, `ROUTE_WITHDRAW`, `ZONE_SERVICE_ASSIGN`, `ZONE_SERVICE_CHANGE`, `ZONE_SERVICE_UNASSIGN` |
 | `SemanticEventPrecedence` | `skyseed_v2.simulator.planning.SemanticEventPrecedence` | `predecessor`, `successor` |
 | `SemanticEventReference` | `skyseed_v2.simulator.planning.SemanticEventReference` | `connection_id`, `kind`, `route_demand`, `timestamp`, `zone_id` |
-| `TimeHorizonPlanningWindowPolicy` | `skyseed_v2.simulator.planning.TimeHorizonPlanningWindowPolicy` | `maximum_prehistory`, `planning_horizon`, `publication_horizon`, `required_prehistory()`, `validate_observation_interval()` |
+| `FrameBatchPlanningWindowPolicy` | `skyseed_v2.simulator.planning.FrameBatchPlanningWindowPolicy` | `frames_per_batch`, `validate_observation_interval()` |
 | `UnreachableRouteOutcome` | `skyseed_v2.simulator.planning.UnreachableRouteOutcome` | `demand`, `reason` |
 | `ZoneRouteDemandTarget` | `skyseed_v2.simulator.planning.ZoneRouteDemandTarget` | `zone_id` |
 | `ZoneServiceAssignment` | `skyseed_v2.simulator.planning.ZoneServiceAssignment` | `is_served`, `satellite_id`, `zone_id` |
 | `ZoneServicePlanningModel` | `skyseed_v2.simulator.planning.ZoneServicePlanningModel` | `assign_zone_service()` |
 | `ZoneServicePlanningResult` | `skyseed_v2.simulator.planning.ZoneServicePlanningResult` | `assignments`, `transitions` |
 | `ZoneServiceTransition` | `skyseed_v2.simulator.planning.ZoneServiceTransition` | `current_satellite_id`, `previous_satellite_id`, `zone_id` |
+
+| `GroundStationLifecycleEvidence` | `skyseed_v2.simulator.planning.GroundStationLifecycleEvidence` | `acquisition_duration`, `candidate`, `operational`, `remaining_acquisition`, `selected_since` |
+
+## Current finite computation policy
+
+Physical contact proof stays in the physical Model; Planner owns admission,
+preparation reservations and effective state. A candidate's finite
+`PhysicalContactWindow.end_timestamp` bounds proof, not physical lifetime.
+Both connection kinds reserve both endpoints while preparing. ISL retains
+2+2/K1 example selection; GS maximizes station coverage, distinct satellites,
+connection count, then continuity (pending and
+operational), then deterministic quality. Minimum future useful service is not
+an elapsed-selection timer. Zone highest-elevation policy is unchanged.
+
+Reference S3 uses 5-second preparation, 180/60-second ISL/GS minimum service,
+10% relative delay threshold and a 120-second refresh. Equality updates now;
+unchanged refresh moves memory without an event. The old integer target
+persistence state is removed. Preparation history and physical tails derive
+from these dependencies. Batch size 32 preserves formal timestamps, with no
+independent publication wait. Planner constructs validated state once, caches
+immutable semantic hashes/events, and checks required direct Coordination
+edges before grouping any necessary reachability queries. Replay equivalence,
+Compiler indexes and batch-size independence are checked in focused tests.
+
+`GroundStationLifecycleEvidence` is an immutable Planner-created observation of
+selected/pending/operational access, consumed by durable codecs and detached
+Tools. It owns no lifecycle. Published evidence v3 includes contact proof and
+GS preparation records; historical v2 remains readable.
+
+The private GS allocator certifies all three cardinality objectives before
+retained reuse; otherwise its integer min-cost solver maximizes GS coverage,
+distinct satellite access and edge count before continuity and quality.
+The search expansion helper uses a cheaper conservative capacitated matching
+only to request wider physical observations, never as the final selection.
+
+
+The Route engine retains paths only for current requests. ISL changes invalidate
+all paths; GS access changes invalidate the corresponding terminal/source
+dependencies because GSs never act as transit nodes. This reduces computed
+groups without changing outcomes or giving a cache planning authority. Existing
+observations distinguish reused requests, computed requests and destination jobs.
+
+## Finite delivery continuation
+
+`Planner.flush()` publishes the current unpublished prefix without finishing the
+Planner, changing formal timestamps, or resetting acquisition/retention/parameter
+memory. The existing Producer can stop at a cadence-aligned delivery end and
+continue later against the same finite Timeline and prediction horizon. Only
+`finish(end_timestamp=...)` at the whole Timeline end seals domain history.
+Delivered coverage is independent of the 32-frame publication policy.
+
+The reference ISL Model reuses a retained selection only when current candidate
+shape and exact degree/capacity/scope constraints prove all alternatives remain
+blocked; changed distances still come from current physical observations.
+Otherwise it performs the complete deterministic policy ordering. Rejection
+evidence retains exact identities/reasons; incidental iteration order is not a
+selection authority. GS allocation consumes existing candidate values directly.
+Route demand/request/outcome reuse invalidates on assignment, demand and graph
+dependencies; unchanged immutable outcomes emit no artificial transitions.

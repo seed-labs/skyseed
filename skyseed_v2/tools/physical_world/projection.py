@@ -20,6 +20,15 @@ def project_physical_world_data(
     if not isinstance(observation, PhysicalWorldRead):
         raise TypeError("observation must be a PhysicalWorldRead")
     data = deepcopy(observation.snapshot)
+    return _project_owned_snapshot(data, candidate_index=candidate_index)
+
+
+def _project_owned_snapshot(
+    data: dict[str, Any],
+    *,
+    candidate_index: PhysicalLinkInspectionIndex | None = None,
+) -> dict[str, Any]:
+    """Consume a fresh Tool-owned snapshot; callers retain no mutable alias."""
     add_physical_world_display_analysis(data)
     frames = data.pop("physical_frames")
     candidate_overlay = data.pop("candidate_overlay")

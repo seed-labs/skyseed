@@ -254,12 +254,10 @@ class TrafficProbeExecutor:
         self._stop.set()
         thread = self._thread
         if thread is not None:
-            thread.join(timeout=15)
-            if thread.is_alive():
-                self._terminate_all("executor-stop-timeout")
-                thread.join(timeout=5)
-            if thread.is_alive() and self._failure is None:
-                self._failure = RuntimeError("Traffic probe executor did not stop")
+            # The worker owns generator state and bounded control RPCs. Calling
+            # its teardown concurrently races signals, stream reads and evidence
+            # when Docker is slow. Let that owner finish before the final check.
+            thread.join()
         self._terminate_all("executor-finalization")
         snapshot = self.snapshot()
         if self._failure is not None:
@@ -723,7 +721,7 @@ class TrafficProbeExecutor:
         return observed
 
     def _wait_for_registration(self, generator: _RunningGenerator) -> None:
-        deadline = monotonic() + 2.0
+        deadline = monotonic() + 10.0
         while True:
             state = self._generator_state(generator)
             if state == "active":
@@ -993,24 +991,30 @@ class TrafficProbeExecutor:
         *,
         expected: str | set[str],
     ) -> str:
-        result = subprocess.run(
-            (
-                self._docker,
-                "exec",
-                generator.binding.container_id,
-                "sh",
-                "-c",
-                _CONTROL_SCRIPT,
-                "skyseed-traffic-generator-control",
-                action,
-                generator.pid_file,
-                generator.runtime_identity,
-            ),
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=2.0,
+        command = (
+            self._docker, "exec", generator.binding.container_id,
+            "sh", "-c", _CONTROL_SCRIPT, "skyseed-traffic-generator-control",
+            action, generator.pid_file, generator.runtime_identity,
         )
+        # A Docker client timeout is not an identity or packet-loss fact. Retry
+        # once with a wider RPC deadline; every attempt rechecks the same unique
+        # generator identity, including idempotent stop/cleanup actions. Preserve
+        # timeout evidence, and fail closed if the second attempt cannot finish.
+        for attempt, timeout in enumerate((2.0, 8.0), start=1):
+            try:
+                result = subprocess.run(command, check=False, capture_output=True,
+                                        text=True, timeout=timeout)
+                break
+            except subprocess.TimeoutExpired:
+                self._record(
+                    "generator_control_timeout", episode_id=generator.episode.episode_id,
+                    probe_id=generator.identity.probe_id, segment_index=generator.segment_index,
+                    action=action, attempt=attempt, timeout_seconds=timeout,
+                    retrying=attempt == 1,
+                )
+                if attempt == 2:
+                    raise
+                self._drain_io(0)
         value = result.stdout.strip()
         allowed = {expected} if isinstance(expected, str) else expected
         if result.returncode != 0 or value not in allowed:

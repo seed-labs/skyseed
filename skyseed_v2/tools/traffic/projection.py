@@ -5,9 +5,10 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from ipaddress import ip_address, ip_interface
 import json
+import os
 from math import isfinite
 from numbers import Real
 from typing import Any
@@ -25,11 +26,18 @@ from skyseed_v2.simulator.planning import (
 )
 
 from .reader import TrafficReplayRead
+from ._probe_cases import _request_cases, _ping_report_ranges
 
 
 def project_traffic_replay(observation: TrafficReplayRead) -> dict[str, Any]:
     """Bind telemetry transactions to formal physical and planned evidence."""
 
+    return _project_traffic_replay(observation)
+
+
+def _project_traffic_replay(observation, *, reader_validated=False):
+    # Only the immediate reader-to-projection composition can reuse validation.
+    # Public projections of detached mutable snapshots still validate semantics.
     if not isinstance(observation, TrafficReplayRead):
         raise TypeError("observation must be a TrafficReplayRead")
     source = observation.snapshot
@@ -54,13 +62,31 @@ def project_traffic_replay(observation: TrafficReplayRead) -> dict[str, Any]:
         nodes_by_address=nodes_by_address,
         zone_prefixes=zone_prefixes,
         activation_times=activation_times,
+        reader_validated=reader_validated,
     )
+    shell_nodes = source.get("shell_nodes", ())
+    membership = {n["node_id"]: n["shell_id"] for n in shell_nodes if n.get("shell_id")}
+    for transaction in transactions:
+        route = transaction.get("route_outcome")
+        path = [] if route is None or route["kind"] != "reachable" else [_node_id(n) for n in route["path"]]
+        observed_nodes = [telemetry["packets"][i]["node_id"] for i in
+                          (*transaction.get("request_packet_indices", ()), *transaction.get("reply_packet_indices", ()))]
+        transaction["planned_shell_ids"] = sorted({membership[n] for n in path if n in membership})
+        transaction["observed_shell_ids"] = sorted({membership[n] for n in observed_nodes if n in membership})
+        transaction["shell_ids"] = sorted(set(transaction["planned_shell_ids"]) | set(transaction["observed_shell_ids"]))
     qualification = _project_probe_qualification(
         source["qualification"],
         ping_transactions=transactions,
         telemetry_complete=telemetry["telemetry_complete"],
         telemetry_losses=telemetry["telemetry_losses"],
     )
+    shell_coverage = _runtime_shell_coverage(source.get("qualification"), transactions, membership)
+    if qualification is not None:
+        qualification["shell_coverage"] = shell_coverage
+        qualification["summary"]["coverage_status"] = (
+            "PASS" if shell_coverage and all(c["status"] in {"covered", "no-eligible-candidate"} for c in shell_coverage) else "NOT PROVEN")
+        if qualification["summary"]["status"] == "PASS" and qualification["summary"]["coverage_status"] != "PASS":
+            qualification["summary"]["status"] = "WARN"
     classifications: dict[str, int] = defaultdict(int)
     for value in transactions:
         classifications[str(value["classification"])] += 1
@@ -72,6 +98,8 @@ def project_traffic_replay(observation: TrafficReplayRead) -> dict[str, Any]:
         "formal_planning_boundaries": len(planning["formal_transitions"]),
         "packet_observations": len(telemetry["packets"]),
         "ping_transactions": len(transactions),
+        "uncertain_association_groups": sum(t["pairing_status"] == "ambiguous" for t in transactions),
+        "endpoint_delivered_transactions": sum(t.get("reply_delivery") == "endpoint-observed" and not t.get("association_uncertainty") for t in transactions),
         "planned_reachable_transactions": sum(
             value["planned_reachability"] == "reachable"
             for value in transactions
@@ -84,7 +112,7 @@ def project_traffic_replay(observation: TrafficReplayRead) -> dict[str, Any]:
         "telemetry_lost_events": telemetry["telemetry_losses"],
     }
     return {
-        "format_version": 5,
+        "format_version": 6,
         "tool": "traffic-path-replay",
         "authority": source["authority"],
         "overview": {
@@ -99,6 +127,8 @@ def project_traffic_replay(observation: TrafficReplayRead) -> dict[str, Any]:
             "classification_counts": dict(sorted(classifications.items())),
         },
         "inventory": inventory,
+        "shell_nodes": shell_nodes,
+        "shell_coverage": shell_coverage,
         "physical_evidence": {
             "coordinate_system": "WGS84-ECEF-metres",
             "frames": source["physical_frames"],
@@ -124,6 +154,61 @@ def project_traffic_replay(observation: TrafficReplayRead) -> dict[str, Any]:
             "raw_record_count": telemetry["raw_record_count"],
         },
     }
+
+
+def _runtime_shell_coverage(qualification, transactions, membership):
+    if qualification is None:
+        return []
+    plan = qualification["plan"]
+    identities = {p["probe_id"]: p for p in plan["probe_identities"]}
+    planned_coverage = {c["shell_id"]: c for c in plan.get("shell_coverage", ())}
+    result = []
+    for shell in sorted(set(membership.values())):
+        episodes = [e for e in plan["episodes"] if any(i["expected_reachable"] and any(membership.get(n) == shell for n in i["path_node_ids"]) for i in e["state_intervals"])]
+        tx = [t for t in transactions if shell in t.get("planned_shell_ids", ()) and t.get("request") is not None and t.get("generator") is not None and not t.get("association_uncertainty")]
+        evidence = planned_coverage.get(shell)
+        goals = [] if evidence is None else [dict(g) for g in evidence["goals"]]
+        for goal in goals:
+            supporting = {e["episode_id"]: e for e in episodes if identities[e["probe_id"]]["direction"] == goal["direction"] and any(c["shell_id"] == shell and c["case"] == goal["case"] for c in e.get("coverage_cases", ()))}
+            goal["observed_requests"] = sum(
+                _observes_coverage_window(t, supporting[t["generator"]["episode_id"]], goal["case"], shell, membership)
+                for t in tx if t["generator"]["episode_id"] in supporting
+                and t["generator"].get("probe_id") == supporting[t["generator"]["episode_id"]]["probe_id"])
+            goal["observed"] = bool(goal["observed_requests"])
+        directions = sorted({identities[t["generator"]["probe_id"]]["direction"] for t in tx if t["generator"].get("probe_id") in identities})
+        status = ("eligibility-not-recorded" if evidence is None else "no-eligible-candidate" if not evidence["eligible"] else
+                  "covered" if all(g["observed_requests"] or not g["eligible_candidate_observations"] for g in goals) else "coverage-gap")
+        result.append({"shell_id": shell, "status": status, "planned_episode_count": len(episodes),
+                       "planned_episode_ids": [e["episode_id"] for e in episodes], "observed_requests": len(tx),
+                       "delivered_replies": sum(t.get("reply_delivery") in {"endpoint-observed", "executor-confirmed"} for t in tx),
+                       "observed_directions": directions, "goals": goals,
+                       "reason": "Historical selection did not record per-Shell eligibility; zero selected episodes do not prove no available path." if evidence is None else evidence.get("reason"),
+                       "count_semantics": "overlapping planned-path coverage; not per-Shell executor packet totals"})
+    return result
+
+
+def _observes_coverage_window(transaction, episode, case, shell, membership):
+    request = transaction["request"]
+    value = request.get("simulation_timestamp")
+    if value is None:
+        return False
+    at = datetime.fromisoformat(value)
+    if not datetime.fromisoformat(episode["start_time"]) <= at < datetime.fromisoformat(episode["end_time"]):
+        return False
+    events = {datetime.fromisoformat(t) for t in episode.get("affected_activation_times", ())}
+    for interval in episode["state_intervals"]:
+        start, end = (datetime.fromisoformat(interval[k]) for k in ("start_time", "end_time"))
+        if not (start <= at < end and interval["expected_reachable"]
+                and any(membership.get(n) == shell for n in interval["path_node_ids"])):
+            continue
+        # A transition goal requires an observation after the relevant change,
+        # within the bounded event window. An episode-wide label is eligibility
+        # evidence only. Stable observations exclude these transition windows.
+        relevant = start in events and bool(interval.get("boundary_reasons"))
+        in_transition = relevant and at < min(end, start + timedelta(
+            seconds=max(3.0, 2 * episode.get("interval_seconds", 1.0))))
+        return in_transition if case == "transition" else not in_transition
+    return False
 
 
 def _validate_compact_planning_structure(
@@ -165,13 +250,16 @@ def _project_transactions(
     nodes_by_address: dict[str, dict[str, Any]],
     zone_prefixes: dict[str, str],
     activation_times: tuple[datetime, ...],
+    reader_validated: bool = False,
 ) -> tuple[dict[str, object], ...]:
-    cursor = _PlanningCursor(tuple(planning["formal_transitions"]))
+    cursor = _PlanningCursor(tuple(planning["formal_transitions"]),
+                             reader_validated=reader_validated)
     results: list[dict[str, object] | None] = [None] * len(values)
     requested = []
     for index, value in enumerate(values):
         request = value["request"]
-        if request is None or request["formal_boundary_timestamp"] is None:
+        published = None if request is None else (request.get("transition_boundary_timestamp") if request.get("transition_boundary_timestamp") is not None and request.get("generation_boundary_timestamp") == request.get("transition_boundary_timestamp") else request.get("formal_boundary_timestamp"))
+        if published is None:
             results[index] = _project_transaction(
                 value,
                 boundary=None,
@@ -184,7 +272,7 @@ def _project_transactions(
         else:
             requested.append(
                 (
-                    datetime.fromisoformat(request["formal_boundary_timestamp"]),
+                    datetime.fromisoformat(published),
                     index,
                     value,
                 )
@@ -209,6 +297,7 @@ def _project_transactions(
 @dataclass(slots=True)
 class _PlanningCursor:
     records: tuple[dict[str, Any], ...]
+    reader_validated: bool = False
     index: int = 0
     state: PlannedOperationalState | None = None
     boundary: dict[str, Any] | None = None
@@ -229,6 +318,8 @@ class _PlanningCursor:
             self._advance_one(self.records[self.index])
 
     def validate_final(self, planning: dict[str, Any]) -> None:
+        if self.reader_validated:
+            return
         if self.state is None:
             raise ValueError("Traffic planning evidence contains no transition")
         if (
@@ -241,28 +332,29 @@ class _PlanningCursor:
 
     def _advance_one(self, record: dict[str, Any]) -> None:
         transition_data = record["transition"]
-        transition = plan_transition_from_data(transition_data)
-        if transition.timestamp.isoformat() != record["timestamp"]:
-            raise ValueError("Traffic transition timestamp metadata differs")
-        if (
-            plan_transition_fingerprint(transition)
-            != record["transition_fingerprint"]
-        ):
-            raise ValueError("Traffic transition fingerprint differs")
-        state = apply_plan_transition(self.state, transition)
-        if (
-            planned_operational_state_fingerprint(state)
-            != record["state_fingerprint"]
-        ):
-            raise ValueError("Traffic transition state fingerprint differs")
-        if _state_summary(state) != record["state_summary"]:
-            raise ValueError("Traffic transition state summary differs")
+        if not self.reader_validated:
+            transition = plan_transition_from_data(transition_data)
+            if transition.timestamp.isoformat() != record["timestamp"]:
+                raise ValueError("Traffic transition timestamp metadata differs")
+            if (
+                plan_transition_fingerprint(transition)
+                != record["transition_fingerprint"]
+            ):
+                raise ValueError("Traffic transition fingerprint differs")
+            state = apply_plan_transition(self.state, transition)
+            if (
+                planned_operational_state_fingerprint(state)
+                != record["state_fingerprint"]
+            ):
+                raise ValueError("Traffic transition state fingerprint differs")
+            if _state_summary(state) != record["state_summary"]:
+                raise ValueError("Traffic transition state summary differs")
+            self.state = state
         _apply_compact_maps(
             transition_data,
             zone_assignments=self.zone_assignments,
             route_outcomes=self.route_outcomes,
         )
-        self.state = state
         self.boundary = record
         self.index += 1
 
@@ -336,6 +428,7 @@ def _project_transaction(
 ) -> dict[str, object]:
     request = value["request"]
     result = dict(value)
+    reply_confirmed = value.get("reply_delivery") in {"endpoint-observed", "executor-confirmed"} or ("reply_delivery" not in value and value["observed_reply"])
     if request is None:
         result.update(
             {
@@ -376,6 +469,8 @@ def _project_transaction(
             satellite_id = zone_assignments.get(source_zone)
             if satellite_id is not None:
                 source_id = _node_id(satellite_id)
+    if value.get("generator") and _zone_for_address(request["source_ipv4"], zone_prefixes) is not None:
+        source_id = value["generator"].get("physical_source_node_id") or source_id
     route = _route_outcome(route_outcomes, source_id, target)
     activation_associated = request.get("transition_boundary_timestamp") is not None
     if route is None:
@@ -388,30 +483,36 @@ def _project_transaction(
         reason = route["reason"]
         classification = (
             "unexpected-reachable"
-            if value["observed_reply"]
+            if reply_confirmed
             else "expected-unreachable"
         )
         classification_reason = (
             "runtime reply contradicts explicit planned-unreachable outcome"
-            if value["observed_reply"]
+            if reply_confirmed
             else f"explicit planned-unreachable: {reason}"
         )
     else:
         reachability = "reachable"
         reason = None
-        if value["observed_reply"]:
+        if reply_confirmed:
             classification = "observed-reachable"
             classification_reason = "reply observed for explicit reachable Route"
         elif activation_associated:
-            classification = "activation-associated-transient"
+            classification = "activation-associated-loss"
             classification_reason = (
-                "reachable loss observed within one second of a formal activation"
+                "reachable loss observed during an actual Main transition"
             )
         else:
             classification = "unexplained-reachable-loss"
             classification_reason = (
                 "explicit reachable Route had no observed reply away from activation"
             )
+    if value.get("association_uncertainty"):
+        classification = "unclassified"
+        classification_reason = "; ".join(value["association_uncertainty"])
+    elif value.get("observed_reply") and value.get("reply_delivery") == "unconfirmed":
+        classification = "unclassified"
+        classification_reason = "reply forwarding observed; delivery to source is unconfirmed"
     result.update(
         {
             "formal_boundary_timestamp": boundary["timestamp"],
@@ -574,6 +675,23 @@ def _project_probe_qualification(
         for item in execution
         if item.get("record_type") == "zone_source_migration"
     )
+    generator_events = sorted(
+        (int(item.get("launch_monotonic_ns", item["host_monotonic_ns"])), 1)
+        if item["record_type"] == "generator_launched" else
+        (int(item.get("stop_monotonic_ns", item["host_monotonic_ns"])), -1)
+        for item in execution
+        if item.get("record_type") in {"generator_launched", "generator_stopped"}
+    )
+    active_generators = peak_generators = 0
+    for _, change in generator_events:
+        active_generators += change
+        peak_generators = max(peak_generators, active_generators)
+    policy = plan.get("qualification_policy", {})
+    maximum_disruption = float(os.environ.get("SKYSEED_TRAFFIC_MAX_TRANSITION_DISRUPTION_SECONDS",
+        policy.get("maximum_transition_disruption_seconds", 2.0)))
+    if not isfinite(maximum_disruption) or maximum_disruption <= 0:
+        raise ValueError("maximum transition disruption must be finite and positive")
+    report_ranges = _ping_report_ranges(execution)
     episode_results = []
     activation_anomalies: dict[str, int] = defaultdict(int)
     for episode_id, episode in episodes.items():
@@ -613,63 +731,29 @@ def _project_probe_qualification(
             ),
             default=0.0,
         )
-        consecutive = 0
-        consecutive_activation_associated = False
-        longest_consecutive = 0
-        recovered_isolated = False
-        recovered_transient = False
-        recovered_activation_transient = False
-        final_reachable_run = 0
-        final_activation_associated = False
-        expected_unreachable_observations = 0
-        migration_observations = 0
-        for item in sorted(
-            observations, key=lambda record: int(record["host_monotonic_ns"])
-        ):
-            observation = item.get("observation")
-            timestamp_ns = int(item["host_monotonic_ns"])
-            in_migration = any(
-                migration["episode_id"] == episode_id
-                and int(migration["migration_start_monotonic_ns"])
-                <= timestamp_ns
-                <= int(migration["migration_end_monotonic_ns"])
-                for migration in migration_records
-            )
-            if in_migration:
-                migration_observations += 1
-                continue
-            if observation in {"timeout", "network-error"}:
-                raw_published = item.get("published_active_frontier")
-                if not isinstance(raw_published, str):
-                    continue
-                published_frontier = datetime.fromisoformat(raw_published)
-                if actual_frontier is None or published_frontier > actual_frontier:
-                    continue
-                state = _planned_episode_state(episode, published_frontier)
-                if state is not None and state.get("expected_reachable") is False:
-                    expected_unreachable_observations += 1
-                    continue
+        cases = _request_cases(episode, records, ping_transactions, activations, migration_records,
+                               maximum_disruption_seconds=maximum_disruption, report_ranges=report_ranges)
+        consecutive = longest_consecutive = 0
+        recovered_isolated = recovered_transient = False
+        for case in cases:
+            if case["classification"] == "unexplained-reachable-loss":
                 consecutive += 1
                 longest_consecutive = max(longest_consecutive, consecutive)
-                final_reachable_run = consecutive
-                correlated = _activation_for_timestamp(timestamp_ns, switches)
-                if correlated is not None:
-                    activation_anomalies[correlated] += 1
-                    consecutive_activation_associated = True
-                    final_activation_associated = True
-            elif observation == "reply":
-                if consecutive:
-                    if consecutive_activation_associated:
-                        recovered_activation_transient = True
-                    elif consecutive == 1:
-                        recovered_isolated = True
-                    else:
-                        recovered_transient = True
+            else:
+                recovered_isolated |= consecutive == 1
+                recovered_transient |= consecutive > 1
                 consecutive = 0
-                consecutive_activation_associated = False
-                final_reachable_run = 0
-                final_activation_associated = False
-        longest_consecutive = max(longest_consecutive, consecutive)
+            transaction = case.pop("transaction")
+            if transaction is not None:
+                transaction["executor_conformance"] = case["classification"]
+                if case["classification"] == "expected-handover-disturbance":
+                    transaction["classification"] = case["classification"]
+                    transaction["classification_reason"] = "actual relevant transition, bounded disruption and observed recovery"
+                    transaction["transition_recovery"] = case["recovery"]
+        final_reachable_run = consecutive
+        expected_unreachable_observations = sum(c["classification"] == "expected-unreachable" for c in cases)
+        migration_observations = sum(c["actual_transition_association"] is not None and
+                                    c["actual_transition_association"]["kind"] == "actual-generator-migration" for c in cases)
         launch_records = [
             item
             for item in records
@@ -714,18 +798,15 @@ def _project_probe_qualification(
             classifications.append("expected-unreachable")
         if final_reachable_run >= 3:
             classifications.append("persistent-blackhole")
-        elif final_reachable_run:
-            classifications.append(
-                "transient-activation-associated-disruption"
-                if final_activation_associated
-                else "transient-disruption"
-            )
-        if recovered_activation_transient:
-            classifications.append("transient-activation-associated-disruption")
-        if recovered_transient:
+        elif final_reachable_run or recovered_transient:
             classifications.append("transient-disruption")
         if recovered_isolated:
             classifications.append("isolated-loss")
+        for label in ("expected-handover-disturbance", "unexpected-reachable", "unclassified"):
+            if any(c["classification"] == label for c in cases):
+                classifications.append(label)
+        if sent > len(cases):
+            classifications.append("incomplete-request-evidence")
         if not classifications:
             classifications.append(
                 "not-executed-outside-active-horizon"
@@ -760,7 +841,13 @@ def _project_probe_qualification(
                 "longest_receive_gap_seconds": longest_gap,
                 "longest_consecutive_loss": longest_consecutive,
                 "expected_unreachable_observations": expected_unreachable_observations,
-                "migration_observations_excluded": migration_observations,
+                "expected_unreachable_requests": expected_unreachable_observations,
+                "conformance_unit": "distinct generator segment and ICMP sequence; report duplicates and late replies reconciled",
+                "migration_observations_excluded": 0,
+                "migration_associated_requests": migration_observations,
+                "request_conformance": cases,
+                "unresolved_sent_request_count": max(0, sent - len(cases)),
+                "conformance_counts": dict(sorted((label, sum(c["classification"] == label for c in cases)) for label in {c["classification"] for c in cases})),
                 "generator_segments": len(launch_records),
                 "cleanup_complete": cleanup_complete,
                 "telemetry_transactions": telemetry_transactions,
@@ -821,7 +908,7 @@ def _project_probe_qualification(
         if persistent_failures or infrastructure_failures or not evidence_complete
         else "PASS"
     )
-    benign = {"pass", "not-executed-outside-active-horizon", "expected-unreachable"}
+    benign = {"pass", "not-executed-outside-active-horizon", "expected-unreachable", "expected-handover-disturbance"}
     if status == "PASS" and any(
         any(label not in benign for label in item["classifications"])
         for item in episode_results
@@ -830,6 +917,13 @@ def _project_probe_qualification(
     return {
         "summary": {
             "status": status,
+            "qualification_policy": {"maximum_transition_disruption_seconds": maximum_disruption,
+                "requires": "actual relevant transition + bounded duration + recovery of the logical probe",
+                "historical_missing_request_time": "bracket -D/-O outstanding reports with recorded host clocks; require constant planned reachability throughout request window, otherwise uncertain"},
+            "raw_executor_totals_authority": "generator_stopped sent/received; not packet-hop or conformance counts",
+            "global_budget": plan.get("global_budget"),
+            "planned_peak_concurrent_episodes": plan["planning"].get("maximum_concurrent_episode_bound"),
+            "observed_peak_concurrent_generators": peak_generators,
             "plan_revision_id": horizon["revision_id"],
             "probe_plan_construction_duration_seconds": plan["planning"][
                 "duration_seconds"
@@ -920,16 +1014,9 @@ def _episode_execution_disposition(records: list[dict[str, Any]]) -> str:
 def _transaction_matches_generator(
     transaction: Mapping[str, Any], launch: Mapping[str, Any]
 ) -> bool:
-    for direction_name in ("request", "reply"):
-        direction = transaction.get(direction_name)
-        if (
-            isinstance(direction, Mapping)
-            and direction.get("source_ipv4") == launch.get("source_ipv4")
-            and direction.get("destination_ipv4")
-            == launch.get("destination_ipv4")
-        ):
-            return True
-    return False
+    generator = transaction.get("generator")
+    return bool(generator and generator.get("episode_id") == launch.get("episode_id")
+                and generator.get("segment_index") == launch.get("segment_index"))
 
 
 def _planned_episode_state(

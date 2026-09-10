@@ -204,20 +204,22 @@ def _validate_required_ordering(
     successors = {value: set() for value in events}
     for precedence in actual:
         successors[precedence.predecessor].add(precedence.successor)
+    # The built-in policy returns these exact edges. Only missing direct edges
+    # require reachability, grouped by predecessor for custom policies.
+    missing_by_source = {}
     for precedence in required:
-        target = precedence.successor
-        pending = [precedence.predecessor]
+        if precedence.successor not in successors[precedence.predecessor]:
+            missing_by_source.setdefault(precedence.predecessor, set()).add(precedence.successor)
+    for source, targets in missing_by_source.items():
+        pending = [source]
         visited = set()
-        while pending and target not in visited:
+        while pending and not targets <= visited:
             current = pending.pop()
-            if current in visited:
-                continue
-            visited.add(current)
-            pending.extend(successors[current] - visited)
-        if target not in visited:
-            raise ValueError(
-                "CoordinationPolicy omitted required semantic event ordering"
-            )
+            if current not in visited:
+                visited.add(current)
+                pending.extend(successors[current] - visited)
+        if not targets <= visited:
+            raise ValueError('CoordinationPolicy omitted required semantic event ordering')
 
 
 def _path_edges(path) -> tuple[tuple, ...]:
@@ -254,22 +256,23 @@ def _event_semantic_key(event: SemanticEventReference) -> tuple:
     return event.kind.value, identity
 
 
-def _event_order_key(event: SemanticEventReference) -> tuple:
-    order = {
-        SemanticEventKind.CONNECTION_ESTABLISH: 0,
-        SemanticEventKind.PARAMETER_READY: 1,
-        SemanticEventKind.PARAMETER_UPDATE: 2,
-        SemanticEventKind.ZONE_SERVICE_ASSIGN: 3,
-        SemanticEventKind.ZONE_SERVICE_CHANGE: 3,
-        SemanticEventKind.ROUTE_REACHABLE: 4,
-        SemanticEventKind.ROUTE_CHANGE: 4,
-        SemanticEventKind.ROUTE_WITHDRAW: 5,
-        SemanticEventKind.ROUTE_UNREACHABLE: 6,
-        SemanticEventKind.ZONE_SERVICE_UNASSIGN: 7,
-        SemanticEventKind.CONNECTION_WITHDRAW: 8,
-    }
-    return order[event.kind], _event_semantic_key(event)[1]
+_EVENT_ORDER = {
+    SemanticEventKind.CONNECTION_ESTABLISH: 0,
+    SemanticEventKind.PARAMETER_READY: 1,
+    SemanticEventKind.PARAMETER_UPDATE: 2,
+    SemanticEventKind.ZONE_SERVICE_ASSIGN: 3,
+    SemanticEventKind.ZONE_SERVICE_CHANGE: 3,
+    SemanticEventKind.ROUTE_REACHABLE: 4,
+    SemanticEventKind.ROUTE_CHANGE: 4,
+    SemanticEventKind.ROUTE_WITHDRAW: 5,
+    SemanticEventKind.ROUTE_UNREACHABLE: 6,
+    SemanticEventKind.ZONE_SERVICE_UNASSIGN: 7,
+    SemanticEventKind.CONNECTION_WITHDRAW: 8,
+}
 
+
+def _event_order_key(event: SemanticEventReference) -> tuple:
+    return _EVENT_ORDER[event.kind], _event_semantic_key(event)[1]
 
 def _precedence_key(value: SemanticEventPrecedence) -> tuple:
     return _event_order_key(value.predecessor), _event_order_key(value.successor)

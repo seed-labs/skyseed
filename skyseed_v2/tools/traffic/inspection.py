@@ -2,18 +2,19 @@
 
 from __future__ import annotations
 
-from hashlib import sha256
+from hashlib import file_digest
 import os
 from pathlib import Path
 import resource
 from time import perf_counter
 from typing import Any
 
-from tools._html import write_json, write_text
+from tools._html import _write_compact_json, write_json, write_text
 
-from .projection import project_traffic_replay
+from .projection import _project_traffic_replay
 from .reader import read_traffic_replay
 from .renderer import render_traffic_replay_page
+from ._spatial import _write_spatial_assets
 
 
 def collect_traffic_replay_data(
@@ -25,10 +26,11 @@ def collect_traffic_replay_data(
     probe_plan_path: Path | None = None,
     probe_execution_path: Path | None = None,
     runner_events_path: Path | None = None,
+    physical_link_inspection_path: Path | None = None,
 ) -> dict[str, Any]:
     """Read detached durable artifacts and build one replay projection."""
 
-    return project_traffic_replay(
+    return _project_traffic_replay(
         read_traffic_replay(
             telemetry_path,
             physical_frames_path,
@@ -38,7 +40,9 @@ def collect_traffic_replay_data(
             probe_plan_path,
             probe_execution_path,
             runner_events_path,
-        )
+            physical_link_inspection_path,
+        ),
+        reader_validated=True,
     )
 
 
@@ -52,10 +56,15 @@ def write_traffic_replay_tool(
     probe_plan_path: Path | None = None,
     probe_execution_path: Path | None = None,
     runner_events_path: Path | None = None,
+    physical_link_inspection_path: Path | None = None,
 ) -> dict[str, object]:
     """Write one dependency-free traffic evidence bundle."""
 
     started = perf_counter()
+    source_files = (*sorted(Path(__file__).parent.glob("*.py")),
+                    *(Path(__file__).parent.parent / name for name in ("_shell_display.py", "_spatial_display.py", "_display_geometry.py", "_earth_reference.py")))
+    tool_source = {"projection_version": "compact-generation-identity-v4-spatial-v2",
+                   "files": {p.name: _digest(p) for p in source_files}}
     telemetry = Path(telemetry_path).resolve()
     frames = Path(physical_frames_path).resolve()
     planning = Path(planning_path).resolve()
@@ -79,6 +88,7 @@ def write_traffic_replay_tool(
         compiler,
         *((workload,) if workload is not None else ()),
         *(value for value in optional if value is not None),
+        *((Path(physical_link_inspection_path),) if physical_link_inspection_path is not None else ()),
     )
     output = Path(directory).resolve()
     output.mkdir(parents=True, exist_ok=True)
@@ -97,7 +107,11 @@ def write_traffic_replay_tool(
         probe_plan,
         probe_execution,
         runner_events,
+        physical_link_inspection_path,
     )
+    if tool_source["files"] != {p.name: _digest(p) for p in source_files}:
+        raise RuntimeError("Traffic Tool source changed during replay")
+    data["tool_source"] = tool_source
     data["tool_accounting"] = {
         "input_bytes": sum(path.stat().st_size for path in inputs),
         "collection_seconds": perf_counter() - started,
@@ -106,8 +120,9 @@ def write_traffic_replay_tool(
         )
         * 1024,
     }
+    spatial_paths = _write_spatial_assets(data, output)
     page = render_traffic_replay_page(data)
-    write_json(data_path, data)
+    _write_compact_json(data_path, data)
     write_text(page_path, page)
     inventory = data["inventory"]
     overview = data["overview"]
@@ -124,7 +139,8 @@ def write_traffic_replay_tool(
             )
         ),
     )
-    payloads = (data_path, page_path, summary_path)
+    payloads = (data_path, page_path, summary_path, *spatial_paths)
+    payload_records = [_file_record(path, output) for path in payloads]
     write_json(
         inventory_path,
         {
@@ -134,6 +150,9 @@ def write_traffic_replay_tool(
                 "physical_frames": _input_record(frames, output),
                 "planning": _input_record(planning, output),
                 "bpf_compiler": _input_record(compiler, output),
+                **({} if physical_link_inspection_path is None else {
+                    "physical_links": _input_record(Path(physical_link_inspection_path).resolve(), output)
+                }),
                 **(
                     {}
                     if workload is None
@@ -151,15 +170,15 @@ def write_traffic_replay_tool(
                     }
                 ),
             },
-            "files": [_file_record(path, output) for path in payloads],
+            "files": payload_records,
         },
     )
     checksum_files = (*payloads, inventory_path)
     write_text(
         checksum_path,
         "".join(
-            f"{_digest(path)}  {path.relative_to(output).as_posix()}\n"
-            for path in checksum_files
+            f"{record['sha256']}  {record['path']}\n"
+            for record in (*payload_records, _file_record(inventory_path, output))
         ),
     )
     elapsed = perf_counter() - started
@@ -208,7 +227,8 @@ def _file_record(path: Path, root: Path) -> dict[str, object]:
 
 
 def _digest(path: Path) -> str:
-    return sha256(path.read_bytes()).hexdigest()
+    with path.open("rb") as stream:
+        return file_digest(stream, "sha256").hexdigest()
 
 
 __all__ = ["collect_traffic_replay_data", "write_traffic_replay_tool"]

@@ -33,6 +33,29 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 TOOL_SOURCES = tuple(sorted((PROJECT_ROOT / "tools/observation").glob("*.py")))
 
 
+@pytest.mark.parametrize("with_planner", [False, True])
+def test_prediction_queries_do_not_become_prehistory_or_formal_transitions(with_planner):
+    from datetime import datetime, timedelta, timezone
+    from tools.observation.projection import _timeline_summary
+
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    records = [dict(component="physical-world", stage="physical-projection",
+                    scope={"timestamp": (start+timedelta(seconds=seconds)).isoformat()}, work={})
+               for seconds in (-5, -2.5, 0, 2.5, 5, 7.5, 10, 12.5, 15)]
+    if with_planner:
+        records.extend(dict(component="planner", stage="planning-total",
+                            scope={"timestamp": (start+timedelta(seconds=seconds)).isoformat()},
+                            work={"formal_transitions": 1}) for seconds in (0, 5, 10))
+    value = _timeline_summary(tuple(records), {"timeline_start": start.isoformat(),
+        "timeline_end": (start+timedelta(seconds=10)).isoformat(), "observation_interval_seconds": 5})
+    assert value["physical_frame_unit_count"] == 3
+    assert value["prehistory_physical_frame_unit_count"] == 1
+    assert value["additional_physical_query_unit_count"] == 5
+    assert value["formal_transition_unit_count"] == (3 if with_planner else 0)
+    assert value["simulation_start_timestamp"] == start.isoformat()
+    assert value["simulation_end_timestamp"] == (start+timedelta(seconds=10)).isoformat()
+
+
 def _records(path: Path) -> Path:
     observer = _ExecutionObserver(
         {"scenario": "observation-tool-test", "formal_interval_seconds": 5}
@@ -130,7 +153,7 @@ def _records(path: Path) -> Path:
                     work={"plans": 1, "transitions": 1},
                 )
     for stage, role, duration in (
-        ("plan-lineage-and-replay", "stage", 0.1),
+        ("plan-lineage", "stage", 0.1),
         ("semantic-to-bpf-lowering", "stage", 0.2),
         ("compile-total", "rollup", 0.35),
     ):
@@ -541,7 +564,7 @@ def test_real_pipeline_and_runtime_wrapper_emit_owned_observation_evidence(
         "physical-projection",
     } <= {value["stage"] for value in by_component["physical-world"]}
     assert {value["stage"] for value in by_component["physical-link"]} == {
-        "physical-link-observation"
+        "physical-link-observation", "physical-contact-prediction", "candidate-search", "candidate-search-total"
     }
     assert {
         "physical-input-validation",
@@ -558,7 +581,7 @@ def test_real_pipeline_and_runtime_wrapper_emit_owned_observation_evidence(
         "planning-total",
     } <= {value["stage"] for value in by_component["planner"]}
     assert {value["stage"] for value in by_component["compiler"]} == {
-        "plan-lineage-and-replay",
+        "plan-lineage",
         "event-and-world-indexing",
         "transition-lowering",
         "constraint-folding-and-materialization",
@@ -580,10 +603,10 @@ def test_real_pipeline_and_runtime_wrapper_emit_owned_observation_evidence(
     data = collect_observation_data(observation_path)
     assert data["timeline"]["formal_transition_unit_count"] == 4
     assert data["timeline"]["physical_frame_unit_count"] == 4
-    assert data["timeline"]["plan_publication_unit_count"] == len(plans) == 2
+    assert data["timeline"]["plan_publication_unit_count"] == len(plans) == 1
     assert data["timeline"]["compiler_realization_unit_count"] == (
         len(realizations)
-    ) == 2
+    ) == 1
     handoff = json.loads(
         (output / "inspection/runner/runner-invocation.json").read_text(
             encoding="utf-8"
@@ -619,9 +642,9 @@ def test_compiler_observation_is_one_shot_and_semantically_inert() -> None:
     )
     assert len(records) == len(plans) * 7
     assert {value["phase"] for value in records} == {"one-shot"}
-    assert {value["scope"]["compile_index"] for value in records} == {0, 1}
+    assert {value["scope"]["compile_index"] for value in records} == set(range(len(plans)))
     assert {value["stage"] for value in records} == {
-        "plan-lineage-and-replay",
+        "plan-lineage",
         "event-and-world-indexing",
         "transition-lowering",
         "constraint-folding-and-materialization",

@@ -240,7 +240,7 @@ def test_qualification_classifies_only_active_published_runtime_evolution():
 
     assert by_id["episode-isolated"]["classifications"] == ["isolated-loss"]
     assert by_id["episode-activation"]["classifications"] == [
-        "transient-activation-associated-disruption"
+        "transient-disruption"
     ]
     assert by_id["episode-blackhole"]["classifications"] == [
         "persistent-blackhole"

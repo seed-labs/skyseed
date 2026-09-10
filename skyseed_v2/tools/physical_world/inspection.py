@@ -12,7 +12,7 @@ from tools._history import read_sealed_physical_frames
 from tools._inspection_evidence import read_physical_link_inspection_index
 
 from .artifact_writer import write_physical_world_artifacts
-from .projection import project_physical_world_data
+from .projection import _project_owned_snapshot
 from .reader import read_physical_world
 from .renderer import render_physical_world_page
 
@@ -39,7 +39,7 @@ def collect_physical_world_data(
             Path(physical_link_inspection_path)
         )
     )
-    data = project_physical_world_data(
+    data = _project_owned_snapshot(
         read_physical_world(
             physical_world,
             physical_frames=frames,
@@ -47,11 +47,9 @@ def collect_physical_world_data(
             physical_link_observation=physical_link_observation,
             physical_link_model=physical_link_model,
             model_descriptors=model_descriptors,
-        ),
+        ).snapshot,
         candidate_index=candidate_index,
     )
-    if frames:
-        data["_physical_frames"] = frames
     data["_candidate_evidence_path"] = (
         None
         if physical_link_inspection_path is None

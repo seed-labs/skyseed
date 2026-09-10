@@ -147,6 +147,10 @@ class _GeometricPhysicalCore:
         "_static_geometry",
         "_ground_station_index",
         "_ground_station_positions",
+        "_batch",
+        "_prediction",
+        "_frame_cache",
+        "_query_work",
     )
 
     def __init__(
@@ -161,6 +165,10 @@ class _GeometricPhysicalCore:
     ) -> None:
         if not isinstance(physical_world, PhysicalWorld):
             raise TypeError("physical_world must be a PhysicalWorld")
+        self._batch = None
+        self._prediction = None
+        self._frame_cache = {}
+        self._query_work = {}
         self._physical_world = physical_world
         configuration = validate_geometric_physical_configuration(
             maximum_isl_distance_m=maximum_isl_distance_m,
@@ -213,7 +221,151 @@ class _GeometricPhysicalCore:
             self._static_geometry.expected_node_ids, positions
         )
 
-    def compute(
+    def _prepare_batch(self, request):
+        from ._batched_geometry import _BatchedPhysicalGeometry
+        if self._batch is None or self._batch.pairs != request.inter_satellite_pairs:
+            self._batch = _BatchedPhysicalGeometry(self, request, relation=_isl_relation,
+                radius_bounds=_spatial_radius_bounds, maximum_slant=_maximum_eligible_slant_distance_m)
+        return self._batch
+
+    def compute(self, timestamp, positions, request, *, ground_station_ids=None):
+        if ground_station_ids is not None:
+            # Restricted GS query retains the same exact scalar implementation.
+            return self._compute_scalar(timestamp, positions, request,
+                                        ground_station_ids=ground_station_ids)
+        positions = self.validate_positions(positions)
+        batch = self._prepare_batch(request)
+        # One frame, one world/core, one prediction and exact immutable inputs.
+        # Preserve a value snapshot as callers may supply a mutable mapping.
+        identity = timestamp, tuple(positions.items()), batch, self._prediction
+        cache = self._frame_cache
+        if cache.get("identity") != identity:
+            cache = self._frame_cache = {"identity": identity}
+        work = self._query_work = {}
+        if "arrays" not in cache:
+            cache["arrays"] = batch.arrays(positions)
+        satellites = cache["arrays"]
+        prediction = self._prediction
+        def window(kind, key):
+            return None if prediction is None else prediction.window(kind, key, timestamp)
+        def meets_tail(kind, key, duration):
+            if not duration:
+                return True
+            value = window(kind, key)
+            return value is not None and value.covers(timestamp, timestamp + duration)
+        isl_key = ("isl", request.cross_plane_neighbor_count,
+                   request.inter_satellite_minimum_contact_duration,
+                   request.retained_inter_satellite_pairs)
+        if isl_key not in cache:
+            indices, distances, evaluated_isl = batch.isl(satellites)
+            all_isl_count = len(indices)
+            keep = set(map(int, indices))
+            rejected_isl = 0
+            if request.cross_plane_neighbor_count is not None:
+                groups, keep = {}, set()
+                retained = set(request.retained_inter_satellite_pairs)
+                planes = self._static_geometry.satellite_planes
+                for index, distance in zip(indices, distances):
+                    index = int(index)
+                    first, second = batch.pairs[index]
+                    if batch.relations[index].same_plane or (first, second) in retained:
+                        keep.add(index)
+                    elif meets_tail('isl', batch.pairs[index], request.inter_satellite_minimum_contact_duration):
+                        groups.setdefault((first, planes[second].orbit_key), []).append((float(distance), index))
+                        groups.setdefault((second, planes[first].orbit_key), []).append((float(distance), index))
+                    else:
+                        rejected_isl += 1
+                for values in groups.values():
+                    keep.update(i for _, i in sorted(values)[:request.cross_plane_neighbor_count])
+            isl = tuple(_candidate_from_geometry(InterSatelliteLinkCandidate,
+                *batch.pairs[int(i)], batch.relations[int(i)].same_plane,
+                batch.relations[int(i)].cyclic_plane_separation, float(d),
+                ceil(float(d) / self._propagation_speed_m_per_s * 1_000_000.0),
+                window('isl', batch.pairs[int(i)]),
+            ) for i, d in zip(indices, distances) if int(i) in keep)
+            cache[isl_key] = isl, evaluated_isl, all_isl_count, rejected_isl
+            work['inter_satellite_geometry_pairs_computed'] = evaluated_isl
+        else:
+            work['inter_satellite_geometry_pairs_reused'] = cache[isl_key][1]
+        isl, evaluated_isl, all_isl_count, rejected_isl = cache[isl_key]
+        ground, zone = (), ()
+        evaluated_ground = evaluated_zone = all_ground_count = rejected_ground = rank_omitted = 0
+        if request.include_ground_station_access:
+            if "ground_geometry" not in cache:
+                cache["ground_geometry"] = batch.surface(satellites)
+                work['ground_station_geometry_pairs_computed'] = cache['ground_geometry'][3]
+            else:
+                work['ground_station_geometry_pairs_reused'] = cache['ground_geometry'][3]
+            rows, distances, elevations, evaluated_ground = cache['ground_geometry']
+            all_ground_count = len(rows)
+            key = ("ground_groups", request.ground_station_minimum_contact_duration,
+                   request.retained_ground_station_pairs)
+            if key not in cache:
+                groups, retained_rows = {}, set()
+                retained = set(request.retained_ground_station_pairs)
+                rejected = set()
+                for i, ((a, g), distance) in enumerate(zip(rows, distances)):
+                    if meets_tail('ground', int(a)*len(batch.stations)+int(g), request.ground_station_minimum_contact_duration):
+                        groups.setdefault(int(g), []).append((float(distance), int(a), i))
+                    else:
+                        rejected.add(i)
+                    if (batch.stations[int(g)], batch.satellites[int(a)]) in retained:
+                        retained_rows.add(i)
+                cache[key] = (tuple(tuple(i for _, _, i in sorted(values)) for values in groups.values()),
+                              retained_rows, len(rejected-retained_rows))
+                work['ground_station_contact_rows_computed'] = len(rows)
+            else:
+                work['ground_station_contact_rows_reused'] = len(rows)
+            groups, retained_rows, rejected_ground = cache[key]
+            if request.ground_station_candidate_limit is None:
+                chosen = range(len(rows))
+                rejected_ground = 0
+            else:
+                keep = set(retained_rows)
+                for values in groups:
+                    keep.update(values[:request.ground_station_candidate_limit])
+                chosen = sorted(keep)
+                rank_omitted = all_ground_count - len(chosen) - rejected_ground
+            objects = cache.setdefault("ground_objects", {})
+            old_count = len(objects)
+            for i in chosen:
+                if i not in objects:
+                    a, g = map(int, rows[i]); d, e = float(distances[i]), float(elevations[i])
+                    objects[i] = _candidate_from_geometry(GroundStationAccessCandidate,
+                        batch.stations[g], batch.satellites[a], d, e,
+                        ceil(d/self._propagation_speed_m_per_s*1_000_000.0),
+                        window('ground', a*len(batch.stations)+g))
+            ground = tuple(sorted((objects[i] for i in chosen), key=lambda c: (
+                c.ground_station_id.asn, c.ground_station_id.entity_id,
+                c.satellite_id.asn, c.satellite_id.entity_id)))
+            work['ground_station_candidate_objects_computed'] = len(objects)-old_count
+            work['ground_station_candidate_objects_reused'] = len(ground)-(len(objects)-old_count)
+        if request.include_zone_service:
+            if "zone" not in cache:
+                rows, distances, elevations, evaluated_zone = batch.surface(satellites, zones=True)
+                zone = tuple(_candidate_from_geometry(ZoneServiceCandidate,
+                    batch.zones[int(z)].zone.zone_id, batch.satellites[int(a)], float(d), float(e),
+                    ceil(float(d)/self._propagation_speed_m_per_s*1_000_000.0),
+                ) for (a, z), d, e in zip(rows, distances, elevations))
+                zone = tuple(sorted(zone, key=lambda c: (c.zone_id, c.satellite_id.asn, c.satellite_id.entity_id)))
+                cache['zone'] = zone, evaluated_zone
+                work['zone_service_geometry_pairs_computed'] = evaluated_zone
+            else:
+                work['zone_service_geometry_pairs_reused'] = cache['zone'][1]
+            zone, evaluated_zone = cache['zone']
+        work.update(ground_station_pairs_rank_omitted=rank_omitted,
+                    ground_station_pairs_contact_rejected=rejected_ground,
+                    inter_satellite_pairs_contact_rejected=rejected_isl,
+                    inter_satellite_pairs_rank_omitted=all_isl_count-len(isl)-rejected_isl)
+        return _candidate_from_geometry(PhysicalLinkObservation, timestamp, isl, ground, zone,
+            PhysicalLinkWorkCounts(
+                len(batch.pairs), evaluated_isl, len(isl),
+                len(batch.satellites)*len(batch.stations) if request.include_ground_station_access else 0,
+                evaluated_ground, len(ground),
+                len(batch.satellites)*len(batch.zones) if request.include_zone_service else 0,
+                evaluated_zone, len(zone), all_ground_count-len(ground), all_isl_count-len(isl)))
+
+    def _compute_scalar(
         self,
         timestamp: datetime,
         positions: Mapping[NodeId, EarthFixedPosition],
@@ -520,6 +672,20 @@ def prepare_legacy_isl_pairs(
             key=lambda pair: (_node_key(pair[0]), _node_key(pair[1])),
         )
     )
+
+
+def _candidate_from_geometry(value_type, *fields):
+    """Freeze facts produced by validated static identities and exact geometry.
+
+    Public constructors retain their caller-input checks. This private producer
+    has already validated positions/configuration and computed finite feasible
+    rows, canonical ISL pairs, and typed contact windows; it does not validate
+    those same identities and scalar fields for every sample again.
+    """
+    value = object.__new__(value_type)
+    for name, item in zip(value_type.__slots__, fields, strict=True):
+        object.__setattr__(value, name, item)
+    return value
 
 
 def propagation_delay_us(distance_m: float, speed_m_per_s: float) -> int:

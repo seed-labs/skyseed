@@ -25,8 +25,9 @@ identity must be distinct at the composition boundary. Replacement affects only
 that role's defined input/output contract.
 
 The canonical ISL separation is intentional: maximum simultaneous links belongs
-to PhysicalWorld capability, while K3 pair scope, desired 2+2 mix, retain-first
-selection, and 20-second acquisition reference belong to the ISL Model.
+to PhysicalWorld capability, while configurable cyclic pair scope (reference K1), desired 2+2 mix, retain-first
+selection, 5-second preparation and future-service requirements belong to the
+existing planning Models. Physical contact proof remains in physical Models.
 
 ## Validation
 

@@ -414,6 +414,13 @@ def _lookup_u64_map(file_descriptor: int, key: int) -> int | None:
     return int(map_value.value)
 
 
+def _update_u64_map(file_descriptor: int, key: int, value: int) -> None:
+    key_buffer, value_buffer = _key_buffer(key), ctypes.c_uint64(value)
+    _bpf(_BPF_MAP_UPDATE_ELEM, _BpfMapElement(
+        map_fd=file_descriptor, key=ctypes.addressof(key_buffer),
+        value=ctypes.addressof(value_buffer), flags=_BPF_ANY))
+
+
 def _delete_map(file_descriptor: int, key: int | tuple[int, int]) -> bool:
     key_value = _key_buffer(key)
     attributes = _BpfMapElement(
@@ -518,6 +525,8 @@ def _tc_program(
     telemetry_ring_map: int | None = None,
     telemetry_loss_map: int | None = None,
     node_slot: int | None = None,
+    generation_versions_map: int | None = None,
+    generation_readers_map: int | None = None,
 ) -> bytes:
     telemetry_values = (telemetry_ring_map, telemetry_loss_map, node_slot)
     telemetry_enabled = all(value is not None for value in telemetry_values)
@@ -525,6 +534,9 @@ def _tc_program(
         raise ValueError("tc telemetry maps and node_slot must be supplied together")
     program = _Assembler()
     program.emit(0xBF, destination=6, source=1)  # r6 = skb
+    if generation_readers_map is not None:
+        program.emit(0x7A, destination=10, offset=-88, immediate=0)
+        program.emit(0x7A, destination=10, offset=-120, immediate=0)
     program.emit(0x61, destination=7, source=6, offset=76)  # data
     program.emit(0x61, destination=8, source=6, offset=80)  # data_end
 
@@ -599,6 +611,7 @@ def _tc_program(
         program.emit(0x72, destination=10, offset=-9, immediate=1)
         program.label("after_icmp")
 
+    program.label("acquire_generation")
     program.emit(0xB7, destination=4, immediate=0)
     program.emit(0x63, destination=10, source=4, offset=-52)
     program.load_map(1, active_generation_map)
@@ -607,8 +620,33 @@ def _tc_program(
     program.emit(0x85, immediate=_BPF_FUNC_MAP_LOOKUP_ELEM)
     program.jump(0x15, destination=0, immediate=0, label="no_active_generation")
     program.emit(0x61, destination=9, source=0, offset=0)
+    if generation_readers_map is not None:
+        # Pin a reader before using generation tables, then re-read publication.
+        # A reader arriving after retirement observes a missing counter or a
+        # changed publication and never touches the retired tables.
+        program.emit(0x7B, destination=10, source=0, offset=-104)
+        program.emit(0x63, destination=10, source=9, offset=-112)
+        program.load_map(1, generation_readers_map)
+        program.emit(0xBF, destination=2, source=10)
+        program.emit(0x07, destination=2, immediate=-112)
+        program.emit(0x85, immediate=_BPF_FUNC_MAP_LOOKUP_ELEM)
+        program.jump(0x15, destination=0, immediate=0, label="retry_generation")
+        program.emit(0x7B, destination=10, source=0, offset=-88)
+        program.emit(0xB7, destination=1, immediate=1)
+        program.emit(0xDB, destination=0, source=1)
+        program.emit(0x79, destination=4, source=10, offset=-104)
+        program.emit(0x61, destination=4, source=4)
+        program.jump(0x5D, destination=4, source=9, label="retry_generation")
     if telemetry_enabled:
         program.emit(0x63, destination=10, source=9, offset=-36)
+    if generation_versions_map is not None:
+        program.emit(0x63, destination=10, source=9, offset=-112)
+        program.load_map(1, generation_versions_map)
+        program.emit(0xBF, destination=2, source=10)
+        program.emit(0x07, destination=2, immediate=-112)
+        program.emit(0x85, immediate=_BPF_FUNC_MAP_LOOKUP_ELEM)
+        program.jump(0x15, destination=0, immediate=0, label="no_active_generation")
+        program.emit(0x61, destination=9, source=0)
 
     program.emit(0x61, destination=4, source=6, offset=40)  # skb->ifindex
     program.emit(0x63, destination=10, source=4, offset=-76)
@@ -732,7 +770,27 @@ def _tc_program(
         )
         program.jump(0x05, destination=0, label="pass")
 
+    def release_reader(label: str) -> None:
+        if generation_readers_map is None:
+            return
+        program.emit(0x79, destination=4, source=10, offset=-88)
+        program.jump(0x15, destination=4, immediate=0, label=label)
+        program.emit(0xB7, destination=5, immediate=-1)
+        program.emit(0xDB, destination=4, source=5)
+        program.emit(0x7A, destination=10, offset=-88, immediate=0)
+        program.label(label)
+
+    if generation_readers_map is not None:
+        program.label("retry_generation")
+        release_reader("retry_released")
+        program.emit(0x79, destination=4, source=10, offset=-120)
+        program.emit(0x07, destination=4, immediate=1)
+        program.emit(0x7B, destination=10, source=4, offset=-120)
+        program.jump(_BPF_JMP_JLT_IMMEDIATE, destination=4, immediate=3, label="acquire_generation")
+        program.jump(0x05, destination=0, label="no_active_generation")
+
     program.label("redirect")
+    release_reader("redirect_released")
     if telemetry_enabled:
         program.emit(0x61, destination=1, source=10, offset=-28)
     program.emit(0xB7, destination=2, immediate=0)
@@ -740,9 +798,11 @@ def _tc_program(
     program.emit(0x95)
 
     program.label("drop")
+    release_reader("drop_released")
     program.emit(0xB7, destination=0, immediate=_TC_ACT_SHOT)
     program.emit(0x95)
     program.label("pass")
+    release_reader("pass_released")
     program.emit(0xB7, destination=0, immediate=_TC_ACT_OK)
     program.emit(0x95)
     return program.finish()
@@ -758,6 +818,8 @@ def _load_program(
     telemetry_ring_map: int | None = None,
     telemetry_loss_map: int | None = None,
     node_slot: int | None = None,
+    generation_versions_map: int | None = None,
+    generation_readers_map: int | None = None,
 ) -> int:
     instructions = _tc_program(
         active_generation_map,
@@ -768,6 +830,8 @@ def _load_program(
         telemetry_ring_map=telemetry_ring_map,
         telemetry_loss_map=telemetry_loss_map,
         node_slot=node_slot,
+        generation_versions_map=generation_versions_map,
+        generation_readers_map=generation_readers_map,
     )
     instruction_buffer = ctypes.create_string_buffer(instructions)
     license_buffer = ctypes.create_string_buffer(b"GPL\0")
@@ -1017,6 +1081,10 @@ def _audit_node_addresses(request: dict[str, Any]) -> dict[str, Any]:
 
 _LIVE_NODES: dict[str, dict[str, Any]] = {}
 _GENERATION_FD = -1
+_GENERATION_READERS_FD = -1
+_GENERATIONS: dict[int, dict[str, int]] = {}
+_VERSIONS: dict[tuple[str, int], dict[str, Any]] = {}
+_READY_GENERATIONS: set[int] = set()
 _OWNED_PIN_ROOT: Path | None = None
 _OWNED_NODE_ADDRESSES: set[str] = set()
 _INITIALIZATION_REQUESTED = False
@@ -1151,7 +1219,7 @@ def _retain_namespaces(nodes: tuple[dict[str, Any], ...]) -> None:
 
 
 def _close_foundation(timings=None) -> None:
-    global _GENERATION_FD, _RETIREMENT_POOL, _RETIREMENT_WORKERS
+    global _GENERATION_FD, _GENERATION_READERS_FD, _RETIREMENT_POOL, _RETIREMENT_WORKERS
     if _RETIREMENT_POOL is not None:
         _timed_call(timings, "retirement_worker_shutdown", _RETIREMENT_POOL.shutdown, wait=True)
         _RETIREMENT_POOL = None
@@ -1162,16 +1230,22 @@ def _close_foundation(timings=None) -> None:
         _timed_call(timings, "retained_socket_close", node["netlink"].close)
         _timed_call(timings, "retained_namespace_fd_close", os.close, node["namespace_fd"])
     _LIVE_NODES.clear()
+    _GENERATIONS.clear()
+    _VERSIONS.clear()
+    _READY_GENERATIONS.clear()
+    if _GENERATION_READERS_FD >= 0:
+        _timed_call(timings, "bpf_descriptor_close", os.close, _GENERATION_READERS_FD)
+        _GENERATION_READERS_FD = -1
     if _GENERATION_FD >= 0:
         _timed_call(timings, "bpf_descriptor_close", os.close, _GENERATION_FD)
         _GENERATION_FD = -1
 
 
 def _reserve_foundation_descriptors(node_count: int, worker_count: int) -> None:
-    # Per node: namespace FD, route socket, and five retained BPF objects.
-    # Concurrent loaders use at most five transient FDs each. Leave room for
+    # Per node: namespace FD, route socket, and six retained BPF objects.
+    # Concurrent loaders use at most six transient FDs each. Leave room for
     # stdio, shared maps, namespace switching, and ordinary file reads.
-    required = 7 * node_count + 5 * worker_count + 64
+    required = 8 * node_count + 6 * worker_count + 64
     soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
     if hard != resource.RLIM_INFINITY and required > hard:
         raise RuntimeError(
@@ -1182,7 +1256,7 @@ def _reserve_foundation_descriptors(node_count: int, worker_count: int) -> None:
 
 
 def _initialize(request: dict[str, Any]) -> dict[str, Any]:
-    global _GENERATION_FD, _OWNED_PIN_ROOT, _INITIALIZATION_REQUESTED, _FOUNDATION_OUTCOME
+    global _GENERATION_FD, _GENERATION_READERS_FD, _OWNED_PIN_ROOT, _INITIALIZATION_REQUESTED, _FOUNDATION_OUTCOME
     if _INITIALIZATION_REQUESTED:
         raise RuntimeError("Runner foundation initialization is one-shot")
     _INITIALIZATION_REQUESTED = True
@@ -1214,18 +1288,24 @@ def _initialize(request: dict[str, Any]) -> dict[str, Any]:
     installed_node_keys = _OWNED_NODE_ADDRESSES
     installed_node_keys_lock = Lock()
     active_generation_fd = -1
+    generation_readers_fd = -1
     telemetry_ring_fd = -1
     telemetry_loss_fd = -1
     telemetry_enabled = request.get("telemetry_enabled") is True
     try:
         shared_scaffolding_started = monotonic()
         active_generation_fd = _create_map(
-            "active_gen", key_size=4, max_entries=1
+            "active_gen", key_size=4, max_entries=1, map_type=_BPF_MAP_TYPE_ARRAY
         )
         _pin_object(active_generation_fd, root / "active_generation")
         _update_map(
             active_generation_fd, 0, int(request["inactive_generation"])
         )
+        version_capacity = request.get("resident_generation_capacity")
+        if request.get("continuation_enabled") is True:
+            generation_readers_fd = _create_map(
+                "gen_readers", key_size=4, value_size=8, max_entries=int(version_capacity))
+            _pin_object(generation_readers_fd, root / "generation_readers")
         if telemetry_enabled:
             telemetry_ring_fd = _create_map(
                 "traffic_events",
@@ -1271,7 +1351,11 @@ def _initialize(request: dict[str, Any]) -> dict[str, Any]:
             ingress_fd = _create_map("ingress_bind", key_size=4, max_entries=int(node["bindings_capacity"]))
             egress_fd = _create_map("egress_bind", key_size=4, max_entries=int(node["bindings_capacity"]))
             program_fd = -1
+            versions_fd = -1
             try:
+                if version_capacity is not None:
+                    versions_fd = _create_map("gen_versions", key_size=4, max_entries=int(version_capacity))
+                    _pin_object(versions_fd, node_root / "generation_versions")
                 _pin_object(active_fd, active_path)
                 _pin_object(route_fd, route_path)
                 _pin_object(ingress_fd, node_root / "ingress_bindings")
@@ -1286,6 +1370,8 @@ def _initialize(request: dict[str, Any]) -> dict[str, Any]:
                         telemetry_ring_map=telemetry_ring_fd,
                         telemetry_loss_map=telemetry_loss_fd,
                         node_slot=int(node["node_slot"]),
+                        generation_versions_map=None if versions_fd < 0 else versions_fd,
+                        generation_readers_map=None if generation_readers_fd < 0 else generation_readers_fd,
                     )
                 else:
                     program_fd = _load_program(
@@ -1294,10 +1380,12 @@ def _initialize(request: dict[str, Any]) -> dict[str, Any]:
                         route_fd,
                         ingress_fd,
                         egress_fd,
+                        generation_versions_map=None if versions_fd < 0 else versions_fd,
+                        generation_readers_map=None if generation_readers_fd < 0 else generation_readers_fd,
                     )
                 _pin_object(program_fd, program_path)
             finally:
-                for file_descriptor in (program_fd, route_fd, active_fd, ingress_fd, egress_fd):
+                for file_descriptor in (program_fd, route_fd, active_fd, ingress_fd, egress_fd, versions_fd):
                     if file_descriptor >= 0:
                         os.close(file_descriptor)
             return {
@@ -1314,9 +1402,13 @@ def _initialize(request: dict[str, Any]) -> dict[str, Any]:
         )
         node_foundation_seconds = monotonic() - node_foundation_started
         _GENERATION_FD = _open_pinned(root / "active_generation")
+        if generation_readers_fd >= 0:
+            _GENERATION_READERS_FD = _open_pinned(root / "generation_readers")
         for node in _LIVE_NODES.values():
             for name in ("active_links", "routes", "ingress_bindings", "egress_bindings", "tc_ingress"):
                 node["maps"][name] = _open_pinned(root / node["pin_component"] / name)
+            if version_capacity is not None:
+                node["maps"]["generation_versions"] = _open_pinned(root / node["pin_component"] / "generation_versions")
         return {
             "pin_root": str(root),
             "node_count": len(nodes),
@@ -1375,6 +1467,7 @@ def _initialize(request: dict[str, Any]) -> dict[str, Any]:
             telemetry_loss_fd,
             telemetry_ring_fd,
             active_generation_fd,
+            generation_readers_fd,
         ):
             if file_descriptor >= 0:
                 os.close(file_descriptor)
@@ -1399,20 +1492,116 @@ def _capture_incarnations(request: dict[str, Any]) -> dict[str, Any]:
 
 
 def _prewrite_generation(request: dict[str, Any]) -> dict[str, Any]:
-    if _lookup_map(_GENERATION_FD, 0) != 0xFFFFFFFF:
-        raise RuntimeError("semantic prewrite is allowed only before boundary 0")
     generation = int(request["generation"])
-    active_count = route_count = 0
-    for record in request["generation_nodes"]:
-        maps = _LIVE_NODES[record["key"]]["maps"]
-        active = [((generation, int(port)), 1) for port in record["active_ports"]]
-        routes = [((generation, _ip_key(route["destination"])), int(route["logical_port_id"]))
+    active_generation = _lookup_map(_GENERATION_FD, 0)
+    if active_generation != 0xFFFFFFFF and generation <= active_generation:
+        raise RuntimeError("prewrite must target a strictly future generation")
+    records = request["generation_nodes"]
+    shared = bool(records) and "version" in records[0]
+    if shared and (len(records) > 64 or sum(
+        len(record["active_ports"]) + len(record["routes"]) for record in records
+    ) > 2048):
+        raise ValueError("prewrite work unit exceeds the bounded channel budget")
+    if shared and generation not in _GENERATIONS:
+        _GENERATIONS[generation] = {}
+        if _GENERATION_READERS_FD >= 0:
+            _update_u64_map(_GENERATION_READERS_FD, generation, 0)
+    active_count = route_count = reused = new_versions = 0
+    for record in records:
+        node_key = record["key"]
+        maps = _LIVE_NODES[node_key]["maps"]
+        version = int(record.get("version", generation))
+        value = None
+        if shared:
+            identity = node_key, version
+            value = _VERSIONS.get(identity)
+            if node_key not in _GENERATIONS[generation]:
+                if value is None:
+                    if version != generation:
+                        raise RuntimeError("shared version is not resident")
+                    value = _VERSIONS[identity] = {"active": [], "routes": [], "references": 0, "complete": False}
+                    new_versions += 1
+                elif version != generation:
+                    if not value["complete"] or record["active_ports"] or record["routes"]:
+                        raise RuntimeError("shared version is incomplete or being overwritten")
+                    reused += 1
+                value["references"] += 1
+                _GENERATIONS[generation][node_key] = version
+                _update_map(maps["generation_versions"], generation, version)
+            elif _GENERATIONS[generation][node_key] != version or value["complete"]:
+                raise RuntimeError("generation node version cannot be replaced")
+        active = [((version, int(port)), 1) for port in record["active_ports"]]
+        routes = [((version, _ip_key(route["destination"])), int(route["logical_port_id"]))
                   for route in record["routes"]]
         active_count += _update_map_entries(maps["active_links"], active,
                             batch_supported=bool(request["bpf_batch_update_supported"]))
         route_count += _update_map_entries(maps["routes"], routes,
                             batch_supported=bool(request["bpf_batch_update_supported"]))
-    return {"preloaded_active_links": active_count, "preloaded_routes": route_count}
+        if value is not None and version == generation:
+            value["active"].extend(key for key, _ in active)
+            value["routes"].extend(key for key, _ in routes)
+            value["complete"] = record.get("complete", True)
+    if shared and request.get("seal"):
+        nodes = _GENERATIONS[generation]
+        if nodes.keys() != _LIVE_NODES.keys() or any(
+            not _VERSIONS[key, version]["complete"] for key, version in nodes.items()
+        ):
+            raise RuntimeError("generation prewrite is incomplete")
+        _READY_GENERATIONS.add(generation)
+    return {"preloaded_active_links": active_count, "preloaded_routes": route_count,
+            "node_versions_written": new_versions, "node_versions_reused": reused}
+
+
+def _reclaim_generations(request: dict[str, Any]) -> dict[str, Any]:
+    """Retire a bounded number of entries after publication and reader quiescence."""
+    if _GENERATION_READERS_FD < 0:
+        raise RuntimeError("generation reclaim requires instrumented in-flight readers")
+    budget = request.get("maximum_entries", 1024)
+    if type(budget) is not int or not 1 <= budget <= 2048:
+        raise ValueError("invalid reclaim work-unit budget")
+    active = _lookup_map(_GENERATION_FD, 0)
+    if active is None or active == 0xFFFFFFFF:
+        return {"reclaimed_generations": [], "deleted_entries": 0, "reader_wait": False}
+    cutoff = min(int(request["before_generation"]), active)
+    deleted = units = 0
+    reclaimed = []
+    reader_wait = False
+    for generation in sorted(g for g in _GENERATIONS if g < cutoff):
+        if _lookup_u64_map(_GENERATION_READERS_FD, generation) != 0:
+            reader_wait = True
+            continue
+        nodes = _GENERATIONS[generation]
+        while nodes and units < budget:
+            key = next(iter(nodes))
+            version = nodes[key]
+            value = _VERSIONS[key, version]
+            maps = _LIVE_NODES[key]["maps"]
+            if value["references"] == 1:
+                for field, map_name in (("active", "active_links"), ("routes", "routes")):
+                    entries = value[field]
+                    while entries and units < budget:
+                        deleted += int(_delete_map(maps[map_name], entries[-1]))
+                        entries.pop()
+                        units += 1
+                if value["active"] or value["routes"] or units >= budget:
+                    break
+                del _VERSIONS[key, version]
+            else:
+                value["references"] -= 1
+            deleted += int(_delete_map(maps["generation_versions"], generation))
+            del nodes[key]
+            units += 1
+        if not nodes:
+            _delete_map(_GENERATION_READERS_FD, generation)
+            del _GENERATIONS[generation]
+            _READY_GENERATIONS.discard(generation)
+            reclaimed.append(generation)
+        if units >= budget:
+            break
+    return {"reclaimed_generations": reclaimed, "deleted_entries": deleted,
+            "work_units": units, "reader_wait": reader_wait,
+            "active_generation": active, "resident_generations": len(_GENERATIONS),
+            "resident_node_versions": len(_VERSIONS)}
 
 
 def _activate_boundary(request: dict[str, Any]) -> dict[str, Any]:
@@ -1421,6 +1610,8 @@ def _activate_boundary(request: dict[str, Any]) -> dict[str, Any]:
     generation = int(request["generation"])
     expected = int(request["expected_active_generation"])
     changed = request["generation_changed"]
+    if _GENERATIONS and changed and generation not in _READY_GENERATIONS:
+        raise RuntimeError("Main cannot publish an unready generation")
     connections = request["connections"]
     batches = request["retirement_batches"]
     removed = [connection for batch in batches for connection in batch["connections"]]
@@ -1677,6 +1868,7 @@ def _dispatch_action(action: str, request: dict[str, Any]) -> dict[str, Any]:
     actions = {
         "initialize": _initialize,
         "prewrite_generation": _prewrite_generation,
+        "reclaim_generations": _reclaim_generations,
         "activate_boundary": _activate_boundary,
         "cleanup": _cleanup,
     }

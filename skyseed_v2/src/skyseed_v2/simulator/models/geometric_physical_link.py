@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from threading import RLock
 from time import perf_counter
+
+from skyseed_v2.shared.time import normalize_utc_datetime
 
 from ..physical.physical_frame import PhysicalFrame
 from ..physical.physical_link import (
@@ -77,6 +80,58 @@ class GeometricPhysicalLinkModel:
         self._core: _GeometricPhysicalCore | None = None
         self._state_lock = RLock()
 
+    def predict_contacts(
+        self, physical_world: PhysicalWorld, request: PhysicalLinkRequest, *,
+        start_timestamp: datetime, end_timestamp: datetime,
+        observation_interval: timedelta, inter_satellite_tail: timedelta,
+        ground_station_tail: timedelta,
+    ) -> dict[str, int]:
+        """Prepare compact physical proofs over the finite admission interval.
+
+        Producer supplies dependency-derived bounds. The physical Model owns
+        the contact index; subsequent observations carry immutable windows.
+        """
+        if not isinstance(physical_world, PhysicalWorld):
+            raise TypeError("physical_world must be a PhysicalWorld")
+        if not isinstance(request, PhysicalLinkRequest):
+            raise TypeError("request must be a PhysicalLinkRequest")
+        start_timestamp = normalize_utc_datetime(start_timestamp, "start_timestamp")
+        end_timestamp = normalize_utc_datetime(end_timestamp, "end_timestamp")
+        if end_timestamp < start_timestamp:
+            raise ValueError("prediction end must not precede its start")
+        if not isinstance(observation_interval, timedelta) or observation_interval <= timedelta(0):
+            raise ValueError("prediction observation_interval must be positive")
+        for duration in (inter_satellite_tail, ground_station_tail):
+            if not isinstance(duration, timedelta) or duration < timedelta(0):
+                raise ValueError("prediction tails must be non-negative durations")
+        from ._contact_prediction import _ContactPrediction
+        # Initialize the same core without requesting future semantic work.
+        self._ensure_core(physical_world)
+        with self._state_lock:
+            prediction = _ContactPrediction(
+                self._core, request, start_timestamp=start_timestamp,
+                end_timestamp=end_timestamp, observation_interval=observation_interval,
+                inter_satellite_tail=inter_satellite_tail,
+                ground_station_tail=ground_station_tail,
+            )
+            self._core._prediction = prediction
+        return dict(prediction.counts)
+
+    def _ensure_core(self, physical_world):
+        with self._state_lock:
+            if self._core is None:
+                self._core = _GeometricPhysicalCore(
+                    physical_world,
+                    maximum_isl_distance_m=self._maximum_isl_distance_m,
+                    ground_station_minimum_elevation_deg=self._ground_station_minimum_elevation_deg,
+                    ground_station_maximum_distance_m=self._ground_station_maximum_distance_m,
+                    zone_coverage_minimum_elevation_deg=self._zone_coverage_minimum_elevation_deg,
+                    propagation_speed_m_per_s=self._propagation_speed_m_per_s,
+                )
+            elif self._core.physical_world is not physical_world:
+                raise ValueError("GeometricPhysicalLinkModel cannot be reused with another PhysicalWorld")
+        return self._core
+
     def compute_observation(
         self,
         physical_world: PhysicalWorld,
@@ -93,35 +148,10 @@ class GeometricPhysicalLinkModel:
             raise TypeError("request must be a PhysicalLinkRequest")
         observer = physical_world._get_execution_observer()
         started = perf_counter() if observer is not None else 0.0
+        core = self._ensure_core(physical_world)
         with self._state_lock:
-            core = self._core
-            if core is None:
-                core = _GeometricPhysicalCore(
-                    physical_world,
-                    maximum_isl_distance_m=self._maximum_isl_distance_m,
-                    ground_station_minimum_elevation_deg=(
-                        self._ground_station_minimum_elevation_deg
-                    ),
-                    ground_station_maximum_distance_m=(
-                        self._ground_station_maximum_distance_m
-                    ),
-                    zone_coverage_minimum_elevation_deg=(
-                        self._zone_coverage_minimum_elevation_deg
-                    ),
-                    propagation_speed_m_per_s=(
-                        self._propagation_speed_m_per_s
-                    ),
-                )
-                self._core = core
-            elif core.physical_world is not physical_world:
-                raise ValueError(
-                    "GeometricPhysicalLinkModel cannot be reused with "
-                    "another PhysicalWorld"
-                )
             observation = core.compute(
-                physical_frame.timestamp,
-                physical_frame.positions,
-                request,
+                physical_frame.timestamp, physical_frame.positions, request,
             )
         if observation.timestamp != physical_frame.timestamp:
             raise RuntimeError(
@@ -136,6 +166,7 @@ class GeometricPhysicalLinkModel:
                 duration_seconds=perf_counter() - started,
                 scope={"timestamp": observation.timestamp.isoformat()},
                 work={
+                    **core._query_work,
                     "inter_satellite_pairs_requested": (
                         counts.inter_satellite_pairs_requested
                     ),
@@ -145,6 +176,8 @@ class GeometricPhysicalLinkModel:
                     "inter_satellite_pairs_feasible": (
                         counts.inter_satellite_pairs_feasible
                     ),
+                    "ground_station_pairs_not_returned": counts.ground_station_pairs_not_returned,
+                    "inter_satellite_pairs_not_returned": counts.inter_satellite_pairs_not_returned,
                     "ground_station_pairs_requested": (
                         counts.ground_station_pairs_requested
                     ),

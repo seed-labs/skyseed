@@ -28,16 +28,14 @@ def test_complete_example_uses_the_common_plan_compiler_producer() -> None:
     simulator = create_complete_static_simulator(build_emulator())
     plans, realizations, snapshot = run_complete_static_chain(simulator)
 
-    assert len(plans) == len(realizations) == 2
+    assert len(plans) == len(realizations) == 1
     assert sum(len(plan.transitions) for plan in plans) == 4
     assert sum(
         len(realization.activation_timestamps)
         for realization in realizations
     ) == 4
     assert plans[0].previous_plan_id is None
-    assert plans[1].previous_plan_id == plans[0].plan_id
     assert realizations[0].source_plan_id == plans[0].plan_id
-    assert realizations[1].source_plan_id == plans[1].plan_id
     assert snapshot["formal_frame_count"] == 4
     assert snapshot["physical_link_observation_count"] == 4
 

@@ -10,6 +10,7 @@ import pytest
 from examples.complete_static_emulator.emu import build_emulator
 from examples.complete_static_emulator.simu import (
     create_complete_static_simulator,
+    create_complete_static_planner,
     run_complete_static_chain,
 )
 from tools.bpf_compiler import (
@@ -29,8 +30,11 @@ TOOL_SOURCES = tuple(
 def complete_chain(tmp_path_factory):
     root = tmp_path_factory.mktemp("compiler-tool")
     simulator = create_complete_static_simulator(build_emulator())
+    # This focused lineage fixture deliberately crosses a batch boundary.
+    planner = create_complete_static_planner(simulator)
+    planner._frames_per_batch = 3
     plans, realizations, snapshot = run_complete_static_chain(
-        simulator, evidence_path=root / "history"
+        simulator, planner=planner, evidence_path=root / "history"
     )
     return root, plans, realizations, snapshot
 

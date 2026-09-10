@@ -209,15 +209,21 @@ Python 项目依赖仍由 `pyproject.toml` 管理；`environment.yml` 只固定�
 Interpreter** 并选择 `skyseed_dev`。仓库设置会在后续新终端中激活已选择
 的解释器，但不能替代首次选择。
 
-BPF Runner 在一次性 Preparation 中完成全部 finite plan materialization、
+BPF Runner 在初始 Preparation 中完成首个密封交付的 finite plan materialization、
 capacity/identity validation 与 generation-semantic BPF preload，并实际激活 boundary 0。
+单交付模式在此准备整个有限序列；连续交付由同一个 Runner/backend 的
+Maintenance 在 Main 运行期间加载、构造和预写后继批次，并在实际激活与
+reader/reference 安全条件满足后回收旧数据。容量固定 admission，deadline
+前未 READY 则明确失败，不移动时钟或跳过边界。
 `run()` 从 boundary 1 开始，使用长期 privileged channel、retained namespace
-sockets 和 direct netlink/BPF syscalls 提交当前 delta。没有 Maintenance thread 或
-runtime generation reclaim。`SKYSEED_BPF_RUNTIME_WORKERS` 限制 Preparation
+sockets 和 direct netlink/BPF syscalls 提交当前 delta。Maintenance 使用有界
+请求并让出 Main channel；不会推迟当轮正式撤销。`SKYSEED_BPF_RUNTIME_WORKERS` 限制 Preparation
 中独立 startup namespace audit/scaffolding 工作，以及 Main/Cleanup 的独立
 namespace 删除线程（1–64，默认不超过 CPU 数与 8）。删除线程在 Preparation
 建立并复用；每轮 Main 等待当轮物理删除全部完成。
 Main 只记录 compact boundary/barrier timing；bulk telemetry identity 写入由后台处理。
+连续交付配置和调用入口见
+[S1–S5 Example](examples/starlink_multi_shell_satellite_internet/README.md)。
 
 ## 9. Offline Tooling Baseline
 

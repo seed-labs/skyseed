@@ -550,6 +550,99 @@ def test_launcher_does_not_import_or_call_skyseed_compiler() -> None:
     source = Path(getsourcefile(launcher)).read_text()
     assert "SkyseedDockerCompiler" not in source
     assert ".compile(" not in source
-    assert "yaml" not in source
+    # Generated packaging may edit Compose YAML; the public launcher only
+    # deploys an already compiled project.
+    from inspect import getsource
+    assert "safe_load" not in getsource(launcher.ComposeProjectLauncher)
+    assert "safe_dump" not in getsource(launcher.ComposeProjectLauncher)
     assert '"compose"' in source
     assert "compose_executable" not in source
+@pytest.mark.parametrize("failure", [None, "build", "ps", "owned-stale"])
+def test_generated_shared_image_startup_checks_unique_images_and_failures(tmp_path, monkeypatch, failure):
+    import json
+    import os
+    import subprocess
+    import sys
+    from yaml import safe_dump
+    from skyseed_v2.compose.launcher import _write_compose_build_plan, _write_compose_project_scripts
+
+    runtime = tmp_path / "runtime"
+    (runtime / "dummies").mkdir(parents=True)
+    (runtime / "dummies/base").write_text("FROM scratch\n")
+    services = {"base": {"build": {"context": ".", "dockerfile": "dummies/base"}, "image": "base"},
+                "map": {"image": "external/map:v1"}}
+    for name in ("a", "b", "c"):
+        (runtime / name).mkdir()
+        (runtime / name / "Dockerfile").write_text("FROM base\n" + ("ENV C=1\n" if name == "c" else ""))
+        services[name] = {"build": f"./{name}", "container_name": name}
+    (runtime / "docker-compose.yml").write_text(safe_dump({"services": services}))
+    _write_compose_build_plan(runtime)
+    _write_compose_project_scripts(tmp_path, "test-project", build_plan_path="runtime/skyseed-build-plan.txt",
+                                   startup_evidence_path="runtime/startup.json", python_executable=sys.executable)
+    fake = tmp_path / "bin"
+    fake.mkdir()
+    docker = fake / "docker"
+    docker.write_text(f"#!{sys.executable}\n" + r'''
+import json, os, sys
+from pathlib import Path
+from yaml import safe_load
+root = Path(os.environ['TEST_DEPLOYMENT_ROOT'])
+args = sys.argv[1:]
+with (root/'commands.jsonl').open('a') as stream:
+    stream.write(json.dumps(args)+'\n')
+state_path = root/'images.json'
+images = json.loads(state_path.read_text()) if state_path.exists() else {"external/map:v1": "sha256:external"}
+failure = os.environ.get('TEST_DEPLOYMENT_FAILURE')
+if args[:2] == ['image', 'inspect']:
+    refs = args[4:]
+    assert len(refs) == len(set(refs)) == 4
+    if any(ref not in images for ref in refs):
+        sys.exit(1)
+    for ref in refs:
+        print(images[ref], '<no value>' if ref=='external/map:v1' else 'test-project')
+elif args[0] == 'compose':
+    services = safe_load((root/'runtime/docker-compose.yml').read_text())['services']
+    args = args[5:]
+    def image(service):
+        return services[service]['image'].replace('${COMPOSE_PROJECT_NAME}', 'test-project')
+    if args == ['config', '--images']:
+        print('\n'.join(image(name) for name in services))
+    elif args == ['config', '--quiet']:
+        pass
+    elif args == ['ps', '-aq']:
+        if failure == 'ps':
+            sys.exit(7)
+        if failure == 'owned-stale':
+            print('owned-container')
+    elif args[0] == 'build':
+        if failure == 'build':
+            sys.exit(9)
+        images[image(args[1])] = 'sha256:' + args[1]
+        state_path.write_text(json.dumps(images))
+    elif args == ['up', '-d', '--no-build']:
+        assert all(image(name) in images for name in services)
+    else:
+        raise AssertionError(args)
+else:
+    raise AssertionError(args)
+''')
+    docker.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake}:{os.environ['PATH']}")
+    monkeypatch.setenv("TEST_DEPLOYMENT_ROOT", str(tmp_path))
+    if failure:
+        monkeypatch.setenv("TEST_DEPLOYMENT_FAILURE", failure)
+    result = subprocess.run(["bash", str(tmp_path / "start.sh")], capture_output=True, text=True)
+    evidence = json.loads((runtime / "startup.json").read_text())
+    assert (result.returncode == 0) == (failure is None), result.stderr
+    assert evidence["exit_code"] == result.returncode
+    commands = [json.loads(line) for line in (tmp_path / "commands.jsonl").read_text().splitlines()]
+    assert not any(command[:2] == ["image", "tag"] for command in commands)
+    assert sum(command[-3:] == ["up", "-d", "--no-build"] for command in commands) == (failure is None)
+    if failure is None:
+        assert sum("build" in command for command in commands) == 3
+        (tmp_path / "commands.jsonl").unlink()
+        repeated = subprocess.run(["bash", str(tmp_path / "start.sh")], capture_output=True, text=True)
+        assert repeated.returncode == 0, repeated.stderr
+        commands = [json.loads(line) for line in (tmp_path / "commands.jsonl").read_text().splitlines()]
+        assert not any("build" in command for command in commands)
+        assert sum(command[:2] == ["image", "inspect"] for command in commands) == 1

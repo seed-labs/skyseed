@@ -19,7 +19,7 @@ Planner(
     route_model,
     coordination_policy,
     route_demands=(),
-    planning_window_policy=TimeHorizonPlanningWindowPolicy(),
+    planning_window_policy=FrameBatchPlanningWindowPolicy(),
     execution_observer=None,
 )
 ```
@@ -61,8 +61,8 @@ For each formal frame the Planner:
    or Route demands change;
 8. derives one replay-complete `PlanTransition`;
 9. obtains precedence only from CoordinationPolicy;
-10. applies the common transition function and advances frontiers;
-11. publishes when the window policy permits.
+10. freezes the validated Model output once and advances frontiers;
+11. publishes each full frame batch immediately; finish flushes the tail.
 
 Candidates and acquisition evidence remain bounded inspection facts. Only
 operational outputs enter `PlannedOperationalState` and transitions.
@@ -70,9 +70,14 @@ operational outputs enter `PlannedOperationalState` and transitions.
 The reference GroundStation Model consumes only sparse feasible candidates from
 `PhysicalLinkObservation`; it never reconstructs the GroundStation×Satellite
 universe or geometry. Immutable capacity lookups are prepared once per exact
-PhysicalWorld. Quality-ranked allocation solves one global sparse capacitated
-assignment. Its indexed residual representation retains the accepted aggregate
-rank, Satellite-order, and successive-shortest-path tie identity.
+PhysicalWorld. Allocation maximizes station coverage, distinct directly accessed satellites,
+and selected connection count, then continuity (including pending reservations)
+and deterministic quality. The retained fast proof must establish all three
+cardinality optima before zero-change reuse. The default station limit is a
+fallback capability; an optional policy ceiling is separately configured.
+Reference query scope and admission predicates are documented in
+[accepted design](../accepted-design.md). Full capacity and new-contact admission
+remain hard constraints; Zone selection is unchanged.
 Planner observation separates selection/ranking, fail-closed candidate
 validation, and evidence projection costs.
 
@@ -123,8 +128,9 @@ event payload storage is not part of the contract.
 
 `apply_plan_transition` performs the authoritative one-boundary semantic
 operation. `apply_plan` replays a complete Plan and verifies its interval and
-lineage. Planner publication, Compiler validation, detached Tools, and
-qualification use this same defined contract.
+lineage. Public construction, Compiler lowering, detached Tools and qualification use
+this contract. Planner reuses its correctly constructed output at publication;
+Compiler replays once while lowering. Focused tests compare both with full replay.
 
 `create_plan(...)` rejects invalid world/predecessor fingerprints, invalid
 bootstrap lineage, non-positive cadence, non-UTC-normalizable timestamps,
@@ -136,26 +142,37 @@ publishes a canonical content-derived Plan identifier.
 `plan_transition_fingerprint` are versioned deterministic semantic hashes.
 Canonical construction normalizes ordering and rejects duplicate identities.
 
-## Window semantics
+## Batch and preparation semantics
 
-`TimeHorizonPlanningWindowPolicy` defaults to:
+`FrameBatchPlanningWindowPolicy` defaults to `frames_per_batch = 32`.
+There is no independent lookahead wait. The last incomplete batch is flushed
+once. Canonical S3 preserves 121 disjoint formal transitions across 4 Plans.
+Changing batch size changes envelope lineage, not the formal decisions or times.
 
-- `planning_horizon = 50 seconds`;
-- `publication_horizon = 20 seconds`;
-- `maximum_prehistory = 20 seconds`.
+Planner derives prehistory by rounding the largest ISL/GS preparation duration
+up to cadence. Each kind's prediction tail adds its minimum service to that
+rounded preparation. New candidates need `PhysicalContactWindow` proof through
+preparation and useful service; absence is uncertainty, never assumed loss or
+permission to connect. Pending reservations keep their start across samples,
+consume both endpoint capacities and cancel on selection/physical loss.
+Only operational connections reach Plan. `acquisition_duration` is the public
+configuration name for simulated preparation, not minimum useful service.
 
-Normal publication first plans up to the 50-second lookahead and then publishes
-the earliest contiguous prefix of at most 20 seconds. Physical-observation,
-planning, and publication frontiers have distinct meanings. The final short
-window is flushed once. Exact 5-second event timestamps remain unchanged.
-
-Canonical 10-minute S3 has 121 disjoint formal transitions across 30 Plans.
+Reference S3 uses preparation 5 seconds, ISL minimum service 180 seconds and GS
+60 seconds. Delay threshold is 10% relative to the last effective delay,
+including equality; a nonzero target updates a zero baseline. Refresh is due at
+the first sample reaching 120 seconds, with no event for an unchanged value.
+`ParameterPlanningMemory` contains effective value and last refresh/adoption
+only; pending integer target and persistence state are removed.
 
 ## Evidence
 
 `PublishedPlanningEvidence` binds one Plan to transition fingerprints, physical
 work counts, bounded candidate quality/count/reason histograms, exact selected
-ISL/GS/Zone facts, compact inspection summaries, and frontiers. It deliberately
+ISL/GS/Zone facts, GS preparation lifecycle, compact inspection summaries, and
+frontiers. Candidate contact proofs and both preparation states survive detached
+round trips. Published evidence v3 adds GS preparations and contact windows;
+the reader still accepts explicitly historical v2 records. It deliberately
 does not retain every feasible or rejected candidate identity. Versioned codecs
 in `planning.evidence` serialize only semantic values. They do not persist live
 Models, workers, or publication buffers.
@@ -167,3 +184,12 @@ capability violation, malformed Model output, invalid precedence, broken
 lineage, or replay mismatch fails atomically. Unpublished transitions,
 inspection evidence, candidate state, and Plan queues remain bounded. Route
 workers are reused and shut down after success or failure.
+
+## Delivery-prefix publication
+
+`Planner.flush()` returns published Plans for the current unpublished prefix,
+using the same state/lineage and retaining all operational/acquisition/parameter
+memory. It creates no artificial frame or contact ending and does not finish
+the Planner. The Producer uses it only at an explicit finite delivery cutoff;
+`finish()` remains the whole finite Timeline terminal action. Continuous and
+batched transition fingerprints are checked against the same formal history.

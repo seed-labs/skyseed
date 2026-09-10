@@ -68,7 +68,7 @@ DYNAMIC_TYPES = (
     "PublishedPlanningEvidence",
     "RoutePlanningModel",
     "SphericalCap",
-    "TimeHorizonPlanningWindowPolicy",
+    "FrameBatchPlanningWindowPolicy",
 )
 
 
@@ -256,7 +256,7 @@ def test_plan_is_the_only_planner_to_compiler_semantic_handoff() -> None:
         assert forbidden not in boundary_source
     assert "_create_plan_with_output_state(" in planner_source
     assert "self._last_published_state = published_state" in planner_source
-    assert "output_state = apply_plan(" in compiler_source
+    assert "next_semantic_state = apply_plan_transition(" in compiler_source
     assert "self._previous_realization" in producer_source
 
 
@@ -296,15 +296,15 @@ def test_accepted_anchor_and_current_have_distinct_roles() -> None:
     ):
         assert required in accepted
     for implemented in (
-        "50-second",
-        "20-second",
+        "32-frame",
+        "preparation",
         "self-contained",
-        "incremental producer",
+        "incremental compute producer",
         "persisted",
         "720 Satellites",
         "`starlink_gen1_satellite_internet`",
         "121",
-        "30 Plans",
+        "four Plans",
     ):
         assert implemented in current
     for deferred in (
@@ -360,7 +360,8 @@ def test_isolated_documents_cannot_present_current_authority() -> None:
     for directory in ("candidates", "provenance"):
         for path in (DOCS_ROOT / directory).glob("*.md"):
             source = path.read_text(encoding="utf-8")
-            assert "Non-authoritative" in source, path
+            assert ("Non-authoritative" in source or (directory == "provenance"
+                and "Historical qualification record" in source)), path
 
 
 def test_focused_documentation_checker_passes() -> None:

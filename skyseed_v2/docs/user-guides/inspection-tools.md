@@ -92,10 +92,14 @@ visually distinct.
 GroundStation and Zone focus reveal only their exact relevant candidates,
 ranks/selections, and capacity or service context; the browser does not draw
 the global candidate graph. Parameter focus reports previous → current values.
-Route planning starts from a source selected on either map, lists only that
-source's concise `RouteDemand` destinations, and loads one deterministic route
-timeline from a hashed shard, showing its exact complete path or unreachable
-reason. Exact-ID search remains a collapsed advanced shortcut.
+Route planning defaults to stable Zone–GS pairs. Search the Zone or GS identity,
+select one pair, then move the time cursor or play through boundaries. The same
+pair stays selected while its globally unique serving satellite changes. The
+current-serving Shell/Orbit filters the list; an unserved-pair toggle keeps gaps
+inspectable. Cyan GS→Zone and dashed-orange Zone→GS paths resolve from their own
+recorded demands, with explicit unreachable/absent states. Expand raw evidence to
+inspect demand identities, changes and entity search. The example's geographic
+three-GS association is unchanged; it does not create every GS→every Zone Route.
 The drawer shows concrete implementation/configuration descriptors assembled
 from the same public constants and construction arguments that instantiate the
 maintained example Models.
@@ -107,8 +111,9 @@ maps, feasible Satellites, and exact candidate relations at that timestamp.
 Both maps support drag navigation, wheel zoom, reset/focus controls, empty-space
 clear, repeated-selection clear, and Escape.
 
-Compiler aligns all 121 formal boundaries and 30 realization coverage windows
-on one simulation-time cursor. Clicking the shared timeline or any of four
+Compiler aligns every recorded formal boundary and realization coverage window
+on one simulation-time cursor: 121/four for the 5-second matrix conditions and
+601/19 for S1 at 1 second. Clicking the shared timeline or any of four
 canvas trends updates the owning realization, boundary workload, lineage, and
 measured compile timing. The machine JSON remains a separate artifact; the
 default human view has no giant realization table or raw JSON dump.
@@ -167,3 +172,48 @@ The exact PhysicalLink candidate sink is attempted only after Planner consumes
 the authoritative observation. Its duration and failure are recorded
 separately; the first sink failure disables further capture while accepted
 domain progression continues.
+
+Generation writes `generation-status.json` when runtime materials are ready,
+then updates it after all optional Tools finish or fail. `materials_ready_seconds`
+and `tools_completion_seconds` share the main-entry origin; `tools_wall_seconds`
+is the later Tool interval. Use the generated package once materials are ready;
+Tools are not an execution prerequisite. Qualification still collects every Tool
+result. Planner preparation evidence includes GS reservations and physical contact
+proof; it is not an operational connection before preparation completes.
+
+For continuous deliveries, open the Compiler Tool’s **Sealed deliveries** table
+and select **Focus first boundary** at the delivery seam. Open Runner Tool’s
+**Delivery and Maintenance** section to compare readiness margin with actual
+Main timing; the graph shows overlapping load/prewrite and reclaim work.
+The latest normal output retains its evidence after runtime reclamation. The
+[five-Shell portal](../../examples/starlink_multi_shell_satellite_internet/output/inspection/index.html)
+opens that runtime; [retained measurements](../../examples/starlink_multi_shell_satellite_internet/output/qualification/README.md)
+contain selected historical summaries. Superseded full portals/raw archives were
+deleted, so those summaries do not provide a runnable historical environment.
+S3 retains a generation-only portal; Mini retains partial historical data without
+a current Tool portal. Normal outputs stay ignored and future runs may replace them.
+
+## Shell/orbit focus and Traffic progression
+
+Physical World, Planner and Traffic share a compact Shell → Orbit dropdown, All
+orbits and Reset. AS ownership disambiguates repeated Shell/orbit labels. Existing
+Shell multi-select and shared GS/Zone visibility remain independent. Hidden
+focused endpoints are marked; visibility does not change the network evidence.
+Compiler's optional Spatial context drawer lazily embeds the same Physical World
+view, linked to its formal-boundary cursor.
+
+In Traffic, select a communication episode first, then use Play/Pause, speed and
+Seek time. The selected episode/probe continues across its recorded segments.
+Geometry follows retained formal samples; cyan request and orange reply markers
+show only ingress-supported arrivals. Each exchange is illustrated for up to one
+simulated second after its last observation, with schematic timing and motion.
+Idle gaps, absent replies and ambiguity remain visible. The optional dashed-purple
+request Plan is separate from observed passage. Expand transaction/hop evidence for
+manual inspection; Return to flow replay restores the continuous time cursor.
+No full replay or world-per-packet data is loaded into the page.
+
+The September 10 presentation refresh uses the existing successful experiment.
+Runtime identity, raw evidence, sealed materials, WARN findings and original
+measurements remain preserved. Updated Tools carry separate source provenance.
+This round performs nonvisual functional/data checks only; visual/layout review
+belongs to the user and has **not** been marked passed.

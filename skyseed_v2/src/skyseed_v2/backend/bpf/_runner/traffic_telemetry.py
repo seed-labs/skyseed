@@ -37,6 +37,8 @@ class _TrafficTelemetryRecorder:
         self._stopped = False
         self._packet_records = 0
         self._identity_records = 0
+        self._identity_observations = 0
+        self._identity_generation_records = 0
         self._identity_chunks = 0
         self._identity_stream_writes = 0
         self._reported_losses = 0
@@ -60,7 +62,7 @@ class _TrafficTelemetryRecorder:
             self._write(
                 {
                     "record_type": "telemetry_header",
-                    "format_version": 1,
+                    "format_version": 2,
                     "event_schema": foundation["event_schema"],
                     "foundation_token": foundation["foundation_token"],
                     "pin_root": foundation["pin_root"],
@@ -116,9 +118,44 @@ class _TrafficTelemetryRecorder:
                     self._live_ports.pop(port, None)
                 for value in installed:
                     self._live_ports[int(value["logical_port_id"])] = int(value["ifindex"])
-                records = tuple({**record, "ifindex": self._live_ports[record["logical_port_id"]]}
-                                for record in templates)
-                self.write_generation_identity(records)
+                # Keep only changed endpoint facts in the stream. The closing
+                # generation record commits the full retained membership and its
+                # exact boundary; no identity is discarded at a batch seam.
+                if not boundary.get("generation_publication_occurred"):
+                    self._write({"record_type": "boundary_activation", **boundary})
+                    continue
+                current = {}
+                updates = []
+                previous = getattr(self, "_written_interfaces", {})
+                for record in templates:
+                    port = record["logical_port_id"]
+                    value = {k: v for k, v in record.items() if k not in {"generation", "boundary_timestamp"}}
+                    value["ifindex"] = self._live_ports[port]
+                    current[port] = value
+                    if previous.get(port) != value:
+                        before = previous.get(port, {})
+                        updates.append({"record_type": "interface_update", "logical_port_id": port,
+                            **{k: v for k, v in value.items() if k not in before or before[k] != v}})
+                    if len(updates) == _GENERATION_IDENTITY_CHUNK_SIZE:
+                        self._write_many(updates)
+                        self._identity_records += len(updates)
+                        self._identity_stream_writes += 1
+                        self._identity_chunks += 1
+                        updates.clear()
+                if updates:
+                    self._write_many(updates)
+                    self._identity_records += len(updates)
+                    self._identity_stream_writes += 1
+                    self._identity_chunks += 1
+                if boundary.get("generation_publication_occurred"):
+                    self._write({"record_type": "interface_generation",
+                        "generation": boundary["active_generation"],
+                        "boundary_timestamp": boundary["boundary_timestamp"],
+                        "withdrawn": sorted(previous.keys()-current.keys())})
+                    self._identity_stream_writes += 1
+                    self._identity_generation_records += 1
+                self._identity_observations += len(templates)
+                self._written_interfaces = current
                 self._write({"record_type": "boundary_activation", **boundary})
         except BaseException as error:
             self._fail(error)
@@ -153,6 +190,7 @@ class _TrafficTelemetryRecorder:
                 break
             with self._lock:
                 self._identity_records += len(chunk)
+                self._identity_observations += len(chunk)
                 self._identity_chunks += 1
                 self._identity_stream_writes += 1
         return {
@@ -257,6 +295,8 @@ class _TrafficTelemetryRecorder:
                     "failure": self._failure,
                     "packet_records": self._packet_records,
                     "identity_records": self._identity_records,
+                    "identity_observations": self._identity_observations,
+                    "identity_generation_records": self._identity_generation_records,
                     "identity_chunks": self._identity_chunks,
                     "identity_stream_writes": self._identity_stream_writes,
                     "identity_chunk_size": _GENERATION_IDENTITY_CHUNK_SIZE,
@@ -285,6 +325,8 @@ class _TrafficTelemetryRecorder:
                     "complete": self._stopped and self._failure is None,
                     "packet_records": self._packet_records,
                     "identity_records": self._identity_records,
+                    "identity_observations": self._identity_observations,
+                    "identity_generation_records": self._identity_generation_records,
                     "identity_chunks": self._identity_chunks,
                     "identity_stream_writes": self._identity_stream_writes,
                     "identity_chunk_size": _GENERATION_IDENTITY_CHUNK_SIZE,

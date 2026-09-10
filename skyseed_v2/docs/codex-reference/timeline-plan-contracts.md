@@ -34,24 +34,21 @@ single-boundary replay operation.
 replays the ordered transition set and verifies world lineage plus the output
 fingerprint.
 
-## Publication windows
+## Publication batches
 
-`TimeHorizonPlanningWindowPolicy` defaults to a 50-second planning horizon and
-a 20-second publication horizon. The Planner distinguishes:
+`FrameBatchPlanningWindowPolicy(frames_per_batch=32)` publishes a complete
+batch immediately. Physical-observation, planning and publication frontiers
+retain their distinct meanings; no independent 50-second wait remains.
+The final short batch is flushed once. Canonical S3 produces four disjoint
+Plans of 32/32/32/25 transitions, preserving all 121 exact activation times.
 
-- physical-observation frontier: last accepted physical input;
-- planning frontier: last fully planned formal timestamp;
-- publication frontier: last published formal timestamp.
-
-Normal publication requires up to the next 50 seconds of planned context and
-emits the earliest contiguous prefix of at most 20 seconds. Exact 5-second
-event times are retained. The final incomplete planning window is flushed once
-at Timeline end.
-
-Transition sets in consecutive Plans are disjoint and temporally contiguous;
-Plan lineage and state fingerprints are continuous. Canonical S3 produces 30
-Plans while preserving all 121 formal activation timestamps for Compiler and
-Runner.
+Preparation history and physical prediction tail are dependency-derived:
+round each preparation duration up to formal cadence, take the largest as
+history, and add each kind's minimum useful service for its admission tail.
+Only physical queries extend past the formal end. Stable all-future proofs do
+not invent disappearance at that end. Planner publication reuses its constructed
+state; replay functions remain authoritative for external construction and
+independent verification.
 
 ## Failure behavior
 

@@ -52,7 +52,7 @@ acquiring, operational, routed, compiled, or realized state.
 
 `InterSatelliteLinkCapability.maximum_simultaneous_links` is physical static
 truth. Canonical S3 uses 4. Desired 2+2 relation mix, K3 candidate scope, and
-20-second acquisition reference remain injected Planner policy.
+5-second preparation and future-service admission remain injected Planner policy.
 
 ZoneLayout owns static geographic Zones and one membership Model. Geography
 does not imply operational service; Planner owns served/unserved assignment.
@@ -73,6 +73,12 @@ relationship is asserted by this inventory block.
 
 ```mermaid
 classDiagram
+    class PhysicalContactWindow {
+        <<immutable public evidence value>>
+        +covers()
+        +end_timestamp
+        +start_timestamp
+    }
     class DefaultZoneMembershipModel {
         <<reference Model implementation>>
         +find_zones()
@@ -91,6 +97,7 @@ classDiagram
     }
     class GroundStationAccessCandidate {
         <<immutable public value>>
+        +contact_window
         +distance_m
         +elevation_deg
         +ground_station_id
@@ -103,6 +110,7 @@ classDiagram
     }
     class InterSatelliteLinkCandidate {
         <<immutable public value>>
+        +contact_window
         +cyclic_plane_separation
         +distance_m
         +endpoint_a
@@ -158,12 +166,20 @@ classDiagram
         +zone_service_candidates
     }
     class PhysicalLinkRequest {
+        +ground_station_candidate_limit
+        +ground_station_minimum_contact_duration
+        +inter_satellite_minimum_contact_duration
+        +retained_ground_station_pairs
+        +cross_plane_neighbor_count
+        +retained_inter_satellite_pairs
         <<immutable physical request>>
         +include_ground_station_access
         +include_zone_service
         +inter_satellite_pairs
     }
     class PhysicalLinkWorkCounts {
+        +ground_station_pairs_not_returned
+        +inter_satellite_pairs_not_returned
         <<immutable physical work evidence>>
         +ground_station_pairs_evaluated
         +ground_station_pairs_feasible
@@ -271,16 +287,16 @@ classDiagram
 |---|---|---|
 | `DefaultZoneMembershipModel` | `skyseed_v2.simulator.physical.DefaultZoneMembershipModel` | `find_zones()`, `resolve_zone()` |
 | `GroundStation` | `skyseed_v2.simulator.physical.GroundStation` | `elevation_m`, `ground_station_id`, `latitude_deg`, `longitude_deg`, `max_simultaneous_satellite_accesses`, `node_id`, `operator`, `station_type` |
-| `GroundStationAccessCandidate` | `skyseed_v2.simulator.physical.GroundStationAccessCandidate` | `distance_m`, `elevation_deg`, `ground_station_id`, `propagation_delay_us`, `satellite_id` |
+| `GroundStationAccessCandidate` | `skyseed_v2.simulator.physical.GroundStationAccessCandidate` | `contact_window`, `distance_m`, `elevation_deg`, `ground_station_id`, `propagation_delay_us`, `satellite_id` |
 | `InterSatelliteLinkCapability` | `skyseed_v2.simulator.physical.InterSatelliteLinkCapability` | `maximum_simultaneous_links` |
-| `InterSatelliteLinkCandidate` | `skyseed_v2.simulator.physical.InterSatelliteLinkCandidate` | `cyclic_plane_separation`, `distance_m`, `endpoint_a`, `endpoint_b`, `propagation_delay_us`, `same_plane` |
+| `InterSatelliteLinkCandidate` | `skyseed_v2.simulator.physical.InterSatelliteLinkCandidate` | `contact_window`, `cyclic_plane_separation`, `distance_m`, `endpoint_a`, `endpoint_b`, `propagation_delay_us`, `same_plane` |
 | `LatitudeLongitudeRectangle` | `skyseed_v2.simulator.physical.LatitudeLongitudeRectangle` | `contains()`, `east_longitude_deg`, `north_latitude_deg`, `representative_center`, `south_latitude_deg`, `west_longitude_deg` |
 | `Orbit` | `skyseed_v2.simulator.physical.Orbit` | `altitude_km`, `asn`, `epoch_utc`, `get_satellite()`, `inclination_deg`, `orbit_id`, `right_ascension_deg`, `satellites`, `shell_id` |
 | `PhysicalFrame` | `skyseed_v2.simulator.physical.PhysicalFrame` | `get_position()`, `positions`, `timestamp` |
 | `PhysicalLinkModel` | `skyseed_v2.simulator.physical.PhysicalLinkModel` | `compute_observation()` |
 | `PhysicalLinkObservation` | `skyseed_v2.simulator.physical.PhysicalLinkObservation` | `ground_station_access_candidates`, `inter_satellite_candidates`, `timestamp`, `work_counts`, `zone_service_candidates` |
-| `PhysicalLinkRequest` | `skyseed_v2.simulator.physical.PhysicalLinkRequest` | `include_ground_station_access`, `include_zone_service`, `inter_satellite_pairs` |
-| `PhysicalLinkWorkCounts` | `skyseed_v2.simulator.physical.PhysicalLinkWorkCounts` | `ground_station_pairs_evaluated`, `ground_station_pairs_feasible`, `ground_station_pairs_requested`, `inter_satellite_pairs_evaluated`, `inter_satellite_pairs_feasible`, `inter_satellite_pairs_requested`, `zone_service_pairs_evaluated`, `zone_service_pairs_feasible`, `zone_service_pairs_requested` |
+| `PhysicalLinkRequest` | `skyseed_v2.simulator.physical.PhysicalLinkRequest` | `include_ground_station_access`, `include_zone_service`, `inter_satellite_pairs`, `ground_station_candidate_limit`, `ground_station_minimum_contact_duration`, `inter_satellite_minimum_contact_duration`, `retained_ground_station_pairs`, `cross_plane_neighbor_count`, `retained_inter_satellite_pairs` |
+| `PhysicalLinkWorkCounts` | `skyseed_v2.simulator.physical.PhysicalLinkWorkCounts` | `ground_station_pairs_evaluated`, `ground_station_pairs_feasible`, `ground_station_pairs_requested`, `inter_satellite_pairs_evaluated`, `inter_satellite_pairs_feasible`, `inter_satellite_pairs_requested`, `zone_service_pairs_evaluated`, `zone_service_pairs_feasible`, `zone_service_pairs_requested`, `ground_station_pairs_not_returned`, `inter_satellite_pairs_not_returned` |
 | `PositionModel` | `skyseed_v2.simulator.physical.PositionModel` | `compute_positions()` |
 | `Satellite` | `skyseed_v2.simulator.physical.Satellite` | `inter_satellite_link_capability`, `max_simultaneous_ground_station_accesses`, `mean_anomaly_deg`, `node_id`, `orbit_index`, `satellite_id` |
 | `Shell` | `skyseed_v2.simulator.physical.Shell` | `asn`, `get_orbit()`, `orbits`, `shell_id` |
@@ -291,3 +307,19 @@ classDiagram
 | `ZoneLayout` | `skyseed_v2.simulator.physical.ZoneLayout` | `allow_overlap`, `find_intersecting_zones()`, `find_zones()`, `get_membership_model()`, `get_zone()`, `resolve_zone()`, `zones` |
 | `ZoneMembershipModel` | `skyseed_v2.simulator.physical.ZoneMembershipModel` | `find_zones()`, `resolve_zone()` |
 | `ZoneServiceCandidate` | `skyseed_v2.simulator.physical.ZoneServiceCandidate` | `distance_m`, `elevation_deg`, `propagation_delay_us`, `satellite_id`, `zone_id` |
+
+| `PhysicalContactWindow` | `skyseed_v2.simulator.physical.PhysicalContactWindow` | `covers()`, `end_timestamp`, `start_timestamp` |
+
+`PhysicalContactWindow` is a physical Model-created immutable proof consumed by
+Planner admission. It is not a selected Connection or a lifecycle timer. A
+finite end is only the proof horizon; no end means analytical all-future
+feasibility. ISL/GS candidates optionally carry it; absent proof means unknown.
+The existing physical Model owns the compact prediction index. No new public
+owner or independent lifecycle is introduced.
+
+Nearest query counts and minimum proven contact durations are optional predicates
+on physical observations. They do not change the physical hardware envelope.
+Retained pairs bypass rank pruning and still undergo current geometry checks;
+Planner alone decides remaining preparation and operational continuity.
+`*_pairs_not_returned` preserves the distinction between physical feasibility
+and query exclusion. Legacy count records default these added fields to zero.

@@ -10,6 +10,10 @@ Repository documentation has three current audiences.
 - [`codex-reference/`](codex-reference/) maps contracts to owners and files.
 - [`user-guides/`](user-guides/) contains runnable entry points and inspection
   workflows.
+- [Qualified performance and bottlenecks](human-readable/qualification-performance.md)
+  separates work, pacing, overlapping spans and resource scopes across the three conditions.
+- [Framework construction, customization and execution](human-readable/framework-construction-execution.md)
+  follows the actual Example inputs through Models, Plans and real Runner/BPF forwarding.
 - [已采用优化的中文说明](human-readable/optimization-decisions.md) explains
   mechanisms and tradeoffs by responsibility; its
   [decision history](provenance/optimization-decision-history.md) links source

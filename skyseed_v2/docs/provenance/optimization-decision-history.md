@@ -1,14 +1,24 @@
 # 已采用优化与宿主机配置的决策历史
 
+Non-authoritative decision history; current contracts live in accepted-design.md.
+
 本记录保存已采用机制、可追溯源码和现有证据的边界，不建立新的架构权威、
 优化方案、配置接口或运行组件。人类入口是 [中文机制说明](../human-readable/optimization-decisions.md)；
 当前合同以 [accepted design](../accepted-design.md) 为准，阶段状态只见
 [CURRENT](../CURRENT.md)。本记录没有重新运行生成、部署或性能测量。
 
+2026-09-10 累计 Producer、多 Shell、Runner 和 Tools 里程碑已经用户与 Work 接受。
+本次关闭只处理保留位置、文档及 Git 提交，不重跑实验。下面的阶段性“当时 pending”
+描述是决策时点背景；当前接受状态以 CURRENT 为准。外部历史实验 raw bundles、
+失败运行、完整旧 Tool portals、临时诊断及重复 source snapshots 已删除，选定的
+测量/核验摘要已汇入正常五 Shell output 的 qualification 目录。下面提及的原始
+路径仅说明当时出处，不表示文件仍存在；可点击链接只指向保留摘要。Git 中既有的
+Runner milestone archive 及其 75 个索引成员继续保留。
+
 ## 证据读法与检查点
 
-- **当前源码事实**：本记录的当前实现指 `6e8652a`。源码链接指向仓库文件，
-  符号名用于定位；将来代码变化时，可用该 Git 检查点恢复本文所述版本。
+- **当前源码事实**：早期 R/D/H 章节的实现检查点为 `6e8652a`。源码链接指向仓库文件，
+  符号名用于定位；将来代码变化时，可用该 Git 检查点恢复本文相应历史章节所述版本；后续章节以其标注轮次为准。
 - **直接历史证据**：Git 中的旧源码、旧文档和已有里程碑结果。某机制在一个
   检查点存在，不等于该提交日期就是它的精确批准日期。
 - **Work 核验结论**：宿主机当前事实来自用户在本次文档任务中提供的 Work
@@ -113,6 +123,8 @@ Satellite order。编码使用 `rank_scale = GS数 * max(1, Satellite数) + 1`�
 
 <a id="c5"></a>
 ### C5：显式 accumulated-deadband 参数策略
+
+状态：以下为 Runner 里程碑时的历史策略；本轮已由 C6 的相对阈值与刷新策略取代。
 
 **Owner / scope。** 公共 `AccumulatedDeadbandParameterPlanningModel` 与
 `ParameterKindConfiguration` 位于
@@ -346,7 +358,7 @@ reap，fork、快照、磁盘与最终 join 均有成本。它不保证所有 To
 detached 完成证据；成功 runtime 不被单独 Tool failure 改判。
 
 <a id="d2"></a>
-### D2：字节相同 build-context 分组与代表镜像复用
+### D2：字节相同 build-context 分组与代表镜像复用（历史 tag 路径）
 
 **Owner / source。** deployment utility
 [`compose/launcher.py`](../../src/skyseed_v2/compose/launcher.py) 的
@@ -354,7 +366,8 @@ detached 完成证据；成功 runtime 不被单独 Tool failure 改判。
 在 `6e8652a` 保留。当前调用见
 [`Starlink main.py`](../../examples/starlink_gen1_satellite_internet/main.py)。
 
-**机制与路径。** 对每个 context 按排序后的相对路径与文件字节计算 SHA-256，
+**历史机制与路径。** 下述 per-service alias 路径在新轮由 [D4](#d4) 替代；
+其原有测量和出处保持不变。对每个 context 按排序后的相对路径与文件字节计算 SHA-256，
 将长度编码在摘要输入中。`runtime/skyseed-build-plan.txt` 记录 shared base
 prerequisite、代表 service 和 alias。生成的 startup 先完成必要构建，再给
 字节相同的组复用 image tag，并检查所需 image identity 与 project label；
@@ -477,3 +490,436 @@ Runner 可重建源码、canonical scripts 的固定启动并发值，以及存�
 独立历史/性能证据均不能补造。宿主机当前状态依赖本次提供的 Work 核验，
 不是本次文档任务的 live 验证结果。普通 bug fix、显然重复的扫描/比较删除、
 小型防御检查和 incidental cleanup 不在本文单列为优化成果。
+
+<a id="c6"></a>
+### C6：本轮批准的接触、准备与参数语义及其物理计算
+
+状态：在 `911e4a45ee8700736975bfee2fad61613de8f089` 基线之后实现的首轮记录；
+仍随累计未提交 diff 保留，不能从后续局部 review 推导整个里程碑已验收。
+不改变前述 Runner 历史结果。原 C4/C5 描述保留为历史，当前合同
+以 accepted-design.md 为准。
+
+物理 Model 使用圆轨道全相位距离/LOS 上界证明稳定 ISL，其他接触以采样
+区间中点和保守运动位移界证明整个区间。未知区间不满足准入；有限 proof end
+不是消失。保存接触区间，复用轨道、GS/Zone 静态几何，使用有界数组块和安全
+筛选，避免为所有未来 pair 创建候选对象。非圆轨道的连续运动证明未建立。
+
+Planner 选择前检查准备后的有效服务，并在准备期间预留两端容量。GS 首先
+最大化站点覆盖，再保留有效 incumbent/pending，最后比较质量。满端口必须
+付出 break-before-make 空窗。参考 5 秒准备、180/60 秒有效服务分别是简化
+ISL 设置与工程 GS 假设，不是商业设备测量。10% 相对延迟阈值和 120 秒刷新
+取代固定微秒/整数目标 persistence；改变事件数量属于策略变化，不能当作
+等价工作量的算法加速。最小测试分别核对未来准入、真实 ISL 变化、容量与
+准备、阈值边界；紧凑物理计算与小图 GS 分配有独立穷举参考。
+
+源码：`simulator/models/_contact_prediction.py`、`_batched_geometry.py`、
+`simulator/planning/models.py`、`planner.py`、`simulator/_ground_station_allocation.py`。
+这里的源码路径相对 `src/skyseed_v2/`。独立机制加速比例未证明。
+
+<a id="c7"></a>
+### C7：有限帧批次、增量索引和材料/Tool 分离
+
+状态与基线同 C6。32 帧是工程起点，不是控制周期。取消独立 50 秒等待；
+预历史/尾部仅由准备和最短服务依赖推导，物理预测不增加正式 Plan 时间。
+Planner 按时间推进；Compiler 仅在 lowering 中重放一次并复用上一 realization
+的私有索引。Route Model/engine 复用未变的图与整数索引，保留按终点 BFS 和
+确定性最少跳数。已有进程池改用 spawn，与有界异步证据写入共存。
+
+证据写入保持顺序并复用压缩流；Starlink 下一批语义计算可与上一批 artifact /
+Traffic 打包重叠。正常生成保留序列、引用、身份、hash 与真实 seal，完整
+encode/decode/对象比较转入 codec 测试和离线 qualification。容量累积按相关
+变化复用计数；Mini 也使用增量 Traffic 构建。runtime package 继续使用已有
+Compose context 去重和 artifact 目录移动，无第二生成算法。
+
+材料完成状态在 Tools 前可见，CLI 为 qualification 仍收齐静态与有限后台 Tool
+结果。Planner Tool 避免 reader/projection 双重重放和重复整包编码；Compiler
+Tool 复用一次 observation 解析。ready、Tools 和总耗时分开，worker 总时长
+与语义阶段重叠，不相加。源码位于现有 experiment Producer、BPF Compiler /
+artifact、shared durable evidence 与 Tools；没有新 owner、daemon 或 Runner phase。
+
+该离线轮不能证明单项机制 speedup、商业硬件准备时延或新的 live Runner/S3 性能。
+历史 859.590 秒是含 Tools/orchestration 的外层总时长，不是 Producer-only。
+
+本轮最终离线测量摘要保留于
+[`qualification-producer-final-20260907T134951Z`](/home/lionheart/workspace/skyseed/skyseed_v2/examples/starlink_multi_shell_satellite_internet/output/qualification/comparisons/producer/)：
+材料完成 360.058 s，随后 Tools 102.584 s，main 总计 462.642 s，含解释器
+启动/退出的外层总计 463.781 s。0.5 s 间隔的进程树采样包含 Route/Tool
+worker，峰值 PSS 1,359,085 KiB；RSS 1,490,092 KiB 会重复计算共享页。
+32 帧配置未另行调参，保留 121 transitions / 4 Plans / 4 realizations。
+完整旧 diff、source snapshot 和诊断日志已删除；摘要保留原计时口径。当前状态和
+验证边界见 [CURRENT](../CURRENT.md)。
+这是策略变化与实现优化的历史联合记录，不归因于任何单一机制；当前审查范围
+与状态由 CURRENT 统一记录。
+
+<a id="c8"></a>
+### C8：最终优化轮的精确复用、表示与执行粒度
+
+状态：2026-09-07/08 在 C6/C7 当时未提交实现上实施；后续 Work 独立审查在该轮
+范围内未发现阻碍收尾的问题。累计里程碑后来已接受；本节保留当时测量边界。
+本轮保留同一有限时间线、准入/准备、GS 覆盖/连续性/质量、路由和 Runner
+合同；不增加 owner、运行阶段或公共配置。开始时的完整 diff 和源码快照已删除；阶段测量及核验摘要见
+[`qualification-final-optimization-20260907T152421Z`](/home/lionheart/workspace/skyseed/skyseed_v2/examples/starlink_multi_shell_satellite_internet/output/qualification/comparisons/producer-final/)。
+
+**GS 精确复用。** 既有 allocator 先用交替路径证明 retained assignment 是否
+已达到最大站点覆盖。若仍可增加覆盖，且 retained 在容量内、每站最多一条，
+这些独立 assignment 构成原 successive shortest path 的严格低成本前缀。
+批量应用此前缀，在最后一次增广前恢复全局最短势，再由原全局 residual
+算法处理剩余变化。保留全局节点顺序与质量权重，不能用“可用 incumbent
+总是保留”取代覆盖目标；一般冗余/容量冲突输入仍走完整求解。小图穷举、
+精确起始源码对照及保留 S3 帧核对覆盖恢复、损失和确定性 ties。
+
+**物理计算与 contention。** 既有 Model 从已校验的静态身份、位置、配置和
+数组几何冻结当前候选；公共构造器仍校验调用方输入，候选和接触证据没有
+删减。表面数组采用有界 720 行 tile，减少线程在 Python/NumPy 间的交接。
+同一帧的受控实验记录在 `diagnostics/contention.py`：旧实现物理观测独立
+中位 0.246 s，与 artifact 线程重叠为 3.185 s，而其自身 thread CPU 为
+0.289 s；无 I/O 的 Python competitor 也复现慢化。该证据支持解释器调度
+竞争，不能把全部差额归因于 GC 或内存带宽。表示优化后的 tile 对照保持
+候选完全相同：64/720 行在 Python competitor 下分别为 3.522/1.101 s，
+独立约 0.165/0.173 s。720 是该受控输入下采用的粒度，不是通用最优值；
+保留有界 artifact/evidence 线程重叠，不修改 GC、worker 上限或宿主机设置。
+合并优化后的同输入复测见 [diagnostics/after/results.json](/home/lionheart/workspace/skyseed/skyseed_v2/examples/starlink_multi_shell_satellite_internet/output/qualification/comparisons/producer-final/diagnostics/after/results.json)：物理独立/与
+artifact 重叠中位 0.185/0.989 s，重叠时自身 thread CPU 0.192 s；同一
+Plan 的独立 artifact append 为 5.369 s（起始 14.694 s）。这是组合改动的
+定向对照，不把收益逐项归因，也不等同于最终生成耗时。
+
+**派生索引。** Route engine 仅保留当前请求的路径，以 ISL 子图和相关 GS
+终点/源端接入为依赖；GS 不转发其他 GS 的 transit traffic，因此无关接入
+变化无需使所有终点失效。Compiler 复用每时点端点→已有 Connection 身份
+映射；artifact 一次分组批次内操作与约束。已有 runtime 模块内的
+`_BoundaryStateIndexes` 在容量累积和有限 Preparation 中应用 delta。
+容量按节点/目的地址/出口引用计数，保留共享目的地址、冲突检测、先加后删
+高水位和 generation 语义。Preparation 仍完成全部有限计划与预写入，Main
+仍只执行 prepared delta，所有当轮退休任务 join 后才完成 ACTIVE。
+
+**Tool 表示。** Planner 从已验证选择直接生成 browser rows，同一 RouteDemand
+的展示 JSON/hash 只在本次 Tool invocation 内派生一次；Traffic 保留唯一
+必要重放与 Plan 输入/输出指纹核对。Runner projection 负责一次调用方输入
+隔离，内部视图复用已隔离内容；inventory/checksums 共享 payload digest。
+这些是既有 Tools 的私有数据职责，领域生成不依赖展示完成。
+
+[diagnostics/retained-reference-results.json](/home/lionheart/workspace/skyseed/skyseed_v2/examples/starlink_multi_shell_satellite_internet/output/qualification/comparisons/producer-final/diagnostics/retained-reference-results.json) 保存起始源码 SHA256 核对后的
+精确对照：600 小图、7 个保留 S3 帧、32 个完整归一化边界及 121 个容量边界。
+另有 [diagnostics/seed-reference-results.json](/home/lionheart/workspace/skyseed/skyseed_v2/examples/starlink_multi_shell_satellite_internet/output/qualification/comparisons/producer-final/diagnostics/seed-reference-results.json) 的 4,000 个精确 tie 对照，
+其中 3,647 个应用 retained 前缀，344 个直接证明 retained 最优。
+同一批已解码边界的容量累积为 3.355 s，起始实现为 18.937 s；这是定向诊断，
+不是端到端或单项部署收益。早期未完成的诊断日志已删除；不把它们作为通过依据。
+最终完整链路与内存测量以 [CURRENT](../CURRENT.md) 和本轮原始记录为准；
+2026-09-08 已完成该轮 fresh S3 全链路，随后获得上述限定范围的 Work review。材料完成为
+222.054 s，含 Tools 的外层生成 315.378 s；与 C7 相同的完整 artifact
+manifest、binary hash、121 boundaries 和 218,731 operations 已精确核对。
+Preparation 90.335 s（含 B0），正式 120 个 Main 的 p50/p95/max 为
+0.118/0.200/0.225 s；所有当前边界删除均 join，Runner/部署清理成功。
+新 Traffic 为 WARN：18 episodes、2,486 sends、1,649 replies、837 losses，
+819 个 timeout/network-error observations 位于预期不可达区间；没有
+infrastructure/persistent-blackhole failure，遥测无丢失。它不继承历史验收。
+当时保留了完整原始包和 Tool taxonomy。后续经授权清理了可重建的部署和
+Tool payload；该历史轮如今仅保留选定 taxonomy/测量摘要，完整原始输入和遥测不再保留。不能把所有损失
+归为正常或抹去未分类记录。
+本轮没有证明每项机制的独立收益；Traffic Tool 148.418 s、采样进程树 PSS
+4.366 GiB 是当时记录的明确成本。后续 D4–D6 来自用户另一次明确授权，
+不把这些历史计时重写为新轮结果。
+
+
+<a id="d4"></a>
+### D4：生成 Compose 的共享内容镜像与唯一身份核对
+
+**Owner / source。** 2026-09-08 获准的部署/三条件轮，仍在
+[`compose/launcher.py`](../../src/skyseed_v2/compose/launcher.py) 的私有 packaging
+与 generated controls 内。公共 ComposeProjectLauncher 不编译或改写输入项目，
+不拥有 Runner。开工的 96 tracked + 3 untracked 修改由
+[保留的历史测量](/home/lionheart/workspace/skyseed/skyseed_v2/examples/starlink_multi_shell_satellite_internet/output/qualification/comparisons/deployment-matrix/matrix-measurements.json)
+保留测量身份；同目录旧 binary diff 与未跟踪原文已删除。
+
+**理由。** 前轮 S3 有 1,075 个节点 context、两个相同内容组，仍执行 1,073 次
+image tag。其 shell trace 推导的阻塞区间约为 inspect 219.718 s、tag 184.694 s、
+三次 build 15.449 s、Compose up 110.493 s；不是 Docker daemon 内部 CPU profile。
+
+**实现。** context 摘要包含排序后的路径、模式、长度与字节；不支持的 symlink
+显式拒绝。每个内容组只有代表保留 build，组内各 service 指向同一项目作用域的
+内容镜像。原 container_name、labels、environment、mounts、依赖和网络配置
+保持各自值。startup 核对每个唯一镜像的 ID、生成镜像的 project label 和完整
+Compose image set；外部镜像可以没有 project label，
+必要时构建 prerequisite 与各代表，不再复制 tags。live project 下 image 过期、
+容器 inventory 失败、构建失败均停止，保留实际失败 status。异质 context 和
+失败路径由行为测试覆盖。build-plan v2 是私有生成控制材料，不是新领域输入。
+
+**限制。** 共享静态镜像不表示共享容器或运行身份；不按近似内容合并。Mini 的
+普通 build 路径不变。没有统一覆盖所有入口的新增并发默认值。最终规模计时和
+容器事件来自同轮独立 qualification，不把消除 CLI 数量拆成虚构的单项实测速率。
+
+<a id="d5"></a>
+### D5：Traffic 的语义读取、验证复用与紧凑记录写入
+
+**Owner / source。** 既有 repository Tools：`tools/planner/reader.py` 的私有
+`_PlanHistoryRead` 只携带 Plan、transition fingerprints 和 frontiers，为 Traffic
+读取 sealed history 的语义部分；它不是新公共数据合同。完整 Planner inspection
+继续由原 reader/Tool 重建。Traffic direct collection 验证完整 Plan replay 后，
+立即复用该结果执行投影；公开的可变 snapshot 投影仍重新验证。C8 所减少的是
+上游 history reader 的额外 replay；本轮又消除了 Traffic reader→projection
+之间剩余的一次重复 replay，原历史数据和测量不重写。
+
+**证据。** [detached 完整语义对照](/home/lionheart/workspace/skyseed/skyseed_v2/examples/starlink_multi_shell_satellite_internet/output/qualification/comparisons/deployment-matrix/diagnostics/traffic-semantic-comparison.json)
+记录当时以原 S3 raw 输入完成的全部 JSON 字段对照，只排除
+自身计时/资源 accounting，结果 PASS。该诊断 outer 为 82.654 s，原完整运行
+的 Traffic Tool 为 148.418 s；两者不是 fresh-network 对照。JSON 从 600,332,172
+变为 382,953,832 bytes。独立 `/usr/bin/time` 记录最大 RSS 2,105,108 KiB，
+不是 PSS，也不能与旧 process-tree PSS 直接作为同口径比例。
+
+**实现与取舍。** 避免重建 Traffic 不消费的 ISL/GS Model inspection 图；它们的
+原记录继续保留，sealed stream hash、envelope/时间对齐、Plan 身份、世界/状态
+lineage、语义事件和最终覆盖检查保留。JSON 不删除事件或字段：按 section 和
+record 分割，记录内部使用标准 C encoder，流式写入 compact JSON；原 HTML
+表格与分类保持不变。其他 Tool 的缩进 JSON 也按流写入，保持原字节格式。
+Planner/Traffic hash 使用流式文件摘要，inventory/checksum 共用 payload hash。
+
+中间版本 cProfile 确认完整 Model inspection 重建和缩进编码的显著累计成本；
+profile 有额外调度/函数调用开销且不是最终版 performance baseline，不用其
+嵌套时长相加或归因单项 speedup。该 profile 没有单独的完整源码快照；最终
+语义对照和各条件正式 baseline 则记录实际 source fingerprint。当前保留的
+完整 Traffic JSON 与 in-memory detached snapshot 仍随证据量增长；这不是
+流式实时 Traffic 服务，也不声称内存与 horizon 无关。
+
+该精确对照之后，只更正了一个解释 caption：从“activation 后一秒”改为
+“actual Main transition 期间”，与已有实际 Main start/end 分类范围一致。
+[caption/source 记录](/home/lionheart/workspace/skyseed/skyseed_v2/examples/starlink_multi_shell_satellite_internet/output/qualification/comparisons/deployment-matrix/diagnostics/traffic-caption-correction.json)
+保留前后 SHA；没有改变分类、事件或评分。fresh 三条件使用更正后的源码。
+
+
+<a id="d6"></a>
+### D6：S1 与 cadence 的显式实验配置
+
+Example 保留 `emu.py` / `simu.py` / `main.py` 流程，增加 `--shell` 与
+`--observation-interval-seconds`；选择写入 output 的输入副本。Timeline 派生
+121/601 个时点和 4/19 个 32-frame Plans，不引入第二条运行路径。准备、
+服务证明、参数刷新均保留秒单位，Traffic 发送间隔独立于观察 cadence。
+
+初次 S1 generation 在 Planner 入口拒绝缺省 ISL capability，没有进入部署。
+修正为在既有 `shells.yaml` 中给全部 1,584 个 S1 Satellites 明确声明
+`maximum_simultaneous_inter_satellite_links: 4`，与批准的可比政策/S3 相同。
+GS capability 2、所有几何和其余 shell 文本不变。这是模拟参数假设，不是
+商用硬件声明；没有用 runtime fallback 掩盖缺失物理输入。
+[前后配置身份与失败范围](/home/lionheart/workspace/skyseed/skyseed_v2/examples/starlink_multi_shell_satellite_internet/output/qualification/comparisons/deployment-matrix/diagnostics/s1-capability-correction.json)
+和 seven-case 配置检查保留。已完成 S3 的生产源码与所选 S3 输入未受影响，
+其原始完整 shell 文件副本当时作为执行身份依据；本次只保留对应比较摘要。
+
+本轮没有新增公共领域 owner、schema 或库 export；`_PlanHistoryRead` 为既有
+Tool reader 的私有记录，build-plan v2 为既有 deployment packaging 的内部材料。
+三条件实测、系统设置/回滚与局限见[性能视图](../human-readable/qualification-performance.md)。
+
+Compiler viewer 后续仅把 S3-only / READY caption 改为 scenario / completed
+ACTIVE。已完成 S3/5 s 与 S1/5 s 的 JSON 数据字节及计时不变，原始页面和
+checksum 已随历史 raw bundle 删除；保留的 caption 范围及前后身份记录在
+[原始校正记录](/home/lionheart/workspace/skyseed/skyseed_v2/examples/starlink_multi_shell_satellite_internet/output/qualification/comparisons/deployment-matrix/diagnostics/compiler-caption-correction.json)。
+S1/1 s 直接使用更正后的 renderer，不需要重跑未受影响的网络生命周期。
+
+<a id="b1"></a>
+## B1. Consecutive finite delivery and local content sharing (2026-09-08)
+
+Status: approved scope, implemented in the existing uncommitted tree; focused
+checks passed; final A/B qualifications and independent Work review are pending
+at the time this decision entry is written. Actual results are maintained in
+[CURRENT](../CURRENT.md) and the [performance view](../human-readable/qualification-performance.md).
+Earlier R/D/H records retain their original scope, measurements and acceptance.
+
+The user approved fixed-node sequential sealed delivery, with no online
+recalibration or replacement of loaded futures. The accepted owner structure
+remains Simulator→Planner and BPF backend→Compiler/Runner. `Planner.flush()`
+publishes a prefix without finalizing; the Producer and artifact writer retain
+explicit continuation state. `BpfRunner.append_batch(Path)` registers one next
+sealed manifest. Optional artifact delivery metadata binds predecessor identity,
+state, time and generation. No new public class, root export, domain entity or
+independent lifecycle authority was introduced.
+
+Initial Preparation initializes infrastructure and executes B0 once. Main owns
+all formal activation/withdrawal work under one fixed clock. Runner/backend
+Maintenance loads/prewrites a successor at T−αD, marks complete READY, and
+reclaims actually retired runtime data under reader and version-reference
+checks. Missing READY at the nominal deadline fails/incompletes the run without
+waiting or resetting time. The helper has bounded prewrite/reclaim units and
+Main channel priority. Physical deletion workers and their ledger remain in
+that helper, and every current-boundary deletion joins before Main completes.
+Continuation uses stable per-connection retirement groups, trading the one-shot
+cross-connection cohort aggregation for correct ownership without known future
+withdrawals. Terminal Cleanup still ends the session.
+
+Qualification B selects 5-second sampling, 32-frame internal publication,
+300-second delivered coverage, α=0.75 and capacity factor 2. These distinct
+controls are visible in the standalone S1–S5 Example. First coverage `[0,300)`
+and final `[300,600]` provide 60+61 timestamps, one B0 and 120 Main. A bounded
+estimate from dated S1/1 s decode/construction/prewrite is about 101 seconds;
+the same-cadence S1/5 s reference gives about 141 seconds for a 61-boundary
+successor at the new node count. The 225-second lead exceeds both, with about
+84 seconds over the larger estimate; it is neither a scaling proof nor an optimum. Fixed
+resident admission is based on the first batch and configuration, not an
+assumed entire future session. Oversized or incompatible batches fail closed.
+
+Before B deployment, sealed-demand inspection found 447 successor nodes whose
+route demand exceeded twice their own first-batch demand (maximum ratio 10.533).
+That per-node historical basis prevented legitimate forwarding-work migration.
+The private reservation now uses the first-batch peak of each typed entity kind,
+with the same factor 2; exact sealed demand is not rewritten. B's successor
+maximum route/peer-peak ratio is 1.196. Fixed route and active map reservations
+are 34,398,920 and 6,432,720 entries, with 53,606 binding entries. The larger
+reservation trades memory for bounded peer migration; it is not a capacity
+optimum or a guarantee that arbitrary future batches fit. The original and
+corrected static admission records remain beside the failed first B generation.
+Actual runtime admission and memory still require the qualified invocation.
+
+Work reduction is measured separately from relocation. Construction reuses
+unchanged route/access dictionaries and derived node records, indexes static
+capacity once per batch, and shares immutable per-node generation content to
+avoid repeated table writes. A new node-version lookup preserves the tc-BPF
+forwarding path. Continuation adds active-generation reader accounting and safe
+retirement; it does not substitute a different dataplane. A wholesale table
+replacement was not adopted because it would require broader publication and
+reclamation changes than the local, independently testable sharing mechanism.
+
+Physical World Tool removes the private owned-history deepcopy while the public
+projection retains input isolation. ISL reuse proves retained selection remains
+maximal under current candidate shape and endpoint policy/capacity constraints;
+otherwise it recomputes. GS removes redundant candidate wrappers and defers an
+unneeded satellite index. Route reuse explicitly keys assignments, demands and
+graph dependencies and retains equal immutable outcomes without fabricated
+changes. Physical observations and formal timestamps are never skipped.
+
+Selected offline/reference, continuity and runtime measurements are retained in the
+[normal output qualification directory](/home/lionheart/workspace/skyseed/skyseed_v2/examples/starlink_multi_shell_satellite_internet/output/qualification/README.md).
+Full original source/raw/Tool bundles and duplicate aggregate portals were removed
+at accepted closure. Host changes retain their recorded original scope in this
+history; none is introduced by closure.
+
+NOT PROVEN: indefinite operation, unrestricted node changes, online calibration,
+optimal lead fraction, linear scaling, or zero-loss Traffic. Generation/model
+spans can overlap; moving a span into Maintenance is not eliminating its work.
+
+<a id="focused-correction"></a>
+## 2026-09-10 accepted correction and presentation closure
+
+Authorized scope is the final focused correction. Existing Planner/Models retain
+GS and Route truth; physical-core caches remain derived per-world/per-frame data.
+The exact GS kernel now seeds a feasible circulation and cancels negative residual
+cycles (queue Bellman-Ford with early predecessor-cycle detection); absence of a
+negative cycle is the optimality certificate. The unchanged cold SSP remains the
+comparison reference. Equal sums at the fifth objective can choose different
+assignments under canonical residual traversal; this does not add a sixth policy
+objective. The differential check evaluates all five integers on identical actual
+candidates and incumbents, and records every changed pair. Separate cold Route
+and Compiler replays check their consumers across the complete formal horizon.
+Shared GS capacity is global and is never duplicated per Shell.
+
+Raw Traffic v2 records update only changed endpoints and seal generation membership.
+Reader validates one generation at a time and carries shared endpoint/incarnation
+ranges through projection v6. Existing Recorder threads and offline Tools keep their
+ownership and nonblocking separation. Generated teardown now uses explicit batches
+of at most eight project-owned containers, independently of Compose parallel flags.
+No host protection or dependency settings were changed.
+
+[Retained latest-run measurements](/home/lionheart/workspace/skyseed/skyseed_v2/examples/starlink_multi_shell_satellite_internet/output/qualification/latest-run/) preserve actual timing,
+audits, frozen source identity and only the necessary differing source files.
+Whole starting/delivery snapshots and previous normal-output copies were removed.
+The initial generation with only 18 selected goals was stopped before deployment;
+its raw bundle is deleted and its failure is not relabelled success. The accepted
+selection correction scans the two chosen controls using authoritative directional
+paths and request cadence. It does not credit B0 as a transition or invent a stable
+whole-horizon control. Attachment changes retain their interval boundaries.
+
+All 121 formal allocations passed the identical-input frozen solver comparison;
+54 had different assignments at identical values of all five objectives. The warm
+allocation was identical. At B0, 15 reserved pairs are exchanged (five already
+operational); continuation carries those choices into later preparations and routes.
+The original per-frame classification (raw file deleted; retained summary in
+`formal-reference-comparison.json`) established that ISL,
+Zone and common physical values stay identical; 19,032 Route outcome differences
+are summed across the 121 frames. Frozen cold Route replay checked 531,426 demands,
+and unchanged Compiler replay checked every boundary. These are explicit equal-cost
+ties and their continuity cascade, not byte-identical old/new formal networks.
+
+
+The first complete attempt used fingerprint
+`def0bef4a94ab71073b725dc5246e2904cd56479f8863146d13f293d0b0181dd`.
+Runtime `20260909T192308.900722200Z-3654937` remains **FAILED**: Main completed
+121 timestamps, but the initial Traffic status RPC timed out at two seconds.
+Packet telemetry had 4412 observations, 573 transactions and 572 endpoint
+deliveries; executor completion and planned 20-goal coverage were not established.
+The failed output, Tool, sealed source and temporary diagnostics were deleted at
+accepted closure; this summary does not imply their continued availability.
+
+Flag-only cleanup also failed. Compose 5.3.1 recorded 4792 stop progress rows,
+1707 removal starts and zero completed removals. Its service traversal and
+per-service removal groups did not enforce the requested bound
+([versioned upstream source](https://github.com/docker/compose/blob/v5.3.1/pkg/compose/down.go)).
+Historical diagnostics matched 6417 remaining shims to saved prior/current
+container identities. Docker object absence alone had not proved shim absence.
+
+The adopted private correction uses immutable-ID batches, reverse dependencies,
+configured graceful stop/hooks, project orphan cleanup and external-network
+preservation. A failure stops subsequent batches; retries inventory current owned
+resources. Traffic control retries once with 2 s then 8 s RPC deadlines, records
+timeouts, rejects identity mismatches and serializes worker cleanup.
+
+On 2026-09-10 the user restarted the services. Containerd needed two 90-second
+recovery retries before booting at 03:25:55 UTC; Docker was ready at 03:26:33 UTC.
+No timeout/protection setting changed. The corrected cleanup removed 3058 owned
+Docker objects in 238.582 s, with at most eight per batch and no errors. Historical
+absence checks covered original container IDs, helper/BPF pin, project networks
+and saved shim identities. This earlier manual recovery was not default-path
+qualification. The subsequent successful run has the distinct identity below.
+
+
+### Final fresh run and explicitly requested manual acceleration
+
+Final-source fingerprint `641359dbff07ebb50e8e03a4de437f59022fe2b3f24650cf215478e2c1b986a4` produced
+runtime `20260910T044347.546519766Z-154590`. All 121 timestamps, one foundation/B0,
+120 Main activations, successor readiness, container/helper continuity and 19922
+retained seam endpoints pass. Runner cleanup and all Tools complete with run.sh
+exit 0. All 20 eligible Traffic coverage goals are selected and observed; health
+remains WARN with 12 unexplained reachable losses and 11 unclassified executor
+requests. Raw packet evidence remains independent and complete.
+
+After confirming the saved Runner/Traffic/Tool evidence, the user explicitly asked
+to finish the current cleanup batch, stop the existing loop, and force-remove only
+this experiment's remaining disposable containers in small dependency-ordered
+batches. The last in-flight docker rm finished with exit status 0 before its
+parent loop was terminated; no next batch was started. The parent had been paused
+while that removal child finished, so its final batch record was not published.
+`manual-teardown-handoff.json` preserves those eight IDs and the exact process
+handoff without rewriting the default log. Default cleanup therefore removed
+3104 containers (387 recorded batches plus that completed handoff batch), taking
+4661.343 s up to the manual handoff. Docker records 3104 ten-second grace expiries;
+stop commands account for 4315.667 s. The remaining cost is measured, not inferred
+from work-count sums.
+
+The separate manual command force-removed 1661 containers in 209 batches of at
+most eight and removed one owned network, taking 196.751 s outer. A process-local
+command/log adapter reused the unchanged private controller's ownership, reverse
+dependency, batch/failure and external-network rules. No generated control, launcher
+source, general stop behavior, host protection or dependency was changed. Runtime
+outer exit 241 records the requested termination of the cleanup parent, while
+Runner and Traffic remain completed. This is **manually accelerated teardown**,
+not successful qualification of uninterrupted defaults; no experiment was rerun.
+
+Absence verification checks all 4765 current container IDs, project networks,
+helper/BPF pin and shims against 14296 saved immutable identities. It passes.
+Current normal output, browser navigation and the external network/Traffic export
+are checked. Final data and separate memory/timing scopes are in the performance
+presentation and `performance-measurements.json`. The nominal ten-second sampler
+has an explicit handoff gap between original and manual command scopes. Original
+failed attempts, strict comparison discrepancies, unclassified health observations
+and the manual-default qualification limitation remain visible. Final code passed
+860 offline tests (two skipped), import and documentation checks; the cumulative
+milestone is now accepted by the user and Work, with backup submission authorized.
+
+
+The accepted final presentation uses stable typed Zone–GS pairs and independent
+recorded directional outcomes, plus episode/probe Traffic replay across segments.
+Source identity for these offline Tools remains separate from frozen runtime source.
+Startup is 64/eight at every count; subsequent 8/16-ID cleanup and explicit shutdown
+hooks remain bounded but have no new full-scale qualification. The successful
+runtime's manually accelerated teardown and Traffic WARN are unchanged.
+
+Global unique Zone service and shared GS admission may choose incompatible,
+disconnected Shell components. This is deferred Model coordination work. Per-Shell
+serving/routing contexts over shared GS entities and Zone geometry are only a recorded
+alternative; they are not implemented and must not duplicate shared physical GS
+capacity. No algorithm, Model, topology or architecture change is part of closure.

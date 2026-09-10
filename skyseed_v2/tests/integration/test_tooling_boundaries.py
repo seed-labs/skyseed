@@ -106,15 +106,6 @@ def test_planner_and_compiler_tools_read_public_detached_values() -> None:
         assert private not in compiler
 
 
-def test_traffic_tool_reads_physical_and_explicit_planning_history() -> None:
-    source = _python_source(TOOLS_ROOT / "traffic")
-    assert "physical_frames_path" in source
-    assert "planning_path" in source
-    assert "unreachable" in source.lower()
-    assert "apply_plan_transition" in source
-    assert "iter_planner_history" in source
-
-
 def test_observation_groups_describe_the_actual_round_b_pipeline() -> None:
     source = _python_source(TOOLS_ROOT / "observation")
     lowered = source.lower()

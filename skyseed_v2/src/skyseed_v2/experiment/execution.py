@@ -45,6 +45,9 @@ def _write_execution_definition(
     example_root: Path,
     runner_artifact: str,
     realization_producer: str,
+    runner_batches: tuple[str, ...] = (),
+    batch_lead_fraction: float = 0.75,
+    batch_capacity_factor: int = 2,
 ) -> Path:
     """Write the persisted-only generated BPF execution definition."""
 
@@ -103,6 +106,21 @@ def _write_execution_definition(
         },
     }
     destination = Path(output_directory) / "runtime/execution.json"
+    if runner_batches:
+        if len(runner_batches) != 1:
+            raise ValueError("generated controls currently deliver one initial and one continued batch")
+        value["runner_batches"] = []
+        for relative in runner_batches:
+            relative = _safe_relative_path(relative, "continued Runner artifact")
+            path = Path(output_directory).resolve() / relative
+            snapshot = _read_runner_artifact_manifest_snapshot(path)
+            value["runner_batches"].append({"manifest": relative,
+                "manifest_sha256": snapshot["manifest_sha256"],
+                "boundary_count": snapshot["boundary_count"],
+                "realization_count": snapshot["realization_count"],
+                "timeline": snapshot["timeline"], "delivery": snapshot["delivery"]})
+        value["runner"].update(batch_lead_fraction=batch_lead_fraction,
+                               batch_capacity_factor=batch_capacity_factor)
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(
         json.dumps(value, indent=2, sort_keys=True) + "\n",
@@ -215,6 +233,7 @@ traffic_tool_status=0
 PYTHONPATH="$TOOL_PYTHONPATH" $PYTHON -m tools.traffic \\
     --telemetry "$INVOCATION_DIR/traffic/traffic-telemetry.jsonl" \\
     --physical-frames "$SCRIPT_DIR/domain-history/physical-frames.jsonl" \\
+    --physical-links "$SCRIPT_DIR/inspection-evidence/physical-link-observations.jsonl.gz" \\
     --planning "$SCRIPT_DIR/domain-history/planning.jsonl.gz" \\
     --bpf-compiler "$SCRIPT_DIR/inspection/{compiler_directory}/bpf-compiler-inspection.json" \\
 {workload_argument}    --probe-plan "$SCRIPT_DIR/inspection/traffic/probe-plan.json" \\
@@ -309,11 +328,15 @@ def _run_generated_bpf_experiment(
     runner = BpfRunner(
         compose_project_name=project_name,
         runtime_artifact=artifact_path,
+        **{key: definition["runner"][key] for key in ("batch_lead_fraction", "batch_capacity_factor")
+           if key in definition["runner"]},
     )
     runner._enable_event_history(
         runner_evidence / "runner-events.jsonl"
     )
     runner._enable_traffic_telemetry(traffic_evidence)
+    for batch in definition.get("runner_batches", ()):
+        runner.append_batch(output / batch["manifest"])
     runtime_observer = _ExecutionObserver(
         {
             "scope": "generated-runtime",
@@ -330,6 +353,8 @@ def _run_generated_bpf_experiment(
     runner_started = perf_counter()
     traffic_started: float | None = None
     try:
+        if invocation_id is not None:
+            _record_container_checkpoint(output, runner_evidence / "containers-before-preparation.json", project_name)
         runner.prepare()
         traffic_started = perf_counter()
         traffic_executor = TrafficProbeExecutor(
@@ -382,6 +407,14 @@ def _run_generated_bpf_experiment(
             },
             started_monotonic=traffic_started,
         )
+    try:
+        if invocation_id is not None:
+            _record_container_checkpoint(output, runner_evidence / "containers-before-cleanup.json", project_name)
+    except BaseException as error:
+        if primary_error is None:
+            primary_error = error
+        else:
+            primary_error.add_note(f"container checkpoint failed: {type(error).__name__}: {error}")
     try:
         runner.cleanup()
     except BaseException as error:
@@ -453,6 +486,24 @@ def _run_generated_bpf_experiment(
         raise primary_error
     if cleanup_error is not None:
         raise cleanup_error
+
+
+def _record_container_checkpoint(output, destination, project):
+    """Capture bounded terminal identity evidence before Runner reclamation."""
+    from yaml import safe_load
+    from skyseed_v2.compose.launcher import _inspect_startup_services
+    started = perf_counter()
+    try:
+        services = safe_load((output / "runtime/docker-compose.yml").read_text())["services"]
+        containers = _inspect_startup_services(project, services, tuple(services))
+        data = {"status": "COMPLETE", "project": project, "containers": [
+            {"id": c["Id"], "service": c["Config"]["Labels"]["com.docker.compose.service"],
+             "image": c["Image"], "state": c["State"], "restart_count": c["RestartCount"]}
+            for c in containers]}
+    except Exception as error:
+        data = {"status": "UNAVAILABLE", "project": project, "error": f"{type(error).__name__}: {error}"}
+    data["duration_seconds"] = perf_counter() - started
+    destination.write_text(json.dumps(data, sort_keys=True) + "\n")
 
 
 def _write_runtime_execution_observations(
@@ -644,7 +695,8 @@ def _read_and_verify_execution(
     ) <= 0:
         raise RuntimeError("generated execution observation interval is invalid")
     runner = _mapping(value.get("runner"), "runner")
-    if runner != {"execution_contract": "sealed-precomputed-only"}:
+    if (runner.get("execution_contract") != "sealed-precomputed-only"
+        or set(runner) - {"execution_contract", "batch_lead_fraction", "batch_capacity_factor"}):
         raise RuntimeError("generated Runner execution contract is unsupported")
     progression = _mapping(value.get("progression"), "progression")
     if (
@@ -670,6 +722,25 @@ def _read_and_verify_execution(
     ):
         raise RuntimeError("generated Runner artifact changed; rerun main.py")
     timeline = snapshot["timeline"]
+    batches = value.get("runner_batches", ())
+    if batches:
+        if not isinstance(batches, list) or len(batches) != 1:
+            raise RuntimeError("generated delivery chain must have exactly one continued batch")
+        verifier = BpfRunner(compose_project_name=str(value["generated_output_identity"]), runtime_artifact=manifest_path,
+                             **{key: runner[key] for key in ("batch_lead_fraction", "batch_capacity_factor") if key in runner})
+        for batch in batches:
+            batch_path = output / _safe_relative_path(batch.get("manifest"), "continued Runner artifact")
+            next_snapshot = _read_runner_artifact_manifest_snapshot(batch_path)
+            if any(batch.get(key) != next_snapshot[key] for key in
+                   ("manifest_sha256", "boundary_count", "realization_count", "timeline", "delivery")):
+                raise RuntimeError("generated continued Runner artifact changed; rerun main.py")
+            verifier.append_batch(batch_path)
+            if not next_snapshot["delivery"]["final"]:
+                raise RuntimeError("generated finite session lacks a terminal delivery")
+            snapshot = {**snapshot,
+                "boundary_count": snapshot["boundary_count"] + next_snapshot["boundary_count"],
+                "realization_count": snapshot["realization_count"] + next_snapshot["realization_count"]}
+            timeline = {**timeline, "end": next_snapshot["timeline"]["end"]}
     if (
         timeline.get("start") != start_time.isoformat()
         or timeline.get("end") != end_time.isoformat()
@@ -971,6 +1042,7 @@ def _error_fact(error: BaseException | None) -> dict[str, str] | None:
     return None if error is None else {
         "type": type(error).__name__,
         "message": str(error),
+        **({"notes": list(error.__notes__)} if getattr(error, "__notes__", None) else {}),
     }
 
 

@@ -22,13 +22,13 @@ from skyseed_v2.simulator import (
     OperationalConnectionKind,
     ParameterKindConfiguration,
     Planner,
-    QualityFirstGroundStationAccessPlanningModel,
+    CoverageFirstGroundStationAccessPlanningModel,
     RetainFirstInterSatelliteConfiguration,
     RetainFirstInterSatelliteConnectionPlanningModel,
     SimulationDefinition,
     SimulationTimeline,
     Simulator,
-    TimeHorizonPlanningWindowPolicy,
+    FrameBatchPlanningWindowPolicy,
 )
 
 
@@ -38,12 +38,14 @@ REFERENCE_EPOCH = datetime(2026, 1, 1, tzinfo=timezone.utc)
 STARLINK_GEN1_OBSERVATION_INTERVAL = timedelta(seconds=5)
 STARLINK_GEN1_DURATION = timedelta(minutes=10)
 STARLINK_GEN1_TIMELINE_END = REFERENCE_EPOCH + STARLINK_GEN1_DURATION
-STARLINK_GEN1_FORMAL_BOUNDARY_COUNT = 121
+STARLINK_GEN1_FORMAL_BOUNDARY_COUNT = (
+    STARLINK_GEN1_DURATION // STARLINK_GEN1_OBSERVATION_INTERVAL + 1
+)
 
 # Explicit scenario policy and physical parameters; no library default hides them.
 MAXIMUM_ISL_DISTANCE_M = 6_000_000.0
 GROUND_STATION_MINIMUM_ELEVATION_DEG = 5.0
-MAXIMUM_GROUND_STATION_ACCESS_COUNT = 8
+MAXIMUM_GROUND_STATION_ACCESS_COUNT = 4
 GROUND_STATION_MAXIMUM_DISTANCE_M = 3_000_000.0
 ZONE_COVERAGE_MINIMUM_ELEVATION_DEG = 25.0
 PROPAGATION_SPEED_M_PER_S = 299_792_458.0
@@ -57,18 +59,19 @@ PACKET_LOSS_PPM_BY_KIND = {
 }
 GATEWAY_CANDIDATE_COUNT = 3
 GATEWAY_CANDIDATE_MAX_DISTANCE_M = None
-STARLINK_GEN1_PLANNING_HORIZON = timedelta(seconds=50)
-STARLINK_GEN1_PUBLICATION_HORIZON = timedelta(seconds=20)
-STARLINK_GEN1_ACQUISITION_DURATION = timedelta(seconds=20)
-STARLINK_GEN1_DELAY_DEADBAND_US = 191
-STARLINK_GEN1_PARAMETER_PERSISTENCE = timedelta(seconds=10)
-STARLINK_GEN1_PARAMETER_MAX_STALENESS = timedelta(seconds=30)
+STARLINK_GEN1_PLAN_BATCH_FRAMES = 32
+STARLINK_GEN1_ACQUISITION_DURATION = timedelta(seconds=5)
+STARLINK_GEN1_ISL_MINIMUM_SERVICE = timedelta(seconds=180)
+STARLINK_GEN1_GS_MINIMUM_SERVICE = timedelta(seconds=60)
+STARLINK_GEN1_DELAY_RELATIVE_THRESHOLD = 0.10
+STARLINK_GEN1_PARAMETER_MAX_STALENESS = timedelta(seconds=120)
 
 
 def create_starlink_gen1_simulator(
     emulator: Emulator,
     *,
     zone_layout_path: Path = ZONE_LAYOUT_FILE,
+    observation_interval: timedelta = STARLINK_GEN1_OBSERVATION_INTERVAL,
 ) -> Simulator:
     """Create the canonical static physical aggregate without advancing time."""
 
@@ -85,7 +88,7 @@ def create_starlink_gen1_simulator(
             timeline=SimulationTimeline(
                 start_time=REFERENCE_EPOCH,
                 end_time=STARLINK_GEN1_TIMELINE_END,
-                observation_interval=STARLINK_GEN1_OBSERVATION_INTERVAL,
+                observation_interval=observation_interval,
             ),
         )
     )
@@ -97,7 +100,7 @@ def create_starlink_gen1_simulator(
 
 
 def create_starlink_gen1_planner(simulator: Simulator) -> Planner:
-    """Attach the accepted 2+2/K3/20s semantic Planner composition."""
+    """Attach the accepted 2+2/K1 with forward service admission semantic Planner composition."""
 
     if not isinstance(simulator, Simulator):
         raise TypeError("simulator must be a Simulator")
@@ -105,8 +108,7 @@ def create_starlink_gen1_planner(simulator: Simulator) -> Planner:
         kind: ParameterKindConfiguration(
             bandwidth_bps=BANDWIDTH_BPS_BY_KIND[kind],
             packet_loss_ppm=PACKET_LOSS_PPM_BY_KIND[kind],
-            delay_deadband_us=STARLINK_GEN1_DELAY_DEADBAND_US,
-            persistence=STARLINK_GEN1_PARAMETER_PERSISTENCE,
+            delay_relative_threshold=STARLINK_GEN1_DELAY_RELATIVE_THRESHOLD,
             max_staleness=STARLINK_GEN1_PARAMETER_MAX_STALENESS,
         )
         for kind in OperationalConnectionKind
@@ -130,13 +132,19 @@ def create_starlink_gen1_planner(simulator: Simulator) -> Planner:
                 RetainFirstInterSatelliteConfiguration(
                     desired_same_plane_links=2,
                     desired_cross_plane_links=2,
-                    maximum_cross_plane_separation=3,
+                    maximum_cross_plane_separation=1,
+                    same_plane_neighbor_span=1,
+                    cross_plane_neighbor_count=4,
                     acquisition_duration=STARLINK_GEN1_ACQUISITION_DURATION,
+                    minimum_service_duration=STARLINK_GEN1_ISL_MINIMUM_SERVICE,
                 )
             )
         ),
-        ground_station_model=QualityFirstGroundStationAccessPlanningModel(
-            default_ground_station_limit=MAXIMUM_GROUND_STATION_ACCESS_COUNT
+        ground_station_model=CoverageFirstGroundStationAccessPlanningModel(
+            default_ground_station_limit=MAXIMUM_GROUND_STATION_ACCESS_COUNT,
+            initial_candidate_count=32,
+            acquisition_duration=STARLINK_GEN1_ACQUISITION_DURATION,
+            minimum_service_duration=STARLINK_GEN1_GS_MINIMUM_SERVICE,
         ),
         zone_service_model=HighestElevationZoneServicePlanningModel(),
         parameter_model=AccumulatedDeadbandParameterPlanningModel(
@@ -149,10 +157,8 @@ def create_starlink_gen1_planner(simulator: Simulator) -> Planner:
             ),
         ),
         coordination_policy=DefaultCoordinationPolicy(),
-        planning_window_policy=TimeHorizonPlanningWindowPolicy(
-            planning_horizon=STARLINK_GEN1_PLANNING_HORIZON,
-            publication_horizon=STARLINK_GEN1_PUBLICATION_HORIZON,
-            maximum_prehistory=STARLINK_GEN1_ACQUISITION_DURATION,
+        planning_window_policy=FrameBatchPlanningWindowPolicy(
+            frames_per_batch=STARLINK_GEN1_PLAN_BATCH_FRAMES,
         ),
     )
 
@@ -169,7 +175,7 @@ def starlink_gen1_physical_configuration() -> dict[str, object]:
         "inter_satellite": {
             "maximum_distance_km": MAXIMUM_ISL_DISTANCE_M / 1_000.0,
             "earth_clearance": "exact Earth-clear LOS",
-            "candidate_scope": "same-plane plus cyclic K3 cross-plane",
+            "candidate_scope": "cyclic same-plane predecessors/successors; K1 planes, four current nearest cross-plane neighbors per endpoint plus incumbents",
         },
         "ground_station_access": {
             "minimum_elevation_deg": GROUND_STATION_MINIMUM_ELEVATION_DEG,
@@ -177,6 +183,9 @@ def starlink_gen1_physical_configuration() -> dict[str, object]:
                 GROUND_STATION_MAXIMUM_DISTANCE_M / 1_000.0
             ),
             "default_site_capacity": MAXIMUM_GROUND_STATION_ACCESS_COUNT,
+            "capability_basis": "engineering assumption; explicit station capability overrides fallback",
+            "initial_candidate_count": 32,
+            "search": "nearest physical candidates plus retained/pending; expands under admission/capacity shortage",
         },
         "zone_service": {
             "minimum_elevation_deg": ZONE_COVERAGE_MINIMUM_ELEVATION_DEG,
@@ -184,17 +193,16 @@ def starlink_gen1_physical_configuration() -> dict[str, object]:
     }
 
 
-def starlink_gen1_model_descriptors() -> dict[str, object]:
+def starlink_gen1_model_descriptors(
+    *, observation_interval: timedelta = STARLINK_GEN1_OBSERVATION_INTERVAL,
+) -> dict[str, object]:
     """Describe the exact configured Model roles for detached inspection."""
 
     parameter_configuration = {
         kind.value: {
             "bandwidth_bps": BANDWIDTH_BPS_BY_KIND[kind],
             "packet_loss_ppm": PACKET_LOSS_PPM_BY_KIND[kind],
-            "delay_deadband_us": STARLINK_GEN1_DELAY_DEADBAND_US,
-            "persistence_seconds": (
-                STARLINK_GEN1_PARAMETER_PERSISTENCE.total_seconds()
-            ),
+            "delay_relative_threshold": STARLINK_GEN1_DELAY_RELATIVE_THRESHOLD,
             "max_staleness_seconds": (
                 STARLINK_GEN1_PARAMETER_MAX_STALENESS.total_seconds()
             ),
@@ -246,8 +254,10 @@ def starlink_gen1_model_descriptors() -> dict[str, object]:
                 RetainFirstInterSatelliteConnectionPlanningModel
             ),
             "configuration": {
-                "candidate_scope": "same-plane plus cyclic K3 cross-plane",
-                "maximum_cross_plane_separation": 3,
+                "candidate_scope": "cyclic same-plane predecessors/successors; K1 planes, four current nearest cross-plane neighbors per endpoint plus incumbents",
+                "maximum_cross_plane_separation": 1,
+                "same_plane_neighbor_span": 1,
+                "cross_plane_neighbor_count": 4,
                 "desired_same_plane_links": 2,
                 "desired_cross_plane_links": 2,
                 "acquisition_duration_seconds": (
@@ -257,16 +267,17 @@ def starlink_gen1_model_descriptors() -> dict[str, object]:
                     "Satellite InterSatelliteLinkCapability; maximum 4"
                 ),
                 "selection_order": "retain-first deterministic policy order",
+                "minimum_service_seconds": STARLINK_GEN1_ISL_MINIMUM_SERVICE.total_seconds(),
             },
         },
         "ground_station": {
             "implementation": _type_identity(
-                QualityFirstGroundStationAccessPlanningModel
+                CoverageFirstGroundStationAccessPlanningModel
             ),
             "configuration": {
                 "objective": (
-                    "maximum-cardinality sparse capacitated assignment, then "
-                    "accepted deterministic elevation/rank cost"
+                    "maximum GS coverage, distinct satellites, total connections, then continuity and "
+                    "deterministic elevation/rank quality"
                 ),
                 "default_ground_station_limit": (
                     MAXIMUM_GROUND_STATION_ACCESS_COUNT
@@ -277,7 +288,9 @@ def starlink_gen1_model_descriptors() -> dict[str, object]:
                 "satellite_capacity": (
                     "Satellite.max_simultaneous_ground_station_accesses"
                 ),
-                "tie_semantics": "accepted successive-shortest-path identity",
+                "tie_semantics": "canonical station/satellite order",
+                "preparation_seconds": STARLINK_GEN1_ACQUISITION_DURATION.total_seconds(),
+                "minimum_service_seconds": STARLINK_GEN1_GS_MINIMUM_SERVICE.total_seconds(),
             },
         },
         "zone_service": {
@@ -313,19 +326,14 @@ def starlink_gen1_model_descriptors() -> dict[str, object]:
         },
         "planning_window": {
             "implementation": _type_identity(
-                TimeHorizonPlanningWindowPolicy
+                FrameBatchPlanningWindowPolicy
             ),
             "configuration": {
                 "observation_interval_seconds": (
-                    STARLINK_GEN1_OBSERVATION_INTERVAL.total_seconds()
+                    observation_interval.total_seconds()
                 ),
-                "planning_horizon_seconds": (
-                    STARLINK_GEN1_PLANNING_HORIZON.total_seconds()
-                ),
-                "publication_horizon_seconds": (
-                    STARLINK_GEN1_PUBLICATION_HORIZON.total_seconds()
-                ),
-                "maximum_prehistory_seconds": (
+                "frames_per_batch": STARLINK_GEN1_PLAN_BATCH_FRAMES,
+                "derived_prehistory_seconds": (
                     STARLINK_GEN1_ACQUISITION_DURATION.total_seconds()
                 ),
             },
@@ -341,23 +349,19 @@ def starlink_gen1_planning_configuration(
     if not isinstance(simulator, Simulator):
         raise TypeError("simulator must be a Simulator")
     frontiers = simulator.get_planner().get_frontiers()
+    timeline = simulator.get_timeline()
     return {
         "scenario_identity": "starlink_gen1_satellite_internet",
         "observation_interval_seconds": (
-            STARLINK_GEN1_OBSERVATION_INTERVAL.total_seconds()
+            simulator.get_timeline().observation_interval.total_seconds()
         ),
-        "formal_boundary_count": STARLINK_GEN1_FORMAL_BOUNDARY_COUNT,
-        "planning_horizon_seconds": (
-            STARLINK_GEN1_PLANNING_HORIZON.total_seconds()
-        ),
-        "publication_horizon_seconds": (
-            STARLINK_GEN1_PUBLICATION_HORIZON.total_seconds()
-        ),
+        "formal_boundary_count": (timeline.end_time - timeline.start_time) // timeline.observation_interval + 1,
+        "frames_per_batch": STARLINK_GEN1_PLAN_BATCH_FRAMES,
         "acquisition_duration_seconds": (
             STARLINK_GEN1_ACQUISITION_DURATION.total_seconds()
         ),
-        "isl_policy": "retain-first 2 same-plane + 2 cross-plane / K3",
-        "ground_station_policy": "quality-first allocation",
+        "isl_policy": "retain-first 2 same-plane + 2 cross-plane / K1",
+        "ground_station_policy": "GS coverage / distinct satellites / connections / continuity / quality",
         "zone_policy": "highest elevation with explicit unserved state",
         "parameter_policy": "accumulated delay deadband",
         "route_policy": "gateway demand-bounded hop count",

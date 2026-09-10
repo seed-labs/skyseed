@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
 from hashlib import sha256
@@ -302,6 +302,8 @@ class PlannedOperationalState:
     zone_service_assignments: tuple[ZoneServiceAssignment, ...] = ()
     route_outcomes: tuple[RouteOutcome, ...] = ()
 
+    _fingerprint: str | None = field(default=None, init=False, repr=False, compare=False)
+
     def __post_init__(self) -> None:
         object.__setattr__(
             self,
@@ -412,6 +414,10 @@ class PlanTransition:
     parameter_updated_connections: tuple[OperationalConnection, ...] = ()
     zone_service_transitions: tuple[ZoneServiceTransition, ...] = ()
     route_outcome_transitions: tuple[RouteOutcomeTransition, ...] = ()
+
+    _fingerprint: str | None = field(default=None, init=False, repr=False, compare=False)
+
+    _events: tuple | None = field(default=None, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -612,6 +618,8 @@ def semantic_event_references(
 
     if not isinstance(transition, PlanTransition):
         raise TypeError("transition must be a PlanTransition")
+    if transition._events is not None:
+        return transition._events
     timestamp = transition.timestamp
     references: list[SemanticEventReference] = []
     for connection in transition.established_connections:
@@ -704,6 +712,7 @@ def semantic_event_references(
         raise ValueError(
             "canonical semantic event references contain a duplicate key/kind"
         )
+    object.__setattr__(transition, "_events", ordered)
     return ordered
 
 
@@ -918,6 +927,7 @@ def _create_plan_with_output_state(
     start_timestamp: datetime,
     transitions: tuple[PlanTransition, ...],
     semantic_event_precedences: tuple[SemanticEventPrecedence, ...] = (),
+    _constructed_state: PlannedOperationalState | None = None,
 ) -> tuple[Plan, PlannedOperationalState]:
     """Create one canonical Plan and return its already replayed output state."""
 
@@ -945,9 +955,13 @@ def _create_plan_with_output_state(
             "after previous state"
         )
     transition_values = tuple(transitions)
-    state = previous_state
-    for transition in transition_values:
-        state = apply_plan_transition(state, transition)
+    state = _constructed_state
+    if state is None:
+        state = previous_state
+        for transition in transition_values:
+            state = apply_plan_transition(state, transition)
+    elif not transition_values or state.timestamp != transition_values[-1].timestamp:
+        raise ValueError('constructed state must end at the final transition')
     if state is None:  # pragma: no cover - empty tuples fail in Plan validation
         raise ValueError("transitions must not be empty")
     input_fingerprint = (
@@ -1153,7 +1167,10 @@ def planned_operational_state_fingerprint(
 
     if not isinstance(state, PlannedOperationalState):
         raise TypeError("state must be a PlannedOperationalState")
-    return _json_fingerprint(_planned_operational_state_material(state))
+    if state._fingerprint is None:
+        object.__setattr__(state, '_fingerprint',
+            _json_fingerprint(_planned_operational_state_material(state)))
+    return state._fingerprint
 
 
 def plan_transition_fingerprint(transition: PlanTransition) -> str:
@@ -1161,7 +1178,10 @@ def plan_transition_fingerprint(transition: PlanTransition) -> str:
 
     if not isinstance(transition, PlanTransition):
         raise TypeError("transition must be a PlanTransition")
-    return _json_fingerprint(_plan_transition_material(transition))
+    if transition._fingerprint is None:
+        object.__setattr__(transition, '_fingerprint',
+            _json_fingerprint(_plan_transition_material(transition)))
+    return transition._fingerprint
 
 
 def _plan_identifier(
@@ -1226,7 +1246,7 @@ def _planned_operational_state_material(
     }
 
 
-def _plan_transition_material(transition: PlanTransition) -> dict[str, object]:
+def _plan_transition_material(transition: PlanTransition, *, compact_routes=False) -> dict[str, object]:
     return {
         "schema": "skyseed-v2-plan-transition-v1",
         "timestamp": transition.timestamp.isoformat(),
@@ -1257,8 +1277,8 @@ def _plan_transition_material(transition: PlanTransition) -> dict[str, object]:
         "route_outcome_transitions": [
             {
                 "demand": _route_demand_material(value.demand),
-                "previous": _optional_route_outcome_material(value.previous),
-                "current": _optional_route_outcome_material(value.current),
+                "previous": _optional_route_outcome_material(value.previous, include_demand=not compact_routes),
+                "current": _optional_route_outcome_material(value.current, include_demand=not compact_routes),
             }
             for value in transition.route_outcome_transitions
         ],
@@ -1332,8 +1352,8 @@ def _route_demand_material(demand: RouteDemand) -> dict[str, object]:
     }
 
 
-def _route_outcome_material(outcome: RouteOutcome) -> dict[str, object]:
-    common = {"demand": _route_demand_material(outcome.demand)}
+def _route_outcome_material(outcome: RouteOutcome, *, include_demand=True) -> dict[str, object]:
+    common = {"demand": _route_demand_material(outcome.demand)} if include_demand else {}
     if isinstance(outcome, ReachableRouteOutcome):
         return {
             **common,
@@ -1349,9 +1369,9 @@ def _route_outcome_material(outcome: RouteOutcome) -> dict[str, object]:
 
 
 def _optional_route_outcome_material(
-    outcome: RouteOutcome | None,
+    outcome: RouteOutcome | None, *, include_demand=True,
 ) -> dict[str, object] | None:
-    return None if outcome is None else _route_outcome_material(outcome)
+    return None if outcome is None else _route_outcome_material(outcome, include_demand=include_demand)
 
 
 def _optional_node_material(node_id: NodeId | None) -> dict[str, object] | None:
@@ -1501,11 +1521,11 @@ def _ordered_unique(values, expected_type, key, field_name: str) -> tuple:
         raise TypeError(f"{field_name} must be iterable") from error
     if any(not isinstance(value, expected_type) for value in copied):
         raise TypeError(f"{field_name} contains an invalid value")
-    ordered = tuple(sorted(copied, key=key))
-    keys = tuple(key(value) for value in ordered)
+    keyed = sorted(((key(value), value) for value in copied), key=lambda item: item[0])
+    keys = tuple(identity for identity, _ in keyed)
     if len(keys) != len(set(keys)):
         raise ValueError(f"{field_name} contains a duplicate identity")
-    return ordered
+    return tuple(value for _, value in keyed)
 
 
 def _validate_acyclic(
@@ -1556,11 +1576,11 @@ def _semantic_event_key(event: SemanticEventReference) -> tuple:
     return event.kind.value, identity
 
 
+_SEMANTIC_EVENT_ORDER = {kind: index for index, kind in enumerate(SemanticEventKind)}
+
+
 def _semantic_event_order_key(event: SemanticEventReference) -> tuple:
-    order = {
-        kind: index for index, kind in enumerate(SemanticEventKind)
-    }
-    return event.timestamp, order[event.kind], _semantic_event_key(event)[1]
+    return event.timestamp, _SEMANTIC_EVENT_ORDER[event.kind], _semantic_event_key(event)[1]
 
 
 def _precedence_key(value: SemanticEventPrecedence) -> tuple:

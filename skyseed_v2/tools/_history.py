@@ -43,7 +43,7 @@ def read_sealed_physical_frames(path: Path) -> tuple[dict[str, Any], ...]:
     """Read one verified formal PhysicalFrame stream as detached ECEF values."""
 
     source = Path(path)
-    manifest = _read_domain_history_manifest(source, minimum_through="planner")
+    manifest = _read_domain_history_manifest(source, minimum_through="physical-world")
     if source.is_symlink():
         raise ValueError("PhysicalFrame history must not be a symlink")
     try:

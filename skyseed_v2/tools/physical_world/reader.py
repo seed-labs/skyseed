@@ -100,6 +100,7 @@ def read_physical_world(
                     "altitude_km": orbit.altitude_km,
                     "inclination_deg": orbit.inclination_deg,
                     "right_ascension_deg": orbit.right_ascension_deg,
+                    "epoch_utc": orbit.epoch_utc.isoformat(),
                     "satellite_count": len(orbit.satellites),
                     "satellite_ids": [
                         satellite.satellite_id
@@ -281,6 +282,7 @@ def _satellite_record(satellite: Satellite) -> dict[str, object]:
         "node_id": satellite.node_id.value,
         "satellite_id": satellite.satellite_id,
         "orbit_index": satellite.orbit_index,
+        "mean_anomaly_deg": satellite.mean_anomaly_deg,
         "max_simultaneous_ground_station_accesses": (
             satellite.max_simultaneous_ground_station_accesses
         ),

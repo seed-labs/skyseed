@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from hashlib import sha256
+from hashlib import file_digest
 import json
 from pathlib import Path
 from typing import Any
@@ -42,19 +42,20 @@ def write_planner_artifacts(
         ),
     )
     payloads = (data_path, page_path, summary_path, *chunk_paths)
+    payload_records = [_file_record(path, output) for path in payloads]
     write_json(
         inventory_path,
         {
             "format_version": 1,
-            "files": [_file_record(path, output) for path in payloads],
+            "files": payload_records,
         },
     )
     checksum_files = (*payloads, inventory_path)
     write_text(
         checksum_path,
         "".join(
-            f"{_digest(path)}  {path.relative_to(output).as_posix()}\n"
-            for path in checksum_files
+            f"{record['sha256']}  {record['path']}\n"
+            for record in (*payload_records, _file_record(inventory_path, output))
         ),
     )
     return {
@@ -135,7 +136,8 @@ def _file_record(path: Path, root: Path) -> dict[str, object]:
 
 
 def _digest(path: Path) -> str:
-    return sha256(path.read_bytes()).hexdigest()
+    with path.open("rb") as stream:
+        return file_digest(stream, "sha256").hexdigest()
 
 
 __all__ = ["write_planner_artifacts"]

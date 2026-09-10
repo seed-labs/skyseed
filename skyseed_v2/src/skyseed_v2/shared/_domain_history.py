@@ -14,14 +14,14 @@ from typing import Any, Iterator, Mapping
 
 
 _DOMAIN_HISTORY_ARTIFACT_TYPE = "skyseed-v2-domain-history"
-_DOMAIN_HISTORY_FORMAT_VERSION = 1
+_DOMAIN_HISTORY_FORMAT_VERSION = 2
 _DOMAIN_HISTORY_MANIFEST_NAME = "domain-history-manifest.json"
 _DOMAIN_HISTORY_STREAM_NAMES = {
     "physical_frames": "physical-frames.jsonl",
     "planning": "planning.jsonl.gz",
     "compiler": "compiler.jsonl",
 }
-_THROUGH_RANK = {"planner": 1, "compiler": 2}
+_THROUGH_RANK = {"physical-world": 0, "planner": 1, "compiler": 2}
 _MANIFEST_FIELDS = {
     "artifact_type",
     "format_version",
@@ -201,7 +201,7 @@ def _read_domain_history_manifest(
     """Read and structurally validate the mandatory sibling terminal seal."""
 
     if minimum_through not in _THROUGH_RANK:
-        raise ValueError("minimum_through must be planner or compiler")
+        raise ValueError("minimum_through must be physical-world, planner or compiler")
     raw_source = Path(stream_path)
     if raw_source.name not in _DOMAIN_HISTORY_STREAM_NAMES.values():
         raise ValueError("domain-history stream has a non-canonical name")
@@ -296,7 +296,8 @@ def _validate_domain_history_manifest_data(
         raise ValueError("domain-history manifest has unknown fields")
     if (
         data["artifact_type"] != _DOMAIN_HISTORY_ARTIFACT_TYPE
-        or data["format_version"] != _DOMAIN_HISTORY_FORMAT_VERSION
+        or type(data["format_version"]) is not int
+        or data["format_version"] not in {1, _DOMAIN_HISTORY_FORMAT_VERSION}
         or data["terminal"] is not True
     ):
         raise ValueError("domain-history manifest is incompatible")
@@ -337,7 +338,10 @@ def _validate_domain_history_manifest_data(
         raise ValueError("domain-history formal coverage is incomplete")
     if counts["prehistory_frames"] != counts["expected_prehistory_frames"]:
         raise ValueError("domain-history prehistory coverage is incomplete")
-    if counts["plans"] <= 0 or counts["transitions"] != counts["formal_frames"]:
+    physical_only = through == "physical-world"
+    if physical_only and (data["format_version"] != 2 or any(counts[name] != 0 for name in ("plans", "transitions", "realizations", "prehistory_frames"))):
+        raise ValueError("physical-only history contains semantic progression")
+    if not physical_only and (counts["plans"] <= 0 or counts["transitions"] != counts["formal_frames"]):
         raise ValueError("domain-history Plan coverage is incomplete")
     if through == "planner" and counts["realizations"] != 0:
         raise ValueError("Planner-only domain-history contains realizations")
@@ -347,36 +351,42 @@ def _validate_domain_history_manifest_data(
     frontiers = _exact_mapping(
         data["frontiers"], _FRONTIER_FIELDS, "frontiers"
     )
-    if any(
+    if physical_only:
+        if frontiers != {"physical_observation": end.isoformat(), "planning": None, "publication": None}:
+            raise ValueError("physical-only final frontiers differ")
+        if any(value is not None for value in _exact_mapping(data["lineage"], _LINEAGE_FIELDS, "lineage").values()):
+            raise ValueError("physical-only history contains Plan lineage")
+    elif any(
         _timestamp(value, f"{name} frontier") != end
         for name, value in frontiers.items()
     ):
         raise ValueError("domain-history final frontiers are incomplete")
 
     lineage = _exact_mapping(data["lineage"], _LINEAGE_FIELDS, "lineage")
-    for name in (
-        "first_plan_id",
-        "last_plan_id",
-        "last_plan_output_state_fingerprint",
-    ):
-        _require_string(lineage[name], name)
-    previous_id = lineage["last_plan_previous_plan_id"]
-    if previous_id is not None:
-        _require_string(previous_id, "last_plan_previous_plan_id")
-    if through == "planner":
-        if (
-            lineage["last_realization_plan_id"] is not None
-            or lineage["last_realization_output_state_fingerprint"] is not None
+    if not physical_only:
+        for name in (
+            "first_plan_id",
+            "last_plan_id",
+            "last_plan_output_state_fingerprint",
         ):
-            raise ValueError("Planner-only lineage contains a realization")
-    else:
-        if lineage["last_realization_plan_id"] != lineage["last_plan_id"]:
-            raise ValueError("domain-history final Compiler Plan lineage differs")
-        if (
-            lineage["last_realization_output_state_fingerprint"]
-            != lineage["last_plan_output_state_fingerprint"]
-        ):
-            raise ValueError("domain-history final Compiler state lineage differs")
+            _require_string(lineage[name], name)
+        previous_id = lineage["last_plan_previous_plan_id"]
+        if previous_id is not None:
+            _require_string(previous_id, "last_plan_previous_plan_id")
+        if through == "planner":
+            if (
+                lineage["last_realization_plan_id"] is not None
+                or lineage["last_realization_output_state_fingerprint"] is not None
+            ):
+                raise ValueError("Planner-only lineage contains a realization")
+        else:
+            if lineage["last_realization_plan_id"] != lineage["last_plan_id"]:
+                raise ValueError("domain-history final Compiler Plan lineage differs")
+            if (
+                lineage["last_realization_output_state_fingerprint"]
+                != lineage["last_plan_output_state_fingerprint"]
+            ):
+                raise ValueError("domain-history final Compiler state lineage differs")
 
     streams = _exact_mapping(
         data["streams"], set(_DOMAIN_HISTORY_STREAM_NAMES), "streams"

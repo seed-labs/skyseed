@@ -21,6 +21,13 @@ _PRIMARY_EVENTS = {
     "failure": ("Failure", "Runner failure recorded"),
     "runtime_cleanup_end": ("Cleanup", "Dataplane cleanup completed"),
     "cleanup_end": ("Cleanup", "Runner cleanup completed"),
+    "batch_appended": ("Maintenance", "Sealed batch registered"),
+    "batch_load_start": ("Maintenance", "Background batch loading started"),
+    "batch_ready": ("Maintenance", "Batch ready before activation"),
+    "batch_activation_start": ("Main", "Delivery seam activation started"),
+    "batch_plan_reclaimed": ("Maintenance", "Consumed batch plans reclaimed"),
+    "generation_reclaim": ("Maintenance", "Quiescent generations reclaimed"),
+    "batch_exhausted": ("Failure", "Delivery deadline exhausted"),
 }
 
 
@@ -34,26 +41,25 @@ def project_runner_inspection(
 
     snapshot = deepcopy(dict(runner_snapshot))
     outcome = deepcopy(dict(runtime_outcome))
+    deployment_startup = deepcopy(deployment_startup)
     if snapshot.get("format_version") != 2:
         raise ValueError("unsupported Runner inspection snapshot format")
     runner = _mapping(snapshot.get("runner"), "runner")
-    runtime_foundation = deepcopy(
-        dict(_mapping(runner.get("runtime_foundation", {}), "runtime foundation"))
-    )
+    runtime_foundation = dict(_mapping(runner.get("runtime_foundation", {}), "runtime foundation"))
     binding_values = runtime_foundation.get("bindings", ())
     if not isinstance(binding_values, (tuple, list)):
         raise TypeError("runtime foundation bindings must be a sequence")
     runtime_foundation["bindings"] = tuple(
-        deepcopy(dict(_mapping(value, "runtime binding")))
+        dict(_mapping(value, "runtime binding"))
         for value in binding_values
     )
     events_value = snapshot.get("events")
     if not isinstance(events_value, (tuple, list)):
         raise TypeError("Runner inspection events must be a sequence")
     events = tuple(
-        deepcopy(dict(_mapping(value, "event"))) for value in events_value
+        dict(_mapping(value, "event")) for value in events_value
     )
-    event_history = deepcopy(snapshot.get("event_history", {}))
+    event_history = snapshot.get("event_history", {})
     if outcome.get("status") not in {
         "completed",
         "interrupted",
@@ -89,9 +95,10 @@ def project_runner_inspection(
         "exit_code": outcome.get("exit_code"),
         "lifecycle_state": runner.get("lifecycle_state"),
         "execution_mode": runner.get("execution_mode"),
-        "frontiers": deepcopy(runner.get("frontiers", {})),
+        "frontiers": runner.get("frontiers", {}),
         "execution_contract": runner.get("execution_contract"),
-        "artifact": deepcopy(runner.get("artifact", {})),
+        "artifact": runner.get("artifact", {}),
+        "known_boundary_count": runner.get("working_set", {}).get("artifact_boundary_count", runner.get("artifact", {}).get("boundary_count")),
         "activation_count": sum(value["completed"] for value in timing["activations"]),
         "completed_boundary_count": runner.get("activation_count"),
         "prepared_boundary_count": runner.get("prepared_boundary_count"),
@@ -100,11 +107,12 @@ def project_runner_inspection(
             outcome.get("cleanup", {}), "runtime cleanup outcome"
         ).get("status"),
         "cleanup_duration_seconds": timing["cleanup_duration_seconds"],
-        "primary_error": deepcopy(outcome.get("primary_error")),
+        "primary_error": outcome.get("primary_error"),
+        "delivery": runner.get("delivery", {}),
     }
     scale_safety = _scale_safety(ordered, event_history)
     scale_safety["deployment_startup"] = (
-        None if deployment_startup is None else deepcopy(dict(deployment_startup))
+        None if deployment_startup is None else dict(deployment_startup)
     )
 
     data = {
@@ -121,6 +129,16 @@ def project_runner_inspection(
         },
         "runtime_outcome": outcome,
         "overview": overview,
+        "delivery": {
+            "session": runner.get("delivery", {}),
+            "batches": tuple({"event": value["event"], **_event_details(value)} for value in ordered if value.get("event") in
+                             {"batch_appended", "batch_load_start", "batch_ready", "batch_activation_start", "batch_exhausted"}),
+            "reclamation": {"completed_generations": sum(_recorded_sequence_count(value.get("reclaimed_generations", ())) for value in ordered if value.get("event") == "generation_reclaim"),
+                "deleted_map_entries": sum(value.get("deleted_entries", 0) for value in ordered if value.get("event") == "generation_reclaim"),
+                "work_units": sum(value.get("work_units", 0) for value in ordered if value.get("event") == "generation_reclaim"),
+                "released_plan_boundaries": sum(value.get("released_boundaries", 0) for value in ordered if value.get("event") == "batch_plan_reclaimed")},
+            "history": "Immutable generation/domain/Traffic evidence remains available after runtime reclamation.",
+        },
         "runtime_foundation": runtime_foundation,
         "timeline": timeline,
         "graphical_timeline": _graphical_timeline(timeline),
@@ -129,8 +147,8 @@ def project_runner_inspection(
         "scale_safety": scale_safety,
         "default_dataplane": _default_dataplane_evidence(ordered),
         "failures_cleanup": {
-            "primary_error": deepcopy(outcome.get("primary_error")),
-            "cleanup": deepcopy(outcome.get("cleanup")),
+            "primary_error": outcome.get("primary_error"),
+            "cleanup": outcome.get("cleanup"),
             "runner_failures": failures,
             "capacity_failures": capacity_failures,
             "runtime_cleanup_evidence": (
@@ -259,9 +277,7 @@ def _scale_safety(
                     "batch_operation_count": metrics.get(
                         "batch_operation_count"
                     ),
-                    "batch_size_distribution": deepcopy(
-                        metrics.get("batch_size_distribution", {})
-                    ),
+                    "batch_size_distribution": metrics.get("batch_size_distribution", {}),
                 }
             )
     activation_subphases = tuple(
@@ -301,9 +317,7 @@ def _scale_safety(
                 "cleanup_ownership_retained"
             ),
             "cleanup_required": value.get("cleanup_required"),
-            "cleanup_connections": deepcopy(
-                value.get("cleanup_connections", ())
-            ),
+            "cleanup_connections": value.get("cleanup_connections", ()),
             "runtime_apply_seconds": value.get("runtime_apply_seconds"),
             "activation_switch_seconds": value.get(
                 "activation_switch_seconds"
@@ -319,15 +333,11 @@ def _scale_safety(
             "observation_capture_seconds": value.get(
                 "observation_capture_seconds"
             ),
-            "grouping": deepcopy(value.get("grouping")),
-            "activation_phases": deepcopy(value.get("activation_phases")),
-            "activation_phase_reconciliation": deepcopy(
-                value.get("activation_phase_reconciliation")
-            ),
-            "parent_main_tail": deepcopy(value.get("parent_main_tail")),
-            "parent_helper_envelope": deepcopy(
-                value.get("parent_helper_envelope")
-            ),
+            "grouping": value.get("grouping"),
+            "activation_phases": value.get("activation_phases"),
+            "activation_phase_reconciliation": value.get("activation_phase_reconciliation"),
+            "parent_main_tail": value.get("parent_main_tail"),
+            "parent_helper_envelope": value.get("parent_helper_envelope"),
         }
         for value in events
         if (value.get("event") == "activation_end" and value.get("preparation") is not True)
@@ -375,7 +385,7 @@ def _scale_safety(
         ),
         "observation": {
             "complete": evidence_complete,
-            "durable": deepcopy(durable_status),
+            "durable": durable_status,
         },
         "teardown": {
             "runtime": (
@@ -407,6 +417,11 @@ def _logical_operations(event: Mapping[str, object]) -> object:
     return None
 
 
+def _recorded_sequence_count(value):
+    # Large event sequences retain their original count instead of inline IDs.
+    return value["item_count"] if isinstance(value, Mapping) else len(value)
+
+
 def _mapping(value: object, label: str) -> Mapping[str, object]:
     if not isinstance(value, Mapping):
         raise TypeError(f"{label} must be a detached mapping")
@@ -420,7 +435,7 @@ def _monotonic(event: Mapping[str, object]) -> float:
 
 def _event_details(event: Mapping[str, object]) -> dict[str, object]:
     return {
-        key: deepcopy(value)
+        key: value
         for key, value in event.items()
         if key not in {"event", "monotonic_seconds", "wall_time_seconds"}
     }
@@ -568,6 +583,14 @@ def _graphical_timeline(
             continue
         event_name = value.get("event")
         details = _mapping(value.get("details", {}), "timeline details")
+        if event_name == "batch_ready":
+            start = next((event for event in timeline if event.get("event") == "batch_load_start"
+                          and event["details"].get("batch_index") == details.get("batch_index")), None)
+            work.setdefault("batch_loading", []).append(_graph_span_item(
+                "batch_loading", start, value, visual="work", fallback_duration=details.get("total_seconds")))
+        elif event_name in {"generation_reclaim", "batch_plan_reclaimed"}:
+            work.setdefault("maintenance_reclaim", []).append(_graph_span_item(
+                "maintenance_reclaim", None, value, visual="work", fallback_duration=details.get("duration_seconds")))
         if event_name == "activation_end" and details.get("preparation") is not True:
             work["main_activation"].append(
                 _graph_span_item(

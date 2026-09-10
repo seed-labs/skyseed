@@ -79,6 +79,7 @@ def render_observation_page(data: dict[str, Any]) -> str:
     {_stat_card('formal transitions', timeline['formal_transition_unit_count'])}
     {_stat_card('PhysicalFrames', timeline['physical_frame_unit_count'])}
     {_stat_card('prehistory PhysicalFrames', timeline['prehistory_physical_frame_unit_count'])}
+    {_stat_card('prediction / other PhysicalFrames', timeline['additional_physical_query_unit_count'])}
     {_stat_card('Plans', timeline['plan_publication_unit_count'])}
     {_stat_card('compiled realizations', timeline['compiler_realization_unit_count'])}
     {_stat_card('producer invocations', timeline['producer_invocation_unit_count'])}

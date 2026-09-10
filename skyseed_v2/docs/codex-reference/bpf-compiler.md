@@ -65,7 +65,7 @@ The public immutable result carries:
 
 Each PlanTransition produces one `BpfCompiledActivationBoundary` containing its
 timestamp and fingerprint. Empty transitions remain explicit. Across
-canonical S3, 30 realizations therefore retain all 121 activation timestamps.
+canonical S3, four realizations therefore retain all 121 activation timestamps.
 
 The output planned state is intended semantic truth at the realization
 boundary. It is not `RealizedRuntimeState`; only BpfRunner owns live kernel
@@ -77,16 +77,17 @@ As the producer advances, the backend Runner artifact writer losslessly
 normalizes already-defined Compiler facts into a versioned typed packed binary
 and accumulates exact capacity demand. Its append path checks predecessor and
 state-fingerprint continuity, equal cadence, exact next starts, and boundary
-references. After complete producer drain, it publishes the terminal seal over
-the sequence validated during generation.
+references. After draining a delivery prefix it seals that finite batch. Continuation
+retains the immediate predecessor realization, capacity state and stable logical
+ports; only the final delivery ends the session’s finite history.
 It does not rerun planning or Compiler lowering. The binary contains symbolic
 stable identities, not future live ifindexes. Before `BpfRunner` exists,
 generated execution verifies source/input identity, manifest and binary hashes,
-version/seal and timeline metadata. During Preparation, artifact open checks
+version/seal and timeline metadata. During Preparation or Maintenance, artifact open checks
 the binary header and index bounds. The reader supports indexed decoding with
 per-record hash and operation-count checks; it does not repeat the writer's
-sequence-relationship validation. Runner consumes every indexed boundary during
-one-shot Preparation, before physically activating B0. Formal Main starts at
+sequence-relationship validation. Runner consumes every indexed boundary of the first batch during Preparation
+and of each admitted successor during Maintenance. Only Preparation activates B0. Formal Main starts at
 B1 with prepared deltas. No rich `BpfCompiledRealization` sequence, source Plan,
 pickle, or live Planner object is reconstructed.
 
@@ -107,3 +108,14 @@ Wrong world, wrong predecessor, stale fingerprints, malformed transition
 references, invalid output state, missing resulting semantic state, or
 impossible backend lowering raises before publishing a realization. The
 previous realization remains immutable.
+
+## Incremental computation
+
+The previous realization retains private immutable backend indexes. Each Plan
+transition is replayed once during lowering; the former preliminary complete
+Plan replay and repeated route-owner/index reconstruction are removed. Compiler
+still verifies input/output fingerprints, immediate lineage, and complete
+required outputs. Focused tests compare cached-index compilation with detached
+index reconstruction and compare semantic output across Plan batch sizes.
+Artifact codec full round trips are qualification work, outside production
+normalization/encoding. Sequence/reference/hash/seal checks remain required.

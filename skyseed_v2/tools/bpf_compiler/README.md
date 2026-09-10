@@ -32,5 +32,19 @@ separate; the default UI has no giant realization
 table or raw `<pre>` dump. The compact `compiler.jsonl` reader continues to validate lineage,
 fingerprints, timestamps, activation timestamps, and intent counts only.
 
+The generated continued-delivery path supplies sealed manifest metadata from
+`runtime/execution.json` alongside the same continuous Compiler history. The
+Sealed deliveries table shows each batch's index, coverage and chain identity;
+its jump button selects the existing global formal-boundary cursor at the seam.
+This metadata read does not decode runtime binary records, reconstruct a
+Runner, or introduce a second timeline. Retained disk evidence remains readable
+after runtime plans and eligible kernel generations have been reclaimed.
+
 Compiled intended state is not live runtime truth. Runner evidence owns
 realized state.
+
+The optional Spatial context drawer lazily embeds the existing sibling Physical
+World Tool and follows the Compiler boundary cursor. Its shared Shell → Orbit,
+multiple-Shell and GS/Zone controls are the same controls as the other spatial
+Tools. The context is explicitly physical evidence, not compiled or observed
+passage; no second world or compiled routing table is serialized.

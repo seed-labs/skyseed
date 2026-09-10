@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from fractions import Fraction
+
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -14,7 +16,7 @@ from skyseed_v2.shared.time import normalize_utc_datetime
 
 from .._ground_station_allocation import (
     _GroundAccessAllocationPreference,
-    _GroundAccessChoice,
+    _allocate_continuous_ground_station_accesses,
     _allocate_ground_station_accesses,
 )
 from .._gateway_candidates import _rank_gateway_candidates
@@ -52,6 +54,15 @@ from .values import (
 
 
 _IslPair = tuple[NodeId, NodeId]
+
+
+def _validate_connection_durations(preparation: timedelta, service: timedelta) -> None:
+    for name, value in (("acquisition_duration", preparation),
+                        ("minimum_service_duration", service)):
+        if not isinstance(value, timedelta):
+            raise TypeError(f"{name} must be a timedelta")
+        if value < timedelta(0):
+            raise ValueError(f"{name} must be non-negative")
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,6 +116,7 @@ class InterSatelliteConnectionPlanningModel(Protocol):
     """
 
     acquisition_duration: timedelta
+    minimum_service_duration: timedelta
 
     def create_inter_satellite_candidate_pairs(
         self, physical_world: PhysicalWorld
@@ -130,10 +142,14 @@ class GroundStationAccessPlanningModel(Protocol):
     service planning.
     """
 
+    acquisition_duration: timedelta
+    minimum_service_duration: timedelta
+
     def select_ground_station_accesses(
         self,
         physical_world: PhysicalWorld,
         candidates: tuple[GroundStationAccessCandidate, ...],
+        retained_pairs: frozenset[tuple[NodeId, NodeId]] = frozenset(),
     ) -> tuple[GroundStationAccessCandidate, ...]:
         """Select operational GS access from physical candidates."""
 
@@ -211,8 +227,6 @@ class ParameterPlanningMemory:
 
     connection_id: OperationalConnectionId
     effective: EffectiveConnectionParameters
-    pending_delay_us: int | None
-    pending_since: datetime | None
     last_update: datetime
 
     def __post_init__(self) -> None:
@@ -220,23 +234,6 @@ class ParameterPlanningMemory:
             raise TypeError("connection_id must be an OperationalConnectionId")
         if not isinstance(self.effective, EffectiveConnectionParameters):
             raise TypeError("effective must be EffectiveConnectionParameters")
-        if self.pending_delay_us is None:
-            if self.pending_since is not None:
-                raise ValueError("pending_since requires pending_delay_us")
-        else:
-            if (
-                isinstance(self.pending_delay_us, bool)
-                or not isinstance(self.pending_delay_us, int)
-                or self.pending_delay_us < 0
-            ):
-                raise ValueError("pending_delay_us must be non-negative")
-            if self.pending_since is None:
-                raise ValueError("pending_delay_us requires pending_since")
-            object.__setattr__(
-                self,
-                "pending_since",
-                normalize_utc_datetime(self.pending_since, "pending_since"),
-            )
         object.__setattr__(
             self,
             "last_update",
@@ -360,21 +357,10 @@ class PlanningWindowPolicy(Protocol):
     a Timeline cursor, transition buffer, or alternate batch Planner.
     """
 
-    @property
-    def planning_horizon(self) -> timedelta:
-        """Return the required lookahead before normal publication."""
+    frames_per_batch: int
 
-    @property
-    def publication_horizon(self) -> timedelta:
-        """Return the maximum duration published by one Plan."""
-
-    def required_prehistory(self, acquisition_duration: timedelta) -> timedelta:
-        """Return the bounded warm-start observation duration."""
-
-    def validate_observation_interval(
-        self, observation_interval: timedelta
-    ) -> None:
-        """Fail closed unless all window boundaries align to the cadence."""
+    def validate_observation_interval(self, observation_interval: timedelta) -> None:
+        """Validate the formal cadence, independently of batch size."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -390,7 +376,10 @@ class RetainFirstInterSatelliteConfiguration:
     desired_same_plane_links: int = 2
     desired_cross_plane_links: int = 2
     maximum_cross_plane_separation: int = 3
-    acquisition_duration: timedelta = timedelta(seconds=20)
+    same_plane_neighbor_span: int | None = None
+    cross_plane_neighbor_count: int | None = None
+    acquisition_duration: timedelta = timedelta(0)
+    minimum_service_duration: timedelta = timedelta(0)
 
     def __post_init__(self) -> None:
         for field_name in (
@@ -401,15 +390,33 @@ class RetainFirstInterSatelliteConfiguration:
             value = getattr(self, field_name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                 raise ValueError(f"{field_name} must be a non-negative integer")
+        for name in ("same_plane_neighbor_span", "cross_plane_neighbor_count"):
+            value = getattr(self, name)
+            if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 1):
+                raise ValueError(f"{name} must be positive or None")
         if self.maximum_cross_plane_separation == 0:
             if self.desired_cross_plane_links:
                 raise ValueError(
                     "cross-plane demand requires a positive separation"
                 )
+        _validate_connection_durations(self.acquisition_duration, self.minimum_service_duration)
         if not isinstance(self.acquisition_duration, timedelta):
             raise TypeError("acquisition_duration must be a timedelta")
         if self.acquisition_duration < timedelta(0):
             raise ValueError("acquisition_duration must be non-negative")
+
+
+def _isl_blocked_reason(candidate, total, same, cross, capabilities, configuration):
+    first, second = _candidate_pair(candidate)
+    if not candidate.same_plane and candidate.cyclic_plane_separation > configuration.maximum_cross_plane_separation:
+        return "outside configured cross-plane candidate scope"
+    if total[first] >= capabilities[first] or total[second] >= capabilities[second]:
+        return "PhysicalWorld capability exhausted at an endpoint"
+    if candidate.same_plane and (same[first] >= configuration.desired_same_plane_links or same[second] >= configuration.desired_same_plane_links):
+        return "same-plane policy target reached at an endpoint"
+    if not candidate.same_plane and (cross[first] >= configuration.desired_cross_plane_links or cross[second] >= configuration.desired_cross_plane_links):
+        return "cross-plane policy target reached at an endpoint"
+    return None
 
 
 class RetainFirstInterSatelliteConnectionPlanningModel:
@@ -421,7 +428,7 @@ class RetainFirstInterSatelliteConnectionPlanningModel:
     or Planner-owned acquisition state.
     """
 
-    __slots__ = ("_configuration",)
+    __slots__ = ("_configuration", "_prepared_world", "_capabilities", "_decisions", "_selection_cache", "_selection_work")
 
     def __init__(
         self,
@@ -436,10 +443,19 @@ class RetainFirstInterSatelliteConnectionPlanningModel:
                 "configuration must be RetainFirstInterSatelliteConfiguration"
             )
         self._configuration = configuration
+        self._prepared_world = None
+        self._capabilities = {}
+        self._decisions = {}
+        self._selection_cache = None
+        self._selection_work = {}
 
     @property
     def acquisition_duration(self) -> timedelta:
         return self._configuration.acquisition_duration
+
+    @property
+    def minimum_service_duration(self) -> timedelta:
+        return self._configuration.minimum_service_duration
 
     def create_inter_satellite_candidate_pairs(
         self, physical_world: PhysicalWorld
@@ -460,12 +476,15 @@ class RetainFirstInterSatelliteConnectionPlanningModel:
                     )
                 )
                 for orbit in orbits:
-                    satellites = tuple(
-                        value.node_id for value in orbit.satellites
-                    )
+                    satellites = tuple(value.node_id for value in sorted(
+                        orbit.satellites, key=lambda value: (value.mean_anomaly_deg, _node_key(value.node_id))))
+                    span = self._configuration.same_plane_neighbor_span
                     for first_index, first in enumerate(satellites):
-                        for second in satellites[first_index + 1 :]:
-                            pairs.add(_canonical_pair(first, second))
+                        offsets = range(1, len(satellites)) if span is None else range(1, min(span, len(satellites) // 2) + 1)
+                        for offset in offsets:
+                            second = satellites[(first_index + offset) % len(satellites)]
+                            if first != second:
+                                pairs.add(_canonical_pair(first, second))
                 orbit_count = len(orbits)
                 for first_index, first_orbit in enumerate(orbits):
                     for second_index in range(first_index + 1, orbit_count):
@@ -500,16 +519,62 @@ class RetainFirstInterSatelliteConnectionPlanningModel:
             raise TypeError("physical_world must be a PhysicalWorld")
         if not isinstance(retained_pairs, frozenset):
             raise TypeError("retained_pairs must be a frozenset")
-        capabilities = _isl_capabilities(physical_world)
+        if self._prepared_world is not physical_world:
+            self._capabilities = _isl_capabilities(physical_world)
+            self._prepared_world = physical_world
+            self._decisions = {}
+            self._selection_cache = None
+        capabilities = self._capabilities
+        by_pair = {}
+        shapes = set()
+        for candidate in candidates:
+            if not isinstance(candidate, InterSatelliteLinkCandidate):
+                raise TypeError("candidates must contain ISL candidate values")
+            pair = _candidate_pair(candidate)
+            by_pair[pair] = candidate
+            shapes.add((pair, candidate.same_plane, candidate.cyclic_plane_separation))
+        self._selection_work = {"isl_candidate_index_entries": len(candidates),
+                                "isl_candidate_policy_sorts": 0, "isl_retained_selection_reused": 0}
+        cached = self._selection_cache
+        if cached is not None and retained_pairs == cached[0] and shapes == cached[1] and len(by_pair) == len(candidates):
+            # Greedy completion left every unselected edge blocked by a fixed
+            # capacity/scope/degree constraint. Retaining the whole selection
+            # preserves those constraints regardless of changing distances.
+            self._selection_work["isl_retained_selection_reused"] = 1
+            return InterSatelliteSelection(tuple(by_pair[pair] for pair in cached[2]), cached[3], cached[4])
+        decisions_by_key = {}
+        def decide(kind, reason, first=None, second=None):
+            key = kind, reason, first, second
+            value = self._decisions.get(key)
+            if value is None:
+                value = CandidateDecision(kind, reason, first, second)
+            decisions_by_key[key] = value
+            return value
+        if (cached is not None and retained_pairs == cached[0] and len(by_pair) == len(candidates)
+            and all(pair in by_pair and (pair, by_pair[pair].same_plane,
+                    by_pair[pair].cyclic_plane_separation) in cached[1] for pair in cached[0])):
+            rejected = []
+            for pair, candidate in by_pair.items():
+                if pair in retained_pairs:
+                    continue
+                reason = _isl_blocked_reason(candidate, *cached[5], capabilities, self._configuration)
+                if reason is None:
+                    break
+                rejected.append(decide(CandidateDecisionKind.REJECTED, reason, *pair))
+            else:
+                # Candidate arrivals/departures do not invalidate an incumbent
+                # when every current alternative is still provably blocked.
+                decisions = tuple(value for value in cached[3]
+                    if value.decision is CandidateDecisionKind.RETAINED) + tuple(rejected) + tuple(
+                    value for value in cached[3] if value.decision is CandidateDecisionKind.UNDERFILLED)
+                self._selection_cache = cached[0], shapes, cached[2], decisions, cached[4], cached[5]
+                self._decisions = decisions_by_key
+                self._selection_work["isl_retained_selection_reused"] = 1
+                return InterSatelliteSelection(tuple(by_pair[pair] for pair in cached[2]), decisions, cached[4])
         ordered_candidates = tuple(
-            sorted(tuple(candidates), key=_isl_candidate_policy_key)
+            sorted(candidates, key=_isl_candidate_policy_key)
         )
-        if any(
-            not isinstance(value, InterSatelliteLinkCandidate)
-            for value in ordered_candidates
-        ):
-            raise TypeError("candidates must contain ISL candidate values")
-        by_pair = {_candidate_pair(value): value for value in ordered_candidates}
+        self._selection_work["isl_candidate_policy_sorts"] = 1
         selected: dict[_IslPair, InterSatelliteLinkCandidate] = {}
         total_degree = {node_id: 0 for node_id in capabilities}
         same_degree = {node_id: 0 for node_id in capabilities}
@@ -528,7 +593,7 @@ class RetainFirstInterSatelliteConnectionPlanningModel:
                 candidate,
             )
             decisions.append(
-                CandidateDecision(
+                decide(
                     CandidateDecisionKind.RETAINED,
                     "selected relationship remains physically feasible",
                     *pair,
@@ -540,32 +605,9 @@ class RetainFirstInterSatelliteConnectionPlanningModel:
             if pair in selected:
                 continue
             first, second = pair
-            if (
-                not candidate.same_plane
-                and candidate.cyclic_plane_separation
-                > self._configuration.maximum_cross_plane_separation
-            ):
-                reason = "outside configured cross-plane candidate scope"
-            elif (
-                total_degree[first] >= capabilities[first]
-                or total_degree[second] >= capabilities[second]
-            ):
-                reason = "PhysicalWorld capability exhausted at an endpoint"
-            elif candidate.same_plane and (
-                same_degree[first]
-                >= self._configuration.desired_same_plane_links
-                or same_degree[second]
-                >= self._configuration.desired_same_plane_links
-            ):
-                reason = "same-plane policy target reached at an endpoint"
-            elif not candidate.same_plane and (
-                cross_degree[first]
-                >= self._configuration.desired_cross_plane_links
-                or cross_degree[second]
-                >= self._configuration.desired_cross_plane_links
-            ):
-                reason = "cross-plane policy target reached at an endpoint"
-            else:
+            reason = _isl_blocked_reason(candidate, total_degree, same_degree, cross_degree,
+                                         capabilities, self._configuration)
+            if reason is None:
                 _select_candidate(
                     selected,
                     total_degree,
@@ -574,7 +616,7 @@ class RetainFirstInterSatelliteConnectionPlanningModel:
                     candidate,
                 )
                 decisions.append(
-                    CandidateDecision(
+                    decide(
                         CandidateDecisionKind.SELECTED,
                         "filled remaining policy and PhysicalWorld capacity",
                         first,
@@ -583,7 +625,7 @@ class RetainFirstInterSatelliteConnectionPlanningModel:
                 )
                 continue
             decisions.append(
-                CandidateDecision(
+                decide(
                     CandidateDecisionKind.REJECTED,
                     reason,
                     first,
@@ -601,19 +643,29 @@ class RetainFirstInterSatelliteConnectionPlanningModel:
         )
         if underfilled:
             decisions.append(
-                CandidateDecision(
+                decide(
                     CandidateDecisionKind.UNDERFILLED,
                     f"{underfilled} endpoint slots had no conflict-free "
                     "feasible candidate",
                 )
             )
+        self._decisions = decisions_by_key
+        selected_order = tuple(sorted(selected, key=_pair_key))
+        stable_decisions = tuple(CandidateDecision(
+            CandidateDecisionKind.RETAINED, "selected relationship remains physically feasible", *pair)
+            for pair in selected_order) + tuple(sorted(
+                (value for value in decisions if value.decision is CandidateDecisionKind.REJECTED),
+                key=lambda value: _pair_key((value.endpoint_a, value.endpoint_b)))) + tuple(
+                value for value in decisions if value.decision is CandidateDecisionKind.UNDERFILLED)
+        self._selection_cache = (frozenset(selected), shapes, selected_order, stable_decisions, underfilled,
+                                 (total_degree, same_degree, cross_degree))
         return InterSatelliteSelection(
             tuple(selected.values()), tuple(decisions), underfilled
         )
 
 
-class QualityFirstGroundStationAccessPlanningModel:
-    """Select quality-ranked GroundStation accesses under hard caps.
+class CoverageFirstGroundStationAccessPlanningModel:
+    """Maximize GS coverage, distinct satellites, links, continuity, then quality.
 
     Layer: public Simulator planning Model implementation. It is public because
     composition roots need a supplied implementation of the GroundStation
@@ -623,13 +675,23 @@ class QualityFirstGroundStationAccessPlanningModel:
 
     __slots__ = (
         "_default_ground_station_limit",
+        "_ground_station_policy_limit",
+        "initial_candidate_count",
+        "_search_hint",
+        "acquisition_duration",
+        "minimum_service_duration",
         "_prepared_world",
         "_station_limits",
+        "_allocation_work",
         "_station_limit_by_id",
         "_satellite_limits",
     )
 
-    def __init__(self, *, default_ground_station_limit: int) -> None:
+    def __init__(self, *, default_ground_station_limit: int,
+                 ground_station_policy_limit: int | None = None,
+                 initial_candidate_count: int | None = None,
+                 acquisition_duration: timedelta = timedelta(0),
+                 minimum_service_duration: timedelta = timedelta(0)) -> None:
         if (
             isinstance(default_ground_station_limit, bool)
             or not isinstance(default_ground_station_limit, int)
@@ -638,9 +700,25 @@ class QualityFirstGroundStationAccessPlanningModel:
             raise ValueError(
                 "default_ground_station_limit must be non-negative"
             )
+        _validate_connection_durations(acquisition_duration, minimum_service_duration)
+        self.acquisition_duration = acquisition_duration
+        self.minimum_service_duration = minimum_service_duration
+        if ground_station_policy_limit is not None and (
+            isinstance(ground_station_policy_limit, bool)
+            or not isinstance(ground_station_policy_limit, int)
+            or ground_station_policy_limit < 0
+        ):
+            raise ValueError("ground_station_policy_limit must be non-negative or None")
+        if initial_candidate_count is not None and (isinstance(initial_candidate_count, bool)
+                or not isinstance(initial_candidate_count, int) or initial_candidate_count < 1):
+            raise ValueError("initial_candidate_count must be positive or None")
+        self.initial_candidate_count = initial_candidate_count
+        self._search_hint = None
+        self._ground_station_policy_limit = ground_station_policy_limit
         self._default_ground_station_limit = default_ground_station_limit
         self._prepared_world: PhysicalWorld | None = None
         self._station_limits: tuple[tuple[NodeId, int], ...] = ()
+        self._allocation_work = {}
         self._station_limit_by_id: Mapping[NodeId, int] = MappingProxyType({})
         self._satellite_limits: Mapping[NodeId, int | None] = MappingProxyType({})
 
@@ -648,6 +726,7 @@ class QualityFirstGroundStationAccessPlanningModel:
         self,
         physical_world: PhysicalWorld,
         candidates: tuple[GroundStationAccessCandidate, ...],
+        retained_pairs: frozenset[tuple[NodeId, NodeId]] = frozenset(),
     ) -> tuple[GroundStationAccessCandidate, ...]:
         if not isinstance(physical_world, PhysicalWorld):
             raise TypeError("physical_world must be a PhysicalWorld")
@@ -667,22 +746,18 @@ class QualityFirstGroundStationAccessPlanningModel:
             by_pair[(candidate.ground_station_id, candidate.satellite_id)] = (
                 candidate
             )
-        selected = _allocate_ground_station_accesses(
+        selected = _allocate_continuous_ground_station_accesses(
             tuple(
                 _GroundAccessAllocationPreference(
                     station,
                     limit,
-                    tuple(
-                        _GroundAccessChoice(
-                            candidate.elevation_deg,
-                            candidate.satellite_id,
-                        )
-                        for candidate in by_station.get(station, ())
-                    ),
+                    tuple(by_station.get(station, ())),
                 )
                 for station, limit in self._station_limits
             ),
             self._satellite_limits,
+            retained_pairs,
+            work=self._allocation_work,
         )
         return tuple(
             sorted(
@@ -699,6 +774,51 @@ class QualityFirstGroundStationAccessPlanningModel:
             )
         )
 
+    def _candidate_search_needs_expansion(self, physical_world, candidates, returned, limit):
+        self._prepare_static_limits(physical_world)
+        counts = {}
+        for candidate in returned:
+            counts[candidate.ground_station_id] = counts.get(candidate.ground_station_id, 0) + 1
+        # Exhaustion is independent of allocation. Contact-rejected candidates
+        # cannot be recovered by increasing a rank limit.
+        if not any(count >= limit for count in counts.values()):
+            return False
+        grouped = {}
+        for candidate in candidates:
+            if self._satellite_limits[candidate.satellite_id] != 0:
+                grouped.setdefault(candidate.ground_station_id, []).append(candidate.satellite_id)
+        # A full distinct assignment certifies every search cardinality goal.
+        # Unit satellite capacity is intentional here: duplicates require wider
+        # search. This feasibility matching has no quality costs or flow graph.
+        demand = sum(capacity for _, capacity in self._station_limits)
+        if len({sat for values in grouped.values() for sat in values}) < demand:
+            return True
+        owners = {}
+        for station, capacity in self._station_limits:
+            for _ in range(capacity):
+                pending, previous = [station], {station: None}
+                end = None
+                for current in pending:
+                    for satellite in grouped.get(current, ()):
+                        owner = owners.get(satellite)
+                        if owner is None:
+                            end = current, satellite
+                            break
+                        if owner not in previous:
+                            previous[owner] = current, satellite
+                            pending.append(owner)
+                    if end is not None:
+                        break
+                if end is None:
+                    return True
+                current, satellite = end
+                while True:
+                    owners[satellite] = current
+                    if previous[current] is None:
+                        break
+                    current, satellite = previous[current]
+        return False
+
     def _prepare_static_limits(self, physical_world: PhysicalWorld) -> None:
         """Cache immutable capacity indexes for one exact PhysicalWorld."""
 
@@ -710,10 +830,9 @@ class QualityFirstGroundStationAccessPlanningModel:
             for ground_station in autonomous_system.ground_stations:
                 limit = self._default_ground_station_limit
                 if ground_station.max_simultaneous_satellite_accesses is not None:
-                    limit = min(
-                        limit,
-                        ground_station.max_simultaneous_satellite_accesses,
-                    )
+                    limit = ground_station.max_simultaneous_satellite_accesses
+                if self._ground_station_policy_limit is not None:
+                    limit = min(limit, self._ground_station_policy_limit)
                 station_limit_by_id[ground_station.node_id] = limit
             for shell in autonomous_system.shells:
                 for orbit in shell.orbits:
@@ -727,6 +846,7 @@ class QualityFirstGroundStationAccessPlanningModel:
         self._station_limit_by_id = MappingProxyType(station_limit_by_id)
         self._satellite_limits = MappingProxyType(satellite_limits)
         self._prepared_world = physical_world
+        self._search_hint = None
 
 
 class HighestElevationZoneServicePlanningModel:
@@ -738,7 +858,13 @@ class HighestElevationZoneServicePlanningModel:
     Route planner.
     """
 
-    __slots__ = ()
+    __slots__ = ("_world", "_zones", "_zone_ids", "_satellite_ids")
+
+    def __init__(self) -> None:
+        self._world = None
+        self._zones = ()
+        self._zone_ids = frozenset()
+        self._satellite_ids = frozenset()
 
     def assign_zone_service(
         self,
@@ -748,10 +874,17 @@ class HighestElevationZoneServicePlanningModel:
     ) -> ZoneServicePlanningResult:
         if not isinstance(physical_world, PhysicalWorld):
             raise TypeError("physical_world must be a PhysicalWorld")
-        try:
-            zones = physical_world.get_zone_layout().zones
-        except RuntimeError:
-            zones = ()
+        if self._world is not physical_world:
+            try:
+                zones = physical_world.get_zone_layout().zones
+            except RuntimeError:
+                zones = ()
+            self._zones = tuple(sorted(zones, key=lambda value: value.zone_id))
+            self._zone_ids = frozenset(zone.zone_id for zone in zones)
+            self._satellite_ids = frozenset(satellite.node_id for system in physical_world.autonomous_systems
+                for shell in system.shells for orbit in shell.orbits for satellite in orbit.satellites)
+            self._world = physical_world
+        zones = self._zones
         previous_by_zone: dict[str, NodeId | None] = {}
         for assignment in previous_assignments:
             if not isinstance(assignment, ZoneServiceAssignment):
@@ -762,13 +895,14 @@ class HighestElevationZoneServicePlanningModel:
                 raise ValueError("previous_assignments contains a duplicate")
             previous_by_zone[assignment.zone_id] = assignment.satellite_id
         best: dict[str, ZoneServiceCandidate] = {}
-        zone_ids = {zone.zone_id for zone in zones}
+        zone_ids = self._zone_ids
         for candidate in candidates:
             if not isinstance(candidate, ZoneServiceCandidate):
                 raise TypeError("candidates must contain Zone candidate values")
             if candidate.zone_id not in zone_ids:
                 raise ValueError("Zone candidate is foreign to PhysicalWorld")
-            physical_world.get_satellite(candidate.satellite_id)
+            if candidate.satellite_id not in self._satellite_ids:
+                raise ValueError("Zone candidate Satellite is foreign to PhysicalWorld")
             current = best.get(candidate.zone_id)
             if current is None or (
                 -candidate.elevation_deg,
@@ -780,7 +914,7 @@ class HighestElevationZoneServicePlanningModel:
                 best[candidate.zone_id] = candidate
         assignments = []
         changes = []
-        for zone in sorted(zones, key=lambda value: value.zone_id):
+        for zone in zones:
             satellite_id = (
                 None
                 if zone.zone_id not in best
@@ -822,8 +956,7 @@ class ParameterKindConfiguration:
 
     bandwidth_bps: int
     packet_loss_ppm: int
-    delay_deadband_us: int = 0
-    persistence: timedelta = timedelta(0)
+    delay_relative_threshold: float = 0.0
     max_staleness: timedelta | None = None
 
     def __post_init__(self) -> None:
@@ -831,15 +964,12 @@ class ParameterKindConfiguration:
             self.bandwidth_bps, 0, self.packet_loss_ppm
         )
         if (
-            isinstance(self.delay_deadband_us, bool)
-            or not isinstance(self.delay_deadband_us, int)
-            or self.delay_deadband_us < 0
+            isinstance(self.delay_relative_threshold, bool)
+            or not isinstance(self.delay_relative_threshold, (int, float))
+            or not isfinite(self.delay_relative_threshold)
+            or self.delay_relative_threshold < 0
         ):
-            raise ValueError("delay_deadband_us must be non-negative")
-        if not isinstance(self.persistence, timedelta):
-            raise TypeError("persistence must be a timedelta")
-        if self.persistence < timedelta(0):
-            raise ValueError("persistence must be non-negative")
+            raise ValueError("delay_relative_threshold must be finite and non-negative")
         if self.max_staleness is not None and (
             not isinstance(self.max_staleness, timedelta)
             or self.max_staleness <= timedelta(0)
@@ -856,7 +986,7 @@ class AccumulatedDeadbandParameterPlanningModel:
     Model, or a backend qdisc compiler.
     """
 
-    __slots__ = ("_configuration",)
+    __slots__ = ("_configuration", "_thresholds")
 
     def __init__(
         self,
@@ -878,6 +1008,7 @@ class AccumulatedDeadbandParameterPlanningModel:
                 )
             copied[kind] = value
         self._configuration = MappingProxyType(copied)
+        self._thresholds = {kind: Fraction(str(value.delay_relative_threshold)) for kind, value in copied.items()}
 
     def plan_effective_parameters(
         self,
@@ -914,7 +1045,7 @@ class AccumulatedDeadbandParameterPlanningModel:
                     configuration.packet_loss_ppm,
                 )
                 memory = ParameterPlanningMemory(
-                    identifier, effective, None, None, utc
+                    identifier, effective, utc
                 )
             else:
                 drift = abs(
@@ -924,41 +1055,23 @@ class AccumulatedDeadbandParameterPlanningModel:
                     configuration.max_staleness is not None
                     and utc - prior.last_update >= configuration.max_staleness
                 )
-                if drift <= configuration.delay_deadband_us and not stale:
-                    memory = ParameterPlanningMemory(
-                        identifier,
-                        prior.effective,
-                        None,
-                        None,
-                        prior.last_update,
+                # Comparing against last effective (not the last observation)
+                # accumulates drift. A zero baseline changes on any nonzero value.
+                threshold = self._thresholds[identifier.kind]
+                threshold_reached = drift > 0 and (
+                    prior.effective.delay_us == 0
+                    or drift * threshold.denominator >= threshold.numerator
+                    * abs(prior.effective.delay_us)
+                )
+                if threshold_reached or stale:
+                    effective = EffectiveConnectionParameters(
+                        configuration.bandwidth_bps,
+                        observation.physical_delay_us,
+                        configuration.packet_loss_ppm,
                     )
+                    memory = ParameterPlanningMemory(identifier, effective, utc)
                 else:
-                    pending_since = (
-                        prior.pending_since
-                        if prior.pending_delay_us == observation.physical_delay_us
-                        else utc
-                    )
-                    ready = (
-                        stale
-                        or utc - pending_since >= configuration.persistence
-                    )
-                    if ready:
-                        effective = EffectiveConnectionParameters(
-                            configuration.bandwidth_bps,
-                            observation.physical_delay_us,
-                            configuration.packet_loss_ppm,
-                        )
-                        memory = ParameterPlanningMemory(
-                            identifier, effective, None, None, utc
-                        )
-                    else:
-                        memory = ParameterPlanningMemory(
-                            identifier,
-                            prior.effective,
-                            observation.physical_delay_us,
-                            pending_since,
-                            prior.last_update,
-                        )
+                    memory = prior
             next_memory.append(memory)
             connection = OperationalConnection(
                 identifier, memory.effective, memory.effective
@@ -992,6 +1105,10 @@ class GatewayHopCountRoutePlanningModel:
         "_gateway_candidate_max_distance_m",
         "_prepared_physical_world",
         "_gateway_candidates_by_zone",
+        "_routing_edges",
+        "_routing_context",
+        "_demands_by_service",
+        "_demand_assignments", "_last_demands", "_requests", "_construction_work",
     )
 
     def __init__(
@@ -1024,6 +1141,13 @@ class GatewayHopCountRoutePlanningModel:
         )
         self._prepared_physical_world: PhysicalWorld | None = None
         self._gateway_candidates_by_zone = None
+        self._routing_edges = None
+        self._routing_context = None
+        self._demands_by_service = {}
+        self._demand_assignments = None
+        self._last_demands = ()
+        self._requests = ()
+        self._construction_work = {}
 
     def __del__(self) -> None:
         route_engine = getattr(self, "_route_engine", None)
@@ -1036,7 +1160,18 @@ class GatewayHopCountRoutePlanningModel:
     def _active_compute_worker_count(self) -> int:
         if not self._route_engine.executor_lifecycle.executor_live:
             return 0
-        return self._route_engine.worker_count
+        return self._route_engine._executor_worker_count
+
+    def _route_work_counts(self):
+        observation = self._route_engine.last_compute_observation
+        if observation is None:
+            return {}
+        return {
+            **self._construction_work,
+            "route_path_requests_reused": observation.reused_request_count,
+            "route_path_requests_computed": sum(v.request_count for v in observation.worker_activities),
+            "route_destination_jobs": sum(v.non_empty_job_count for v in observation.worker_activities),
+        }
 
     def create_route_demands(
         self,
@@ -1044,25 +1179,32 @@ class GatewayHopCountRoutePlanningModel:
         zone_service_assignments: tuple[ZoneServiceAssignment, ...],
     ) -> tuple[RouteDemand, ...]:
         candidates_by_zone = self._prepare_gateway_candidates(physical_world)
+        identities = tuple((value.zone_id, value.satellite_id) for value in zone_service_assignments)
+        if identities == self._demand_assignments:
+            self._construction_work["route_demands_reused"] = len(self._last_demands)
+            return self._last_demands
+        self._construction_work["route_demands_reused"] = 0
         demands = set()
+        current_services = {}
         for assignment in zone_service_assignments:
-            for gateway_id in candidates_by_zone.get(
-                assignment.zone_id, ()
-            ):
-                if assignment.satellite_id is not None:
-                    demands.add(
-                        RouteDemand(
-                            assignment.satellite_id,
-                            GroundStationRouteDemandTarget(gateway_id),
-                        )
-                    )
-                demands.add(
-                    RouteDemand(
-                        gateway_id,
-                        ZoneRouteDemandTarget(assignment.zone_id),
-                    )
-                )
-        return tuple(sorted(demands, key=_route_demand_key))
+            previous = self._demands_by_service.get(assignment.zone_id)
+            if previous is not None and previous[0] == assignment.satellite_id:
+                values = previous[1]
+                self._construction_work["route_demands_reused"] += len(values)
+            else:
+                values = []
+                for gateway_id in candidates_by_zone.get(assignment.zone_id, ()):
+                    if assignment.satellite_id is not None:
+                        values.append(RouteDemand(assignment.satellite_id,
+                            GroundStationRouteDemandTarget(gateway_id)))
+                    values.append(RouteDemand(gateway_id, ZoneRouteDemandTarget(assignment.zone_id)))
+                values = tuple(values)
+            current_services[assignment.zone_id] = (assignment.satellite_id, values)
+            demands.update(values)
+        self._demands_by_service = current_services
+        self._demand_assignments = identities
+        self._last_demands = tuple(sorted(demands, key=_route_demand_key))
+        return self._last_demands
 
     def _prepare_gateway_candidates(self, physical_world: PhysicalWorld):
         if self._prepared_physical_world is not None:
@@ -1110,50 +1252,63 @@ class GatewayHopCountRoutePlanningModel:
             )
             for value in operational_connections
         )
-        context = _prepare_routing_core_context(physical_world, edges)
+        self._prepare_gateway_candidates(physical_world)
+        if self._routing_edges != edges:
+            self._routing_context = _prepare_routing_core_context(physical_world, edges, previous=self._routing_context)
+            self._routing_edges = edges
+        context = self._routing_context
         assignments = {
             value.zone_id: value.satellite_id
             for value in zone_service_assignments
         }
         ordered_demands = tuple(sorted(demands, key=_route_demand_key))
-        requests: list[_RoutePathRequest] = []
-        unresolved: dict[int, RouteUnreachableReason] = {}
+        old_requests = self._requests if isinstance(self._requests, dict) else {}
+        current_requests = {}
+        requests, unresolved = [], {}
+        reused = 0
         for index, demand in enumerate(ordered_demands):
-            physical_world.get_node(demand.source)
-            if isinstance(demand.target, GroundStationRouteDemandTarget):
-                terminal = demand.target.ground_station_id
-                physical_world.get_ground_station(terminal)
-                requests.append(
-                    _RoutePathRequest(index, True, demand.source, terminal)
-                )
+            ground_target = isinstance(demand.target, GroundStationRouteDemandTarget)
+            terminal = demand.target.ground_station_id if ground_target else assignments.get(demand.target.zone_id)
+            if terminal is None:
+                unresolved[index] = RouteUnreachableReason.ZONE_UNSERVED
+                continue
+            key = demand, index, terminal
+            request = old_requests.get(key)
+            if request is None:
+                physical_world.get_node(demand.source)
+                if ground_target:
+                    physical_world.get_ground_station(terminal)
+                request = _RoutePathRequest(index, ground_target, demand.source, terminal)
             else:
-                terminal = assignments.get(demand.target.zone_id)
-                if terminal is None:
-                    unresolved[index] = RouteUnreachableReason.ZONE_UNSERVED
-                    continue
-                requests.append(
-                    _RoutePathRequest(index, False, demand.source, terminal)
-                )
+                reused += 1
+            current_requests[key] = request
+            requests.append(request)
+        self._requests = current_requests
+        self._construction_work["route_request_objects_reused"] = reused
+        self._construction_work["route_request_objects_constructed"] = len(requests)-reused
         paths = self._route_engine.compute(context, tuple(requests))
         outcomes: list[RouteOutcome] = []
         changes: list[RouteOutcomeTransition] = []
+        reused_outcomes = 0
         for index, demand in enumerate(ordered_demands):
             reason = unresolved.get(index)
             path = paths.get(index)
-            if reason is not None:
+            previous = previous_by_demand.pop(demand, None)
+            if reason is None and (path is None or len(path) < 2):
+                reason = RouteUnreachableReason.NO_OPERATIONAL_PATH
+            if (reason is not None and isinstance(previous, UnreachableRouteOutcome) and previous.reason is reason
+                or reason is None and isinstance(previous, ReachableRouteOutcome) and previous.path == path):
+                outcome = previous
+                reused_outcomes += 1
+            elif reason is not None:
                 outcome = UnreachableRouteOutcome(demand, reason)
-            elif path is None or len(path) < 2:
-                outcome = UnreachableRouteOutcome(
-                    demand, RouteUnreachableReason.NO_OPERATIONAL_PATH
-                )
             else:
                 outcome = ReachableRouteOutcome(demand, path[1], path)
             outcomes.append(outcome)
-            previous = previous_by_demand.pop(demand, None)
-            if previous != outcome:
-                changes.append(
-                    RouteOutcomeTransition(demand, previous, outcome)
-                )
+            if previous is not outcome:
+                changes.append(RouteOutcomeTransition(demand, previous, outcome))
+        self._construction_work["route_outcome_objects_reused"] = reused_outcomes
+        self._construction_work["route_outcome_objects_constructed"] = len(outcomes) - reused_outcomes
         changes.extend(
             RouteOutcomeTransition(demand, previous_by_demand[demand], None)
             for demand in sorted(
@@ -1164,62 +1319,28 @@ class GatewayHopCountRoutePlanningModel:
 
 
 @dataclass(frozen=True, slots=True)
-class TimeHorizonPlanningWindowPolicy:
-    """Apply explicit time horizons to lookahead, publication, and prehistory.
+class FrameBatchPlanningWindowPolicy:
+    """Batch consecutive formal frames without an independent lookahead wait.
 
-    Layer: public Simulator Plan-publication policy implementation. It is
-    public because composition roots configure the canonical 50-second/
-    20-second window through the PlanningWindowPolicy contract. It is not a
-    Timeline, producer cursor, or batch-planning implementation.
+    Layer: public Simulator publication policy. It is public because callers
+    select the finite batching size. Composition roots select an
+    engineering batch size; Planner preserves each transition's exact time.
+    This is not a control interval or a physical prediction horizon.
     """
 
-    planning_horizon: timedelta = timedelta(seconds=50)
-    publication_horizon: timedelta = timedelta(seconds=20)
-    maximum_prehistory: timedelta = timedelta(seconds=20)
+    frames_per_batch: int = 32
 
     def __post_init__(self) -> None:
-        for field_name in (
-            "planning_horizon",
-            "publication_horizon",
-            "maximum_prehistory",
-        ):
-            if not isinstance(getattr(self, field_name), timedelta):
-                raise TypeError(f"{field_name} must be a timedelta")
-        if self.planning_horizon <= timedelta(0):
-            raise ValueError("planning_horizon must be positive")
-        if self.publication_horizon <= timedelta(0):
-            raise ValueError("publication_horizon must be positive")
-        if self.publication_horizon > self.planning_horizon:
-            raise ValueError(
-                "publication_horizon cannot exceed planning_horizon"
-            )
-        if self.maximum_prehistory < timedelta(0):
-            raise ValueError("maximum_prehistory must be non-negative")
+        if (isinstance(self.frames_per_batch, bool)
+                or not isinstance(self.frames_per_batch, int)
+                or self.frames_per_batch <= 0):
+            raise ValueError("frames_per_batch must be a positive integer")
 
-    def required_prehistory(self, acquisition_duration: timedelta) -> timedelta:
-        if not isinstance(acquisition_duration, timedelta):
-            raise TypeError("acquisition_duration must be a timedelta")
-        if acquisition_duration < timedelta(0):
-            raise ValueError("acquisition_duration must be non-negative")
-        return min(self.maximum_prehistory, acquisition_duration)
-
-    def validate_observation_interval(
-        self, observation_interval: timedelta
-    ) -> None:
+    def validate_observation_interval(self, observation_interval: timedelta) -> None:
         if not isinstance(observation_interval, timedelta):
             raise TypeError("observation_interval must be a timedelta")
         if observation_interval <= timedelta(0):
             raise ValueError("observation_interval must be positive")
-        for field_name in (
-            "planning_horizon",
-            "publication_horizon",
-            "maximum_prehistory",
-        ):
-            value = getattr(self, field_name)
-            if value and value % observation_interval != timedelta(0):
-                raise ValueError(
-                    f"{field_name} must align to observation_interval"
-                )
 
 
 def _isl_capabilities(physical_world: PhysicalWorld) -> dict[NodeId, int]:

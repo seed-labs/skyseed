@@ -38,12 +38,39 @@ parallel/batch limits, service expectations, and verification policy. On
 `SINGLE` and `BATCHED` are caller-selected strategies, never an implicit
 fallback sequence.
 
-The canonical generated `start.sh` is a separate thin Compose control, not a
-call to `ComposeProjectLauncher`. The optional launcher explicitly defaults to
-`--parallel 16`; current generated scripts set neither `--parallel` nor
-`COMPOSE_PARALLEL_LIMIT`. Their effective concurrency cannot be inferred from
-the launcher default. Build-context grouping and historical host settings are
-explained in the [deployment decision record](../provenance/optimization-decision-history.md#d2).
+Generated controls remain separate from the optional public
+`ComposeProjectLauncher`, whose default is `--parallel 16`. Starlink Compiler
+controls now call private deployment support in this same module: shared
+services first, then generated Shell identities in order. The shared private
+policy keeps startup defaults at 64 services / eight concurrent requests at every
+resident count, with explicit environment configurability; batch size and request
+concurrency are distinct. The resident threshold affects cleanup only. Dependencies are checked before
+admission; a derived batch file contains only admitted services and `--no-deps`
+prevents implicit later-Shell startup. The original Compose file is preserved; namespace dependencies in a batch use
+verified immutable container IDs.
+Expected one-shot helpers may complete successfully. Mini and static teaching
+controls retain their existing deployment paths.
+
+Deployment records lightweight `/proc` checkpoints at batch/group boundaries in
+`runtime/deployment-measurements.jsonl`. Per-service memory extrapolation,
+predicted free-memory gates, pressure pause/resume and automatic pressure abort
+have been retired. Batches, dependency order, identity checks, bounded query
+retries, ordinary command errors and scoped cleanup remain. There is no outer
+runtime-lag or arbitrary total-wall-time kill policy. Main's fixed origin,
+sequential late-boundary execution and successor READY deadline are unchanged.
+
+During generation, the private build-plan writer in the
+same package groups exact node context content, paths and modes. Each group
+retains one representative build and gives its services the same explicit
+project-scoped content image; per-node container settings, mounts and identities
+remain individual. The generated startup validates each unique image once,
+checks project labels on generated images, requires an image ID for external
+images, verifies the exact Compose image set, and builds only the base
+prerequisite and representative contexts when required. It creates no per-node
+image aliases. Failed container inventory or stale images with owned containers
+stop startup. This packaging work is separate from the public launcher's
+already-compiled-project contract. Build-context grouping and historical host settings are
+explained in the [deployment decision record](../provenance/optimization-decision-history.md#d4).
 
 ## Invariants
 
@@ -82,3 +109,10 @@ change.
 Update `compose/launcher.py`, `skyseed_v2.compose` exports, Compose class
 details and local README, launcher/integration tests, examples, public-import
 mapping, and wheel checks together.
+
+Generated disposable-network cleanup, shutdown overrides, immutable-ID hooks and
+the four environment controls are specified in the
+[Compose owner README](../../src/skyseed_v2/compose/README.md). Cleanup speeds up
+from eight to 16 actual IDs as remaining residency falls below 2000. Full-scale
+qualification of these new settings is pending; old deployment/teardown timings
+retain their original settings and manual-acceleration disposition.

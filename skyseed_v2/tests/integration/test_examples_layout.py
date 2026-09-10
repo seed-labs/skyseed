@@ -108,15 +108,13 @@ def test_starlink_cli_exposes_only_final_domain_boundaries() -> None:
 
 def test_mini_and_starlink_policy_inputs_remain_explicit() -> None:
     assert mini_simu.DEFAULT_OBSERVATION_INTERVAL.total_seconds() == 10
-    assert mini_simu.PLANNING_HORIZON.total_seconds() == 50
-    assert mini_simu.PUBLICATION_HORIZON.total_seconds() == 20
-    assert mini_simu.ACQUISITION_DURATION.total_seconds() == 20
+    assert mini_simu.PLAN_BATCH_FRAMES == 32
+    assert mini_simu.ACQUISITION_DURATION.total_seconds() == 5
     assert mini_simu.FORMAL_BOUNDARY_COUNT == 64
 
     assert starlink_simu.STARLINK_GEN1_OBSERVATION_INTERVAL.total_seconds() == 5
-    assert starlink_simu.STARLINK_GEN1_PLANNING_HORIZON.total_seconds() == 50
-    assert starlink_simu.STARLINK_GEN1_PUBLICATION_HORIZON.total_seconds() == 20
-    assert starlink_simu.STARLINK_GEN1_ACQUISITION_DURATION.total_seconds() == 20
+    assert starlink_simu.STARLINK_GEN1_PLAN_BATCH_FRAMES == 32
+    assert starlink_simu.STARLINK_GEN1_ACQUISITION_DURATION.total_seconds() == 5
     assert starlink_simu.STARLINK_GEN1_FORMAL_BOUNDARY_COUNT == 121
 
 
@@ -146,31 +144,16 @@ def test_precomputed_examples_use_the_one_incremental_producer() -> None:
 
 
 def test_runner_artifact_precedes_best_effort_observation_and_tools() -> None:
-    mini_source = inspect.getsource(mini)
-    assert mini_source.index("_write_runner_artifact(") < mini_source.index(
-        "simulator._write_execution_observations()"
-    )
-    assert mini_source.index("_write_generated_run_script(") < mini_source.index(
-        "simulator._write_execution_observations()"
-    )
-    assert mini_source.index("simulator._write_execution_observations()") < (
-        mini_source.index(
-            "_write_inspection_tools(", mini_source.index("def main")
-        )
-    )
-
-    starlink_source = inspect.getsource(starlink)
-    runtime_package = starlink_source.index(
-        "_write_runtime_package(", starlink_source.index("def main")
-    )
-    assert runtime_package < (
-        starlink_source.index("simulator._write_execution_observations()")
-    )
-    assert starlink_source.index("simulator._write_execution_observations()") < (
-        starlink_source.index(
-            "_run_dynamic_tools(", starlink_source.index("def main")
-        )
-    )
+    # Inspect the compiler branch rather than the earlier cutoff branches.
+    mini_source = inspect.getsource(mini.main)
+    start = mini_source.index("_write_runner_artifact(")
+    ready = mini_source.index("readiness('MATERIALS_READY'", start)
+    assert start < mini_source.index("_write_generated_run_script(", start) < ready
+    assert ready < mini_source.index("_write_inspection_tools(", ready)
+    starlink_source = inspect.getsource(starlink.main)
+    package = starlink_source.index("_write_runtime_package(")
+    ready = starlink_source.index("status='MATERIALS_READY'", package)
+    assert package < ready < starlink_source.index("_run_dynamic_tools(", ready)
 
 
 def test_exact_frame_facts_are_inspected_only_through_physical_world() -> None:

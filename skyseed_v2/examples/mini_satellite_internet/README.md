@@ -15,9 +15,19 @@ directory rather than the shell's current directory. Use `--output PATH` for
 an alternate owned root and `--no-override` to refuse replacement. If runtime
 containers were started, run the generated `cleanup.sh` before regeneration.
 
+`--through physical-world|planner|compiler` selects the cutoff of the same
+finite producer (Compiler is the default). Physical mode computes contact
+prediction and all formal physical observations; Planner mode also seals Plans.
 Options select scenario/Zone input, output root, replacement behavior, and an
 InternetMap fault-isolation switch. The caller-selected Python interpreter is
 used throughout generation.
+
+The currently retained [normal output](output/) is a **historical partial subset**:
+inputs, domain history, raw invocation evidence and original manifests/checksum
+records remain, but the complete Runner binary and current Tool portal are absent.
+Those original checksums describe the former complete bundle, not a fresh passing
+integrity check of this subset. Closure preserves this state without running Mini.
+Future normal generation may replace the Git-ignored output.
 
 ## Domain chain
 
@@ -28,13 +38,15 @@ Simulator is constructed with:
 - `GeometricPhysicalLinkModel`;
 - explicit maximum-4 ISL capability;
 - K3 / desired 2+2 retain-first ISL planning;
-- 20-second acquisition reference;
-- independent GroundStation and Zone planning;
-- accumulated parameter deadband;
+- 5-second ISL/GS preparation, completed at the next 10-second formal sample;
+- 180/60-second ISL/GS future-service admission;
+- GS coverage then continuity then quality; independent highest-elevation Zone planning;
+- 10% relative delay threshold and 120-second refresh, without target persistence;
 - gateway hop-count Route planning;
-- 50-second planning and 20-second publication horizons.
+- 32-frame batches: two Plans for the unchanged 64 formal boundaries.
 
-The producer primes bounded prehistory, advances every formal frame exactly
+The producer prepares compact physical contact proof, primes one 10-second
+prehistory sample, advances every formal frame exactly
 once, publishes self-contained Plans, compiles them incrementally, and shuts
 down Route workers.
 
@@ -49,6 +61,7 @@ output/
 │   ├── planning.jsonl.gz
 │   ├── compiler.jsonl
 │   └── domain-history-manifest.json
+├── generation-status.json          materials-ready and Tool-completion status
 ├── inspection/                     detached physical/planning/compiler/observation views
 ├── start.sh
 ├── run.sh
@@ -83,3 +96,15 @@ activation-time transience and unexplained loss.
 
 Every Tool is best-effort relative to the valid Runner artifact: a Tool failure
 is reported but cannot invalidate runtime input.
+
+Preparation reserves both endpoint capacities, persists across samples, and
+cancels on loss. Minimum useful service is checked forward from completion;
+full-port replacement has a real preparation gap. Finite proof endpoints are
+not disappearance events. Mini's rounded preparation yields physical tails of
+190 seconds (ISL) and 70 seconds (GS), with no extra formal transitions.
+
+In Compiler mode, all required runtime inputs and controls are ready before
+optional Tools. `generation-status.json` records that boundary and later Tool
+completion/failure separately. Mini's CLI collects the Tool results; it does not
+start generated controls. Static teaching examples retain their own start/cleanup
+flow and do not acquire this Runner chain.

@@ -28,12 +28,14 @@ class _RoutingCoreContext:
 def _prepare_routing_core_context(
     physical_world: PhysicalWorld,
     undirected_edges: Iterable[tuple[NodeId, NodeId]],
+    *, previous: _RoutingCoreContext | None = None,
 ) -> _RoutingCoreContext:
     """Validate and index one operational graph in canonical order."""
 
     if not isinstance(physical_world, PhysicalWorld):
         raise TypeError("physical_world must be a PhysicalWorld")
-    nodes, satellites, ground_stations = _physical_world_node_ids(physical_world)
+    nodes, satellites, ground_stations = (_physical_world_node_ids(physical_world) if previous is None
+        else (previous.nodes, previous.satellites, previous.ground_stations))
     graph = {node_id: set() for node_id in nodes}
     seen: set[tuple[NodeId, NodeId]] = set()
     for edge in undirected_edges:

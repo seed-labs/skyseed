@@ -39,6 +39,14 @@ files are mapped under their existing owner in the
 ## Canonical qualification facts
 
 The canonical fixture must prove 121 formal frames and observations, 121
-transitions, 30 Plans, 30 realizations, and 121 activation timestamps. Each
+transitions, four Plans, four realizations, and 121 activation timestamps. Each
 Plan and realization must replay through continuous world and state lineage.
 The exact validation output is stored outside the repository for each run.
+
+The [S1–S5 Example](../../examples/starlink_multi_shell_satellite_internet/README.md)
+exercises existing owners in one shared network with consecutive sealed
+deliveries. `test_runner_batches.py` compares semantic fingerprints and covers
+multiple handoffs/reclaim cycles and deadline exhaustion;
+`test_starlink_multi_shell_example.py` verifies shared inventory, within-Shell
+pairs and two-delivery packaging. Live helper/verifier tests cover retained
+connections and bounded kernel retirement. This adds no owner mapping.

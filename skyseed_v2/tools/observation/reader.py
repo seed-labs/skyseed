@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from copy import deepcopy
 from dataclasses import dataclass
 import json
 from math import isfinite
@@ -54,7 +53,7 @@ def read_execution_observations(path: Path) -> ObservationRead:
     for sequence, record in enumerate(values[1:]):
         _validate_record(record, sequence, format_version=format_version)
         records.append(record)
-    return ObservationRead(deepcopy(header), tuple(deepcopy(records)))
+    return ObservationRead(header, tuple(records))
 
 
 def _validate_record(

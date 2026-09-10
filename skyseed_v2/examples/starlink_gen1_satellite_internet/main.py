@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import timedelta
+from yaml import safe_dump, safe_load
 import json
 from pathlib import Path
 import re
@@ -31,8 +32,8 @@ from examples.starlink_gen1_satellite_internet.emu import (
     build_starlink_gen1_satellite_internet_emulator,
 )
 from examples.starlink_gen1_satellite_internet.simu import (
-    STARLINK_GEN1_FORMAL_BOUNDARY_COUNT,
     STARLINK_GEN1_OBSERVATION_INTERVAL,
+    STARLINK_GEN1_PLAN_BATCH_FRAMES,
     create_starlink_gen1_planner,
     create_starlink_gen1_simulator,
     starlink_gen1_model_descriptors,
@@ -50,6 +51,8 @@ from skyseed_v2.experiment._realization_producer import (
     _IncrementalRealizationProducer,
 )
 from skyseed_v2.experiment.execution import (
+    _source_scope,
+    _scope_records_digest,
     _write_execution_definition,
     _write_generated_run_script,
 )
@@ -119,7 +122,7 @@ def _guard_existing_output(output: Path) -> None:
         )
 
 
-def _write_input_snapshots(output: Path) -> None:
+def _write_input_snapshots(output: Path, *, selected_shell: str | None = None) -> None:
     inputs = output / "inputs"
     inputs.mkdir(parents=True, exist_ok=True)
     for name in (
@@ -129,6 +132,11 @@ def _write_input_snapshots(output: Path) -> None:
         "zones.yaml",
     ):
         (inputs / name).write_bytes((EXAMPLE_ROOT / name).read_bytes())
+    if selected_shell is not None:
+        scenario_path = inputs / "scenario.yaml"
+        scenario = safe_load(scenario_path.read_text())
+        scenario["skyseed_autonomous_systems"][0]["selected_shell"] = selected_shell
+        scenario_path.write_text(safe_dump(scenario, sort_keys=False), encoding="utf-8")
 
 
 def _append_phase(
@@ -230,6 +238,58 @@ def _run_static_tools(
     return results
 
 
+def _run_physical_stage(simulator, output, *, phase_records=None):
+    """Drain physical prediction/observations through the same producer cursor."""
+    started = perf_counter()
+    evidence = _PhysicalLinkInspectionWriter(output / 'inspection-evidence', simulator.get_physical_world())
+    producer = _IncrementalRealizationProducer(simulator.get_timeline(),
+        simulator.get_physical_world(), simulator.get_physical_link_model(),
+        simulator.get_planner(), evidence_path=output / "domain-history",
+        formal_observation_sink=evidence.record)
+    try:
+        while producer.produce_next_observation() is not None:
+            pass
+        evidence_finalize_failure = None
+        try:
+            evidence.finalize()
+        except Exception as error:
+            evidence_finalize_failure = f"{type(error).__name__}: {error}"
+        frame, observation = producer.first_formal_input()
+        snapshot = producer.snapshot()
+        snapshot["formal_observation_finalize_failure"] = evidence_finalize_failure
+    finally:
+        producer.close()
+        evidence.close()
+    _append_phase(phase_records, 'physical-production', 'semantic-core',
+                 perf_counter()-started, additive=True)
+    return snapshot, frame, observation
+
+
+def _write_generation_status(output, *, through, status, materials_seconds,
+                             total_seconds, producer_snapshot, tool_results=None, model_descriptors=None):
+    """Publish the consumer-visible material/Tool completion boundary."""
+    import os
+    payload = {
+        'format_version': 1, 'artifact_type': 'finite-generation-status',
+        'through': through, 'status': status,
+        'materials_ready_seconds': materials_seconds,
+        'tools_completion_seconds': None if tool_results is None else total_seconds,
+        'total_elapsed_seconds': total_seconds,
+        'tools_wall_seconds': None if tool_results is None else total_seconds-materials_seconds,
+        'timing_scope': 'main entry to required material seal and controls; Tools measured afterward',
+        'producer': producer_snapshot,
+        'tools': tool_results,
+        'environment': {'CONDA_DEFAULT_ENV': os.environ.get('CONDA_DEFAULT_ENV'),
+            'CONDA_PREFIX': os.environ.get('CONDA_PREFIX'),
+            'python_executable': sys.executable, 'python_version': sys.version},
+        'configuration': model_descriptors or starlink_gen1_model_descriptors(),
+    }
+    path = output / 'generation-status.json'
+    staging = path.with_suffix('.tmp')
+    staging.write_text(json.dumps(payload, indent=2, sort_keys=True, default=str)+'\n', encoding='utf-8')
+    staging.replace(path)
+
+
 def _run_planner_stage(
     simulator: Simulator,
     output: Path,
@@ -289,13 +349,8 @@ def _run_planner_stage(
         phase_records,
         "semantic-producer",
         "semantic-core",
-        max(
-            0.0,
-            producer_seconds
-            - float(snapshot["formal_observation_sink_seconds"])
-            - float(snapshot["domain_evidence_persistence_seconds"]),
-        ),
-        additive=True,
+        producer_seconds,
+        additive=False,
         interval_kind="aggregate",
     )
     _append_phase(
@@ -303,7 +358,7 @@ def _run_planner_stage(
         "inspection-candidate-capture",
         "inspection-evidence-capture",
         float(snapshot["formal_observation_sink_seconds"]),
-        additive=True,
+        additive=False,
         interval_kind="aggregate",
     )
     _append_phase(
@@ -311,7 +366,7 @@ def _run_planner_stage(
         "domain-evidence-persistence",
         "persistence",
         float(snapshot["domain_evidence_persistence_seconds"]),
-        additive=True,
+        additive=False,
         interval_kind="aggregate",
     )
     _append_phase(
@@ -341,17 +396,19 @@ def _run_planner_stage(
         started_monotonic=evidence_finalize_started,
         ended_monotonic=evidence_finalize_ended,
     )
+    timeline = simulator.get_timeline()
+    formal_boundary_count = (timeline.end_time - timeline.start_time) // timeline.observation_interval + 1
     if (
-        snapshot["formal_frame_count"] != STARLINK_GEN1_FORMAL_BOUNDARY_COUNT
+        snapshot["formal_frame_count"] != formal_boundary_count
         or snapshot["transition_count"]
-        != STARLINK_GEN1_FORMAL_BOUNDARY_COUNT
-        or snapshot["plan_count"] != 30
+        != formal_boundary_count
+        or snapshot["plan_count"] != (formal_boundary_count + STARLINK_GEN1_PLAN_BATCH_FRAMES - 1) // STARLINK_GEN1_PLAN_BATCH_FRAMES
         or snapshot["realization_count"] != 0
         or snapshot["domain_history_sealed"] is not True
     ):
         raise RuntimeError(
-            "canonical Planner producer did not seal 121 frames/transitions "
-            "and 30 Plans"
+            "canonical Planner producer did not seal every Timeline frame/transition "
+            "and complete frame batches"
         )
     return snapshot, physical_frame, physical_link_observation
 
@@ -361,6 +418,7 @@ def _run_compiler_stage(
     output: Path,
     *,
     phase_records: list[dict[str, object]] | None = None,
+    delivery_ends: tuple | None = None,
 ) -> tuple[
     Path,
     dict[str, object],
@@ -381,12 +439,33 @@ def _run_compiler_stage(
         evidence_path=output / "domain-history",
         formal_observation_sink=evidence_writer.record,
     )
+    timeline = simulator.get_timeline()
+    delivery_ends = (timeline.end_time,) if delivery_ends is None else tuple(delivery_ends)
+    if (not delivery_ends or delivery_ends[-1] != timeline.end_time
+        or any(end < timeline.start_time or (end - timeline.start_time) % timeline.observation_interval for end in delivery_ends)
+        or any(a >= b for a, b in zip(delivery_ends, delivery_ends[1:]))):
+        raise ValueError("delivery endpoints must partition the complete formal Timeline")
+    delivery_index = 0
+    sealed_deliveries = []
     staging = output / ".runner-artifact"
     writer = _RunnerArtifactWriter(
         staging,
+        final=len(delivery_ends) == 1,
         execution_observer=simulator.get_planner()._get_execution_observer(),
     )
-    traffic_builder = IncrementalTrafficProbePlanBuilder()
+    traffic_builder = IncrementalTrafficProbePlanBuilder(physical_world=simulator.get_physical_world())
+    from concurrent.futures import ThreadPoolExecutor
+    from collections import deque
+    packaging = ThreadPoolExecutor(max_workers=1, thread_name_prefix='skyseed-materials')
+    pending_packages = deque()
+    def package_pair(plan, realization):
+        started = perf_counter()
+        writer.append(realization)
+        writer_duration = perf_counter()-started
+        started = perf_counter()
+        traffic_builder.append(plan, realization)
+        return writer_duration, perf_counter()-started
+    material_loop_complete = False
     try:
         production_loop_started = perf_counter()
         producer_seconds = 0.0
@@ -397,20 +476,39 @@ def _run_compiler_stage(
         sealing_ended = production_loop_started
         while True:
             started = perf_counter()
-            realization = producer.produce_next_realization()
+            realization = producer.produce_next_realization(delivery_end=delivery_ends[delivery_index])
             elapsed = perf_counter() - started
             if realization is None:
                 sealing_seconds += elapsed
                 sealing_started = started
                 sealing_ended = started + elapsed
+                if delivery_index + 1 < len(delivery_ends):
+                    while pending_packages:
+                        writer_duration, traffic_duration = pending_packages.popleft().result()
+                        writer_seconds += writer_duration
+                        traffic_seconds += traffic_duration
+                    seal_started = perf_counter()
+                    sealed_deliveries.append(writer.finalize())
+                    _append_phase(phase_records, "delivered-batch-seal", "sealing-finalization",
+                                  perf_counter() - seal_started, additive=False)
+                    writer.close()
+                    delivery_index += 1
+                    writer = _RunnerArtifactWriter(output / f".runner-artifact-{delivery_index:03d}",
+                        continuation=writer, final=delivery_index + 1 == len(delivery_ends),
+                        execution_observer=simulator.get_planner()._get_execution_observer())
+                    continue
                 break
             producer_seconds += elapsed
-            started = perf_counter()
-            writer.append(realization)
-            writer_seconds += perf_counter() - started
-            started = perf_counter()
-            traffic_builder.append(producer.latest_plan, realization)
-            traffic_seconds += perf_counter() - started
+            pending_packages.append(packaging.submit(package_pair, producer.latest_plan, realization))
+            # At most two immutable compiled batches in flight, in lineage order.
+            if len(pending_packages) >= 2:
+                writer_duration, traffic_duration = pending_packages.popleft().result()
+                writer_seconds += writer_duration
+                traffic_seconds += traffic_duration
+        while pending_packages:
+            writer_duration, traffic_duration = pending_packages.popleft().result()
+            writer_seconds += writer_duration
+            traffic_seconds += traffic_duration
         production_loop_ended = perf_counter()
         physical_frame, physical_link_observation = (
             producer.first_formal_input()
@@ -427,11 +525,19 @@ def _run_compiler_stage(
         snapshot["formal_observation_finalize_failure"] = (
             evidence_finalize_failure
         )
+        material_loop_complete = True
     finally:
+        packaging.shutdown(wait=True, cancel_futures=True)
+        if not material_loop_complete:
+            writer.close()
         producer.close()
         evidence_writer.close()
     handoff_finalize_started = perf_counter()
-    manifest = writer.finalize()
+    try:
+        sealed_deliveries.append(writer.finalize())
+        manifest = sealed_deliveries[0]
+    finally:
+        writer.close()
     handoff_finalize_ended = perf_counter()
     handoff_finalize_seconds = handoff_finalize_ended - handoff_finalize_started
     traffic_snapshot = traffic_builder.snapshot()
@@ -442,17 +548,18 @@ def _run_compiler_stage(
     )
     traffic_seconds += perf_counter() - started
     snapshot["traffic_incremental_projection"] = traffic_snapshot
+    snapshot["delivered_batches"] = [
+        {"manifest": str(path), **{key: value for key, value in json.loads(path.read_text()).items()
+                                 if key in {"delivery", "timeline", "binary", "realization_count"}}}
+        for path in sealed_deliveries]
+    expected_plan_count = sum((value["timeline"]["boundary_count"] + STARLINK_GEN1_PLAN_BATCH_FRAMES - 1)
+                              // STARLINK_GEN1_PLAN_BATCH_FRAMES for value in snapshot["delivered_batches"])
     _append_phase(
         phase_records,
         "semantic-producer",
         "semantic-core",
-        max(
-            0.0,
-            producer_seconds
-            - float(snapshot["formal_observation_sink_seconds"])
-            - float(snapshot["domain_evidence_persistence_seconds"]),
-        ),
-        additive=True,
+        producer_seconds,
+        additive=False,
         interval_kind="aggregate",
     )
     _append_phase(
@@ -460,7 +567,7 @@ def _run_compiler_stage(
         "inspection-candidate-capture",
         "inspection-evidence-capture",
         float(snapshot["formal_observation_sink_seconds"]),
-        additive=True,
+        additive=False,
         interval_kind="aggregate",
     )
     _append_phase(
@@ -468,7 +575,7 @@ def _run_compiler_stage(
         "domain-evidence-persistence",
         "persistence",
         float(snapshot["domain_evidence_persistence_seconds"]),
-        additive=True,
+        additive=False,
         interval_kind="aggregate",
     )
     _append_phase(
@@ -476,7 +583,7 @@ def _run_compiler_stage(
         "runner-artifact-writer",
         "persistence",
         writer_seconds,
-        additive=True,
+        additive=False,
         interval_kind="aggregate",
     )
     _append_phase(
@@ -484,7 +591,7 @@ def _run_compiler_stage(
         "traffic-probe-plan",
         "detached-inspection",
         traffic_seconds,
-        additive=True,
+        additive=False,
         interval_kind="aggregate",
     )
     _append_phase(
@@ -523,16 +630,18 @@ def _run_compiler_stage(
         started_monotonic=evidence_finalize_started,
         ended_monotonic=evidence_finalize_ended,
     )
+    timeline = simulator.get_timeline()
+    formal_boundary_count = (timeline.end_time - timeline.start_time) // timeline.observation_interval + 1
     if (
-        snapshot["formal_frame_count"] != STARLINK_GEN1_FORMAL_BOUNDARY_COUNT
-        or snapshot["transition_count"] != STARLINK_GEN1_FORMAL_BOUNDARY_COUNT
-        or snapshot["plan_count"] != 30
-        or snapshot["realization_count"] != 30
+        snapshot["formal_frame_count"] != formal_boundary_count
+        or snapshot["transition_count"] != formal_boundary_count
+        or snapshot["plan_count"] != expected_plan_count
+        or snapshot["realization_count"] != snapshot["plan_count"]
         or snapshot["domain_history_sealed"] is not True
     ):
         raise RuntimeError(
-            "canonical producer did not emit 121 frames/transitions and "
-            "30 Plans/realizations"
+            "canonical producer did not emit every Timeline frame/transition and "
+            "complete Plan/realization batches"
         )
     return (
         manifest,
@@ -548,6 +657,11 @@ def _write_runtime_package(
     emulator,
     simulator: Simulator,
     staged_manifest: Path,
+    staged_batch_manifests: tuple[Path, ...] = (),
+    example_root: Path = EXAMPLE_ROOT,
+    additional_example_roots: tuple[Path, ...] = (),
+    batch_lead_fraction: float = 0.75,
+    batch_capacity_factor: int = 2,
     phase_records: list[dict[str, object]] | None = None,
 ) -> Path:
     """Publish the persisted Compiler stream and static deployment package."""
@@ -558,7 +672,6 @@ def _write_runtime_package(
     compose_project_name = f"{COMPOSE_PROJECT_PREFIX}-{uuid4().hex[:16]}"
 
     started = perf_counter()
-    _write_input_snapshots(output)
     _append_phase(
         phase_records,
         "runtime-input-snapshots",
@@ -608,6 +721,11 @@ def _write_runtime_package(
         )
     shutil.move(str(staged_manifest.parent), artifact_directory)
     artifact_manifest = artifact_directory / "manifest.json"
+    continued_manifests = []
+    for index, path in enumerate(staged_batch_manifests, 1):
+        destination = output / f"runtime/runner-artifact-{index:03d}"
+        shutil.move(str(path.parent), destination)
+        continued_manifests.append(str((destination / "manifest.json").relative_to(output)))
     _append_phase(
         phase_records,
         "runner-artifact-publication",
@@ -631,12 +749,28 @@ def _write_runtime_package(
         timeline_end=timeline.end_time,
         observation_interval=timeline.observation_interval,
         project_root=PROJECT_ROOT,
-        example_root=EXAMPLE_ROOT,
+        example_root=example_root,
+        runner_batches=tuple(continued_manifests),
+        batch_lead_fraction=batch_lead_fraction,
+        batch_capacity_factor=batch_capacity_factor,
         runner_artifact=str(
             artifact_manifest.relative_to(output).as_posix()
         ),
         realization_producer=_REALIZATION_PRODUCER_IDENTITY,
     )
+    if additional_example_roots:
+        # Preserve the shared policy scope and also identify its composition
+        # caller. This uses the existing execution source-scope contract.
+        definition_path = output / "runtime/execution.json"
+        definition = json.loads(definition_path.read_text())
+        fingerprint = definition["source_fingerprint"]
+        fingerprint["scopes"].extend(
+            _source_scope(f"example-composition-{index}", root,
+                          includes=("main.py", "emu.py", "simu.py"))
+            for index, root in enumerate(additional_example_roots)
+        )
+        fingerprint["digest"] = _scope_records_digest(fingerprint["scopes"])
+        definition_path.write_text(json.dumps(definition, indent=2, sort_keys=True) + "\n")
     _append_phase(
         phase_records,
         "runtime-execution-definition",
@@ -650,6 +784,7 @@ def _write_runtime_package(
         output,
         compose_project_name,
         startup_evidence_path="runtime/deployment-startup.json",
+        controlled_startup=True,
         build_plan_path=str(build_plan.relative_to(output).as_posix()),
         python_executable=sys.executable,
     )
@@ -693,48 +828,50 @@ def _run_dynamic_tools(
     executor = _DetachedInspectionExecutor(
         output / ".inspection-control", max_workers=2
     )
-    planning_path = output / "domain-history/planning.jsonl.gz"
-    executor.submit(
-        "planner",
-        {
-            "planner_history_path": planning_path,
-            "physical_frames_path": (
-                output / "domain-history/physical-frames.jsonl"
-            ),
-            "physical_link_inspection_path": (
-                output
-                / "inspection-evidence/physical-link-observations.jsonl.gz"
-            ),
-            "model_descriptors": model_descriptors or {},
-        },
-        inspection / "planner",
-    )
-    if through == "compiler":
+    try:
+        planning_path = output / "domain-history/planning.jsonl.gz"
         executor.submit(
-            "compiler",
+            "planner",
             {
-                "compiler_history_path": (
-                    output / "domain-history/compiler.jsonl"
+                "planner_history_path": planning_path,
+                "physical_frames_path": (
+                    output / "domain-history/physical-frames.jsonl"
                 ),
-                "runner_artifact_manifest": (
-                    output / "runtime/runner-artifact/manifest.json"
+                "physical_link_inspection_path": (
+                    output
+                    / "inspection-evidence/physical-link-observations.jsonl.gz"
                 ),
-                "observation_path": (
-                    inspection
-                    / "observation/execution-observations.jsonl"
-                ),
+                "model_descriptors": model_descriptors or {},
             },
-            inspection / "bpf-compiler",
+            inspection / "planner",
         )
-    observation_path = (
-        inspection / "observation/execution-observations.jsonl"
-    )
-    executor.submit(
-        "observation",
-        {"observation_path": observation_path},
-        inspection / "observation",
-    )
-    records = executor.join()
+        if through == "compiler":
+            executor.submit(
+                "compiler",
+                {
+                    "compiler_history_path": (
+                        output / "domain-history/compiler.jsonl"
+                    ),
+                    "execution_definition_path": output / "runtime/execution.json",
+                    "observation_path": (
+                        inspection
+                        / "observation/execution-observations.jsonl"
+                    ),
+                },
+                inspection / "bpf-compiler",
+            )
+        observation_path = (
+            inspection / "observation/execution-observations.jsonl"
+        )
+        executor.submit(
+            "observation",
+            {"observation_path": observation_path},
+            inspection / "observation",
+        )
+        records = executor.join()
+    except BaseException:
+        executor.terminate()
+        raise
     batch_ended = perf_counter()
     _append_phase(
         phase_records,
@@ -842,9 +979,9 @@ def _write_orchestration_timing(
         "interpretation": {
             "semantic-core": "authoritative production work",
             "inspection-evidence-capture": (
-                "synchronous Tool-only candidate serialization/compression"
+                "queue submission/wait; serialization runs in a bounded Tool worker"
             ),
-            "persistence": "writer and runtime package persistence",
+            "persistence": "serialization, packaging, and actual writes; see separate operation timings",
             "detached-inspection": "Tool-owned side work outside semantics",
             "sealing-finalization": "terminal sealing, manifests, and hashes",
             "other": "assembly and orchestration not in the other categories",
@@ -861,7 +998,7 @@ def _write_orchestration_timing(
         },
     }
     inspection.mkdir(parents=True, exist_ok=True)
-    text = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+    text = json.dumps(payload, indent=2, sort_keys=True, default=str) + "\n"
     (inspection / "orchestration-timing.json").write_text(
         text, encoding="utf-8"
     )
@@ -882,14 +1019,27 @@ def _parser() -> argparse.ArgumentParser:
         help="generation boundary (default: compiler)",
     )
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument("--shell", default=None,
+                        help="explicit shell ID from shells.yaml (default: scenario.yaml)")
+    parser.add_argument("--observation-interval-seconds", type=float,
+                        default=STARLINK_GEN1_OBSERVATION_INTERVAL.total_seconds(),
+                        help="formal observation cadence; policy durations stay in seconds")
     return parser
+
+
+def _write_optional_observations(simulator):
+    try:
+        simulator._write_execution_observations()
+    except Exception as error:
+        return f"{type(error).__name__}: {error}"
+    return None
 
 
 def main(argv: list[str] | None = None) -> int:
     total_started = perf_counter()
     phase_records: list[dict[str, object]] = []
     arguments = _parser().parse_args(argv)
-    output = arguments.output
+    output = arguments.output.expanduser().resolve()
     started = perf_counter()
     _guard_existing_output(output)
     _prepare_generated_output(output, replace=True)
@@ -901,9 +1051,14 @@ def main(argv: list[str] | None = None) -> int:
         additive=True,
     )
     started = perf_counter()
-    emulator = build_starlink_gen1_satellite_internet_emulator()
-    simulator = create_starlink_gen1_simulator(emulator)
-    model_descriptors = starlink_gen1_model_descriptors()
+    _write_input_snapshots(output, selected_shell=arguments.shell)
+    emulator = build_starlink_gen1_satellite_internet_emulator(output / "inputs/scenario.yaml")
+    simulator = create_starlink_gen1_simulator(
+        emulator, observation_interval=timedelta(seconds=arguments.observation_interval_seconds)
+    )
+    model_descriptors = starlink_gen1_model_descriptors(
+        observation_interval=simulator.get_timeline().observation_interval
+    )
     _append_phase(
         phase_records,
         "example-assembly",
@@ -916,122 +1071,116 @@ def main(argv: list[str] | None = None) -> int:
     records: tuple[dict[str, object], ...] = ()
     producer_snapshot = None
 
+    started = perf_counter()
+    create_starlink_gen1_planner(simulator)
+    _append_phase(
+        phase_records,
+        "planner-assembly",
+        "other",
+        perf_counter() - started,
+        additive=True,
+    )
+    observation_path = (
+        inspection / "observation/execution-observations.jsonl"
+    )
+    simulator._enable_execution_observation(
+        observation_path,
+        metadata={
+            "scenario_identity": "starlink_gen1_satellite_internet",
+            "timeline_start": (
+                simulator.get_timeline().start_time.isoformat()
+            ),
+            "timeline_end": simulator.get_timeline().end_time.isoformat(),
+            "observation_interval_seconds": (
+                simulator.get_timeline()
+                .observation_interval.total_seconds()
+            ),
+            "through": arguments.through,
+            "progression": "physical-world-planner-plan-compiler",
+        },
+    )
     if arguments.through == "physical-world":
-        results.update(
-            _run_static_tools(
-                simulator,
-                inspection,
-                model_descriptors=model_descriptors,
-                phase_records=phase_records,
-            )
+        producer_snapshot, physical_frame, physical_link_observation = _run_physical_stage(
+            simulator, output, phase_records=phase_records)
+    elif arguments.through == "planner":
+        (
+            producer_snapshot,
+            physical_frame,
+            physical_link_observation,
+        ) = _run_planner_stage(
+            simulator, output, phase_records=phase_records
         )
     else:
-        started = perf_counter()
-        create_starlink_gen1_planner(simulator)
-        _append_phase(
-            phase_records,
-            "planner-assembly",
-            "other",
-            perf_counter() - started,
-            additive=True,
+        (
+            staged_manifest,
+            producer_snapshot,
+            physical_frame,
+            physical_link_observation,
+        ) = _run_compiler_stage(
+            simulator, output, phase_records=phase_records
         )
-        observation_path = (
-            inspection / "observation/execution-observations.jsonl"
+        runtime_manifest = _write_runtime_package(
+            output,
+            emulator=emulator,
+            simulator=simulator,
+            staged_manifest=staged_manifest,
+            phase_records=phase_records,
         )
-        simulator._enable_execution_observation(
-            observation_path,
-            metadata={
-                "scenario_identity": "starlink_gen1_satellite_internet",
-                "timeline_start": (
-                    simulator.get_timeline().start_time.isoformat()
-                ),
-                "timeline_end": simulator.get_timeline().end_time.isoformat(),
-                "observation_interval_seconds": (
-                    simulator.get_timeline()
-                    .observation_interval.total_seconds()
-                ),
-                "through": arguments.through,
-                "progression": "physical-world-planner-plan-compiler",
+        print(f"Runner artifact: {runtime_manifest}")
+    started = perf_counter()
+    observation_failure = _write_optional_observations(simulator)
+    if observation_failure is not None:
+        results["observation-evidence"] = {"status": "FAILED", "message": observation_failure}
+    _append_phase(
+        phase_records,
+        "observation-evidence-write",
+        "persistence",
+        perf_counter() - started,
+        additive=True,
+    )
+    materials_seconds = perf_counter()-total_started
+    _write_generation_status(output, through=arguments.through, status='MATERIALS_READY',
+        materials_seconds=materials_seconds, total_seconds=materials_seconds,
+        producer_snapshot=producer_snapshot, model_descriptors=model_descriptors)
+    print(f'Materials ready after {materials_seconds:.3f}s: {output}', flush=True)
+    results.update(
+        _run_static_tools(
+            simulator,
+            inspection,
+            physical_frame=physical_frame,
+            physical_link_observation=physical_link_observation,
+            physical_link_inspection_path=(
+                output
+                / "inspection-evidence/physical-link-observations.jsonl.gz"
+            ),
+            model_descriptors=model_descriptors,
+            phase_records=phase_records,
+        )
+    )
+    try:
+        dynamic, records = ({}, ()) if arguments.through == "physical-world" else _run_dynamic_tools(
+            output,
+            through=arguments.through,
+            model_descriptors=model_descriptors,
+            phase_records=phase_records,
+        )
+    except Exception as error:
+        message = f"{type(error).__name__}: {error}"
+        names = ["planner", "observation"]
+        if arguments.through == "compiler":
+            names.append("bpf-compiler")
+        dynamic = {
+            name: {"status": "FAILED", "message": message}
+            for name in names
+        }
+        records = (
+            {
+                "task": "inspection-batch",
+                "status": "FAILED",
+                "message": message,
             },
         )
-        if arguments.through == "planner":
-            (
-                producer_snapshot,
-                physical_frame,
-                physical_link_observation,
-            ) = _run_planner_stage(
-                simulator, output, phase_records=phase_records
-            )
-        else:
-            (
-                staged_manifest,
-                producer_snapshot,
-                physical_frame,
-                physical_link_observation,
-            ) = _run_compiler_stage(
-                simulator, output, phase_records=phase_records
-            )
-            runtime_manifest = _write_runtime_package(
-                output,
-                emulator=emulator,
-                simulator=simulator,
-                staged_manifest=staged_manifest,
-                phase_records=phase_records,
-            )
-            print(f"Runner artifact: {runtime_manifest}")
-        results.update(
-            _run_static_tools(
-                simulator,
-                inspection,
-                physical_frame=physical_frame,
-                physical_link_observation=physical_link_observation,
-                physical_link_inspection_path=(
-                    output
-                    / "inspection-evidence/physical-link-observations.jsonl.gz"
-                ),
-                model_descriptors=model_descriptors,
-                phase_records=phase_records,
-            )
-        )
-        started = perf_counter()
-        try:
-            simulator._write_execution_observations()
-        except Exception as error:
-            results["observation-evidence"] = {
-                "status": "FAILED",
-                "message": f"{type(error).__name__}: {error}",
-            }
-        _append_phase(
-            phase_records,
-            "observation-evidence-write",
-            "persistence",
-            perf_counter() - started,
-            additive=True,
-        )
-        try:
-            dynamic, records = _run_dynamic_tools(
-                output,
-                through=arguments.through,
-                model_descriptors=model_descriptors,
-                phase_records=phase_records,
-            )
-        except Exception as error:
-            message = f"{type(error).__name__}: {error}"
-            names = ["planner", "observation"]
-            if arguments.through == "compiler":
-                names.append("bpf-compiler")
-            dynamic = {
-                name: {"status": "FAILED", "message": message}
-                for name in names
-            }
-            records = (
-                {
-                    "task": "inspection-batch",
-                    "status": "FAILED",
-                    "message": message,
-                },
-            )
-        results.update(dynamic)
+    results.update(dynamic)
     finalization_started = perf_counter()
     try:
         _write_tool_records(inspection, records)
@@ -1061,6 +1210,10 @@ def main(argv: list[str] | None = None) -> int:
         total_wall_seconds=perf_counter() - total_started,
         run_origin_monotonic=total_started,
     )
+
+    _write_generation_status(output, through=arguments.through, status=('TOOLS_FAILED' if any(r.get('status') not in {'PASS', 'COMPLETE'} for r in results.values()) else 'TOOLS_COMPLETE'),
+        materials_seconds=materials_seconds, total_seconds=perf_counter()-total_started,
+        producer_snapshot=producer_snapshot, tool_results=results, model_descriptors=model_descriptors)
 
     print(f"Inspection index: {inspection / 'index.html'}")
     if producer_snapshot is not None:

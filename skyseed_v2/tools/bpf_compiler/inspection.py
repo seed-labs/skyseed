@@ -17,11 +17,12 @@ from .renderer import render_bpf_compiler_page
 
 def _compiler_observation_timing(path: Path) -> dict[str, object]:
     from tools.observation import (
-        collect_observation_data,
         read_execution_observations,
     )
 
-    observations = collect_observation_data(Path(path))
+    from tools.observation.projection import project_observations
+    read = read_execution_observations(Path(path))
+    observations = project_observations(read)
     component = next(
         (
             value
@@ -30,7 +31,7 @@ def _compiler_observation_timing(path: Path) -> dict[str, object]:
         ),
         None,
     )
-    records = read_execution_observations(Path(path)).records
+    records = read.records
     samples = tuple(
         {
             "compile_index": value["scope"].get("compile_index"),

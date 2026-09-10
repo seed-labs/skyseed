@@ -26,7 +26,7 @@ from skyseed_v2.simulator.planning import (
     planned_operational_state_to_data,
 )
 from tools.bpf_compiler.reader import read_bpf_compiler_history
-from tools.planner.reader import iter_planner_history
+from tools.planner.reader import _iter_traffic_planner_history
 from tools.runner.reader import read_runner_event_history
 
 
@@ -46,6 +46,7 @@ def read_traffic_replay(
     probe_plan_path: Path | None = None,
     probe_execution_path: Path | None = None,
     runner_events_path: Path | None = None,
+    physical_link_inspection_path: Path | None = None,
 ) -> TrafficReplayRead:
     """Read and fail closed on inconsistent physical/planned/runtime evidence."""
 
@@ -60,7 +61,8 @@ def read_traffic_replay(
         raise ValueError(
             "Traffic qualification requires plan, execution, and Runner events"
         )
-    telemetry = _read_telemetry(Path(telemetry_path))
+    probe_execution = () if probe_execution_path is None else _read_jsonl(Path(probe_execution_path))
+    telemetry = _read_telemetry(Path(telemetry_path), probe_execution=probe_execution)
     history_manifest = _read_domain_history_manifest(
         Path(planning_path), minimum_through="compiler"
     )
@@ -107,7 +109,7 @@ def read_traffic_replay(
     if probe_plan_path is not None:
         qualification = {
             "plan": _read_json(Path(probe_plan_path), "Traffic probe plan"),
-            "execution": _read_jsonl(Path(probe_execution_path)),
+            "execution": probe_execution,
             "runner_events": read_runner_event_history(
                 Path(runner_events_path)
             ),
@@ -124,6 +126,19 @@ def read_traffic_replay(
             for value in telemetry["boundaries"]
         ):
             raise ValueError("Runner and Traffic completed boundary histories differ")
+    shell_nodes = ()
+    if physical_link_inspection_path is not None:
+        from contextlib import closing
+        from tools._inspection_evidence import iter_physical_link_inspection
+        with closing(iter_physical_link_inspection(Path(physical_link_inspection_path))) as records:
+            header = next(records)
+        if {r["node_id"] for r in header["nodes"]} != telemetry_nodes:
+            raise ValueError("Traffic Shell metadata and telemetry nodes differ")
+        shell_nodes = tuple(header["nodes"])
+    elif qualification is not None:
+        membership = {r["node_id"]: r["shell_id"] for r in qualification["plan"].get("shell_metadata", ())}
+        shell_nodes = tuple({"node_id": r["node_id"], "kind": next(p["node"]["entity_kind"] for p in physical["frames"][0]["positions"] if p["node_id"] == r["node_id"]),
+                             "shell_id": membership.get(r["node_id"])} for r in telemetry["nodes"])
     return TrafficReplayRead(
         {
             "format_version": 4,
@@ -148,6 +163,7 @@ def read_traffic_replay(
             "telemetry": telemetry,
             "workload": workload,
             "qualification": qualification,
+            "shell_nodes": shell_nodes,
         }
     )
 
@@ -251,8 +267,11 @@ def _read_planning(path: Path) -> dict[str, object]:
     formal_transitions = []
     plans = []
     physical_world_fingerprint = None
-    for plan_index, value in enumerate(iter_planner_history(path)):
+    for plan_index, value in enumerate(_iter_traffic_planner_history(path)):
         plan = value.plan
+        input_fingerprint = None if state is None else planned_operational_state_fingerprint(state)
+        if input_fingerprint != plan.input_state_fingerprint:
+            raise ValueError("Traffic Tool replay differs from Plan input fingerprint")
         if physical_world_fingerprint is None:
             physical_world_fingerprint = plan.physical_world_fingerprint
         for transition_index, transition in enumerate(plan.transitions):
@@ -273,6 +292,8 @@ def _read_planning(path: Path) -> dict[str, object]:
                     "transition": plan_transition_to_data(transition),
                 }
             )
+        if state is None or planned_operational_state_fingerprint(state) != plan.output_state_fingerprint:
+            raise ValueError("Traffic Tool replay differs from Plan output fingerprint")
         plans.append(
             {
                 "plan_id": plan.plan_id,
@@ -422,8 +443,15 @@ def _read_compiler(
     return {"source_kind": source_kind, "realizations": realizations}
 
 
-def _read_telemetry(path: Path) -> dict[str, object]:
-    rows = _read_jsonl(path)
+def _read_telemetry(path: Path, *, probe_execution=()) -> dict[str, object]:
+    # Two streaming passes keep packet/loss facts and at most one generation
+    # of expanded identity rows, never the complete raw identity history.
+    rows = []
+    raw_record_count = 0
+    for value in _iter_jsonl(path):
+        raw_record_count += 1
+        if value.get("record_type") not in {"interface_identity", "interface_generation", "interface_update"}:
+            rows.append(value)
     if not rows or rows[0].get("record_type") != "telemetry_header":
         raise ValueError("traffic telemetry must begin with one header")
     headers = _records(rows, "telemetry_header")
@@ -483,14 +511,24 @@ def _read_telemetry(path: Path) -> dict[str, object]:
         and endings[0].get("complete") is True
         and loss_total == 0
     )
-    interfaces = _read_interfaces(rows, by_slot=by_slot, by_node=by_node)
+    interfaces = _compact_interfaces(_iter_interface_records(path), by_slot=by_slot, by_node=by_node)
     boundaries = _read_boundary_activations(rows)
     completed = [value["main_end_monotonic_ns"] for value in boundaries]
     starts = [value["main_start_monotonic_ns"] for value in boundaries]
     generations = {value["active_generation"]: value for value in boundaries
                    if value["generation_publication_occurred"]}
-    interface_index = {(value["generation"], value["node_slot"], value["ifindex"]): value
-                       for value in interfaces}
+    interface_index = defaultdict(list)
+    for endpoint in interfaces["endpoints"]:
+        for first, last, ifindex in endpoint["incarnations"]:
+            interface_index[(endpoint["node_slot"], ifindex)].append((first, last, endpoint))
+    for values in interface_index.values():
+        values.sort(key=lambda value: value[0])
+    def resolve(generation, physical):
+        values = interface_index.get(physical, ())
+        if generation is None:
+            return None
+        index = bisect_right(values, generation, key=lambda value: value[0]) - 1
+        return values[index][2] if index >= 0 and generation <= values[index][1] else None
     for packet in packets:
         observed = packet["kernel_monotonic_ns"]
         active_index = bisect_right(completed, observed) - 1
@@ -504,12 +542,12 @@ def _read_telemetry(path: Path) -> dict[str, object]:
         )
         generation = generations.get(packet.get("generation"))
         packet["generation_boundary_timestamp"] = (
-            None if generation is None else generation["boundary_timestamp"]
+            None if generation is None or observed < generation["generation_switch_start_monotonic_ns"] else generation["boundary_timestamp"]
         )
         for direction in ("ingress", "egress"):
             physical = (packet["node_slot"], packet.get(
                 "ingress_ifindex" if direction == "ingress" else "selected_egress_ifindex"))
-            identity = interface_index.get((packet.get("generation"), *physical))
+            identity = resolve(packet.get("generation"), physical)
             validity = "exact-generation"
             if changing_index > active_index:
                 transition = boundaries[changing_index]
@@ -518,7 +556,7 @@ def _read_telemetry(path: Path) -> dict[str, object]:
                 # generations: a later incarnation may reuse an ifindex.
                 candidates = [value for selected in {
                     transition["previous_generation"], transition["active_generation"]
-                } if (value := interface_index.get((selected, *physical))) is not None]
+                } if (value := resolve(selected, physical)) is not None]
                 if len({value["logical_port_id"] for value in candidates}) > 1:
                     raise ValueError("in-flight physical interface identity is ambiguous")
                 if identity is None and candidates:
@@ -537,14 +575,91 @@ def _read_telemetry(path: Path) -> dict[str, object]:
         "boundaries": boundaries,
         "packets": tuple(packets),
         "ping_transactions": _ping_transactions(
-            tuple(packets), nodes_by_address=by_address
+            tuple(packets), nodes_by_address=by_address, probe_execution=probe_execution
         ),
         "loss_records": tuple(dict(value) for value in losses),
         "recorder_end": None if not endings else dict(endings[0]),
         "telemetry_complete": complete,
         "telemetry_losses": loss_total,
-        "raw_record_count": len(rows),
+        "raw_record_count": raw_record_count,
     }
+
+
+def _iter_interface_records(path):
+    """Expand v2 deltas lazily; retain support for original v1 identity rows."""
+    live = {}
+    pending = None
+    for row in _iter_jsonl(path):
+        kind = row.get("record_type")
+        if kind == "interface_identity":
+            yield row
+        elif kind == "interface_update":
+            port = _integer(row.get("logical_port_id"), "logical_port_id")
+            live[port] = {**live.get(port, {}), **{k: v for k, v in row.items() if k != "record_type"}}
+            pending = True
+        elif kind == "interface_generation":
+            for port in row.get("withdrawn", ()):
+                if port not in live:
+                    raise ValueError("interface delta withdraws an unknown logical port")
+                del live[port]
+            for value in live.values():
+                yield {"record_type": "interface_identity", **value,
+                       "generation": row["generation"], "boundary_timestamp": row["boundary_timestamp"]}
+            pending = None
+    if pending is not None:
+        raise ValueError("incomplete interface generation delta")
+
+
+def _compact_interfaces(rows, *, by_slot, by_node):
+    from itertools import groupby
+    endpoints, generations = {}, []
+    endpoint_ports = {}
+    destination_sets, destination_indexes = [], {}
+    previous_generation = -1
+    observations = 0
+    for generation, group in groupby(rows, key=lambda row: row.get("generation")):
+        if not isinstance(generation, int) or generation <= previous_generation:
+            raise ValueError("interface generation rows are not ordered uniquely")
+        previous_generation = generation
+        # All legacy validation is retained, bounded to one generation.
+        values = _read_interfaces(tuple(group), by_slot=by_slot, by_node=by_node)
+        boundaries = {value["boundary_timestamp"] for value in values}
+        if len(boundaries) != 1:
+            raise ValueError("interface generation has inconsistent boundaries")
+        generations.append((generation, next(iter(boundaries))))
+        for value in values:
+            observations += 1
+            port = value["logical_port_id"]
+            static = {k: v for k, v in value.items() if k not in {
+                "generation", "boundary_timestamp", "ifindex", "record_type", "route_destinations"}}
+            identity = value["node_id"], value["connection_id"], value["peer_node_id"]
+            if endpoint_ports.setdefault(identity, port) != port:
+                raise ValueError("logical port changed for the same connection endpoint")
+            previous = endpoints.get(port)
+            if previous is None:
+                previous = endpoints[port] = {**static, "incarnations": [], "route_destination_ranges": []}
+            elif {k: v for k, v in previous.items() if k not in {"incarnations", "route_destination_ranges"}} != static:
+                raise ValueError("logical interface identity reuse contradicts its endpoint")
+            if "route_destinations" in value:
+                destinations = tuple(value["route_destinations"])
+                destination_index = destination_indexes.get(destinations)
+                if destination_index is None:
+                    destination_index = len(destination_sets)
+                    destination_indexes[destinations] = destination_index
+                    destination_sets.append(destinations)
+                ranges = previous["route_destination_ranges"]
+                if ranges and ranges[-1][1] == generation-1 and ranges[-1][2] == destination_index:
+                    ranges[-1][1] = generation
+                else:
+                    ranges.append([generation, generation, destination_index])
+            ranges = previous["incarnations"]
+            if ranges and ranges[-1][1] == generation-1 and ranges[-1][2] == value["ifindex"]:
+                ranges[-1][1] = generation
+            else:
+                ranges.append([generation, generation, value["ifindex"]])
+    return {"format_version": 2, "generations": generations,
+            "endpoints": tuple(endpoints[port] for port in sorted(endpoints)),
+            "identity_observations": observations, "route_destination_sets": destination_sets}
 
 
 def _read_interfaces(
@@ -619,9 +734,9 @@ def _validate_interface_generation_boundaries(
         raise ValueError("Runner completed boundary prefix differs from formal history")
     boundaries = {value["active_generation"]: value["boundary_timestamp"]
                   for value in activations if value["generation_publication_occurred"]}
-    for value in interfaces:
-        generation = value["generation"]
-        boundary = value["boundary_timestamp"]
+    identities = (interfaces["generations"] if isinstance(interfaces, dict) else
+                  ((v["generation"], v["boundary_timestamp"]) for v in interfaces))
+    for generation, boundary in identities:
         if boundaries.get(generation) != boundary:
             raise ValueError("interface generation-to-boundary mapping differs")
 
@@ -661,100 +776,114 @@ def _ping_transactions(
     packets: tuple[dict[str, Any], ...],
     *,
     nodes_by_address: dict[str, dict[str, Any]] | None = None,
+    probe_execution: tuple[dict[str, Any], ...] = (),
 ) -> tuple[dict[str, object], ...]:
-    grouped: dict[tuple[int, int, str, str], list[dict[str, Any]]] = {}
-    for packet in packets:
+    """Associate probes, never count forwarding hops as independent sends.
+
+    A generator lifetime disambiguates identifier reuse. Without that evidence,
+    repeated endpoint observations (or sequence wrap) remain an uncertain group.
+    Replies after identifier reuse are not assigned to the newest request merely
+    because it is closest. Packet indices retain every observation exactly once.
+    """
+    launches = defaultdict(list)
+    stops = {(r.get("episode_id"), r.get("segment_index")): r
+             for r in probe_execution if r.get("record_type") == "generator_stopped"}
+    for r in probe_execution:
+        if r.get("record_type") == "generator_launched":
+            launches[(r["icmp_identifier"], r["source_ipv4"], r["destination_ipv4"])].append(r)
+    grouped = defaultdict(list)
+    for index, packet in enumerate(packets):
         icmp = packet["icmp"]
-        if packet.get("protocol") != 1 or not icmp.get("valid"):
+        if (packet.get("protocol") != 1 or not icmp.get("valid")
+            or not isinstance(icmp.get("identifier"), int)
+            or not isinstance(icmp.get("sequence"), int)
+            or icmp.get("type") not in (8, 0)):
             continue
-        identifier = icmp.get("identifier")
-        sequence = icmp.get("sequence")
-        if not isinstance(identifier, int) or not isinstance(sequence, int):
-            continue
-        icmp_type = icmp.get("type")
-        if icmp_type == 8:
-            request_source = packet["source_ipv4"]
-            request_destination = packet["destination_ipv4"]
-        elif icmp_type == 0:
-            request_source = packet["destination_ipv4"]
-            request_destination = packet["source_ipv4"]
-        else:
-            continue
-        grouped.setdefault(
-            (
-                identifier,
-                sequence,
-                request_source,
-                request_destination,
-            ),
-            [],
-        ).append(packet)
+        source, destination = packet["source_ipv4"], packet["destination_ipv4"]
+        if icmp["type"] == 0:
+            source, destination = destination, source
+        grouped[(icmp["identifier"], icmp["sequence"], source, destination)].append(index)
     transactions = []
-    for (identifier, sequence, _, _), values in sorted(grouped.items()):
-        ordered = sorted(values, key=lambda item: item["kernel_monotonic_ns"])
-        if nodes_by_address is not None:
-            filtered = []
-            for icmp_type in (8, 0):
-                direction = [
-                    value
-                    for value in ordered
-                    if value["icmp"].get("type") == icmp_type
-                ]
-                anchors = [
-                    value
-                    for value in direction
-                    if _is_endpoint_packet(value, nodes_by_address)
-                ]
-                filtered.extend(anchors or direction)
-            ordered = sorted(
-                filtered, key=lambda item: item["kernel_monotonic_ns"]
-            )
-        pending_requests = []
-        for packet in ordered:
-            if packet["icmp"].get("type") == 8:
-                pending_requests.append(packet)
+    for (identifier, sequence, source, destination), indices in sorted(grouped.items()):
+        indices.sort(key=lambda i: packets[i]["kernel_monotonic_ns"])
+        generators = launches.get((identifier, source, destination), ())
+        buckets = {}
+        def bucket(key):
+            return buckets.setdefault(key, {"requests": [], "replies": [], "uncertainty": []})
+        for i in indices:
+            packet = packets[i]
+            if packet["icmp"]["type"] != 8:
                 continue
-            if not pending_requests:
-                transactions.append(
-                    _ping_transaction(
-                        identifier,
-                        sequence,
-                        request_packet=None,
-                        reply_packet=packet,
-                        pairing_status="unpaired",
-                    )
-                )
+            at = packet["kernel_monotonic_ns"]
+            matches = []
+            for g in generators:
+                key = (g["episode_id"], g["segment_index"])
+                stop = stops.get(key, {})
+                if g.get("launch_monotonic_ns", g["host_monotonic_ns"]) <= at <= stop.get("stop_monotonic_ns", stop.get("host_monotonic_ns", float("inf"))):
+                    matches.append(key)
+            key = matches[0] if len(matches) == 1 else None
+            if not matches:
+                # A stop prevents new emissions, not forwarding of an already
+                # observed request. Extend only an established unique identity
+                # with no intervening launch that could have reused the key.
+                preceding = [k for k, value in buckets.items() if k is not None
+                             and value["requests"] and not value["uncertainty"]]
+                if len(preceding) == 1:
+                    prior_key = preceding[0]
+                    first_at = packets[buckets[prior_key]["requests"][0]]["kernel_monotonic_ns"]
+                    competing = any((g["episode_id"], g["segment_index"]) != prior_key
+                                    and first_at <= g.get("launch_monotonic_ns", g["host_monotonic_ns"]) <= at
+                                    for g in generators)
+                    if not competing:
+                        key = prior_key
+            b = bucket(key)
+            b["requests"].append(i)
+            if generators and (len(matches) > 1 or key is None):
+                b["uncertainty"].append("request generator lifetime is missing or overlapping")
+        # Distinct generator lifetimes give distinct requests. A late reply can
+        # cross stop/migration; retain it, but never guess across reused keys.
+        for i in indices:
+            if packets[i]["icmp"]["type"] != 0:
                 continue
-            for ambiguous in pending_requests[:-1]:
-                transactions.append(
-                    _ping_transaction(
-                        identifier,
-                        sequence,
-                        request_packet=ambiguous,
-                        reply_packet=None,
-                        pairing_status="ambiguous",
-                    )
-                )
-            transactions.append(
-                _ping_transaction(
-                    identifier,
-                    sequence,
-                    request_packet=pending_requests[-1],
-                    reply_packet=packet,
-                    pairing_status="paired",
-                )
-            )
-            pending_requests.clear()
-        transactions.extend(
-            _ping_transaction(
-                identifier,
-                sequence,
-                request_packet=request,
-                reply_packet=None,
-                pairing_status="unpaired",
-            )
-            for request in pending_requests
-        )
+            at = packets[i]["kernel_monotonic_ns"]
+            candidates = [key for key, b in buckets.items() if b["requests"]
+                          and packets[b["requests"][0]]["kernel_monotonic_ns"] <= at]
+            if len(candidates) == 1:
+                bucket(candidates[0])["replies"].append(i)
+            else:
+                b = bucket(("unresolved-reply", None))
+                b["replies"].append(i)
+                b["uncertainty"].append("reply has no unique preceding request lifetime")
+                for key in candidates:
+                    bucket(key)["uncertainty"].append("reply association overlaps identifier/sequence reuse")
+        for key, b in buckets.items():
+            requests, replies = b["requests"], b["replies"]
+            g = next((g for g in generators if (g["episode_id"], g["segment_index"]) == key), None)
+            if g is not None and stops.get(key, {}).get("sent", 0) > 65535:
+                b["uncertainty"].append("sequence wrap cannot be resolved from recorded ICMP fields")
+            if g is None and requests:
+                endpoints = {packets[i]["kernel_monotonic_ns"] for i in requests
+                             if _is_endpoint_packet(packets[i], nodes_by_address)}
+                if len(endpoints) > 1 or (len(requests) > 1 and any(not packets[i].get("node_id") for i in requests)):
+                    b["uncertainty"].append("repeated requests lack generator/payload identity")
+            # First observed request is a lower bound on emission, not the last
+            # hop or the later executor timeout/report timestamp.
+            request = None if not requests else _ping_direction(packets[requests[0]])
+            reply = None if not replies else _ping_direction(packets[replies[0]])
+            delivered = any(_is_endpoint_packet(packets[i], nodes_by_address) for i in replies)
+            executor_reply = bool(g is not None and sequence in stops.get(key, {}).get("reply_sequences", ()))
+            uncertain = sorted(set(b["uncertainty"]))
+            transactions.append({
+                "identifier": identifier, "sequence": sequence,
+                "request": request, "reply": reply,
+                "observed_reply": bool(replies),
+                "reply_delivery": "endpoint-observed" if delivered else "executor-confirmed" if executor_reply else "unconfirmed",
+                "pairing_status": "ambiguous" if uncertain else "paired" if requests and replies else "unpaired",
+                "association_uncertainty": uncertain,
+                "generator": None if g is None else {k: g.get(k) for k in ("episode_id", "probe_id", "segment_index", "runtime_identity", "physical_source_node_id")},
+                "request_packet_indices": requests, "reply_packet_indices": replies,
+                "packet_observations": len(requests) + len(replies),
+            })
     return tuple(transactions)
 
 
@@ -762,31 +891,14 @@ def _is_endpoint_packet(
     packet: dict[str, Any],
     nodes_by_address: dict[str, dict[str, Any]] | None,
 ) -> bool:
-    if nodes_by_address is None:
+    # local-route is the observed kernel delivery decision, including Zone IPs
+    # on the serving satellite. No fixed-address lookup can represent migration.
+    if packet.get("decision") == "local/pass" and packet.get("reason") == "local-route":
         return True
-    endpoint_address = packet["destination_ipv4"]
-    endpoint = nodes_by_address.get(endpoint_address)
+    if nodes_by_address is None:
+        return not packet.get("node_id")
+    endpoint = nodes_by_address.get(packet["destination_ipv4"])
     return endpoint is not None and packet.get("node_id") == endpoint["node_id"]
-
-
-def _ping_transaction(
-    identifier: int,
-    sequence: int,
-    *,
-    request_packet: dict[str, Any] | None,
-    reply_packet: dict[str, Any] | None,
-    pairing_status: str,
-) -> dict[str, object]:
-    return {
-        "identifier": identifier,
-        "sequence": sequence,
-        "request": _ping_direction(request_packet),
-        "reply": _ping_direction(reply_packet),
-        "observed_reply": reply_packet is not None,
-        "pairing_status": pairing_status,
-        "packet_observations": int(request_packet is not None)
-        + int(reply_packet is not None),
-    }
 
 
 def _ping_direction(value: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -804,20 +916,21 @@ def _ping_direction(value: dict[str, Any] | None) -> dict[str, Any] | None:
 
 
 def _read_jsonl(path: Path) -> tuple[dict[str, Any], ...]:
-    rows = []
-    for line_number, line in enumerate(
-        Path(path).read_text(encoding="utf-8").splitlines(), start=1
-    ):
-        if not line.strip():
-            continue
-        try:
-            value = json.loads(line)
-        except json.JSONDecodeError as error:
-            raise ValueError(f"invalid JSON on line {line_number}: {path}") from error
-        if not isinstance(value, dict):
-            raise TypeError(f"JSONL rows must be objects: {path}")
-        rows.append(value)
-    return tuple(rows)
+    return tuple(_iter_jsonl(path))
+
+
+def _iter_jsonl(path: Path):
+    with Path(path).open(encoding="utf-8") as stream:
+        for line_number, line in enumerate(stream, start=1):
+            if not line.strip():
+                continue
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError as error:
+                raise ValueError(f"invalid JSON on line {line_number}: {path}") from error
+            if not isinstance(value, dict):
+                raise TypeError(f"JSONL rows must be objects: {path}")
+            yield value
 
 
 def _read_workload(path: Path) -> dict[str, Any]:

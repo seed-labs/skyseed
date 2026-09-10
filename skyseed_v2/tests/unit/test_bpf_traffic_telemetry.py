@@ -430,20 +430,21 @@ def test_identity_expansion_and_flush_run_only_on_background_writer(monkeypatch,
         entered.set()
         assert release.wait(2)
         written.extend(records)
-    monkeypatch.setattr(recorder, "write_generation_identity", write)
+    monkeypatch.setattr(recorder, "_write_many", write)
     monkeypatch.setattr(recorder, "_write", lambda record: None)
     writer = Thread(target=recorder._write_queued_identities)
     writer.start()
     templates = ({"logical_port_id": 1, "generation": 0, "node_id": "a"},)
-    recorder.enqueue_generation_identity(templates, ({"logical_port_id": 1, "ifindex": 42},), (), {})
+    boundary = {"generation_publication_occurred": True, "active_generation": 0, "boundary_timestamp": "2026-01-01T00:00:00+00:00"}
+    recorder.enqueue_generation_identity(templates, ({"logical_port_id": 1, "ifindex": 42},), (), boundary)
     assert entered.wait(1)
     # The blocked writer does not gate this next boundary's compact enqueue.
-    recorder.enqueue_generation_identity(templates, (), (), {})
+    recorder.enqueue_generation_identity(templates, (), (), {**boundary, "active_generation": 1})
     release.set()
     recorder._identity_queue.put(None)
     writer.join(2)
     assert not writer.is_alive()
-    assert [record["ifindex"] for record in written] == [42, 42]
+    assert [record["ifindex"] for record in written] == [42]  # retained endpoint shared across generations
 
 
 def test_formal_clock_anchor_is_queued_without_synchronous_flush(monkeypatch, tmp_path):

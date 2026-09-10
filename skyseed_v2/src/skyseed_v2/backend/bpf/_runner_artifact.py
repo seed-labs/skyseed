@@ -215,7 +215,8 @@ def _resolve_nominal_boundaries(
         timestamps = realization.activation_timestamps
         if not timestamps:
             raise ValueError("compiled realization has no activation boundaries")
-        if timestamps != tuple(sorted(set(timestamps))):
+        timestamp_set = set(timestamps)
+        if timestamps != tuple(sorted(timestamp_set)):
             raise ValueError(
                 "compiled activation boundaries must be unique and ordered"
             )
@@ -233,7 +234,7 @@ def _resolve_nominal_boundaries(
                 )
             declarations[timestamp] = realization_index
         if any(
-            intent.nominal_time not in set(timestamps)
+            intent.nominal_time not in timestamp_set
             for attribute in (
                 "resource_realizations",
                 "parameter_realizations",
@@ -246,10 +247,48 @@ def _resolve_nominal_boundaries(
                 "compiled operation has no declared activation boundary"
             )
     nominal_times = tuple(sorted(declarations))
+    operations_by_time = {timestamp: {} for timestamp in nominal_times}
+    constraints_by_time = {timestamp: [] for timestamp in nominal_times}
+    outgoing_by_time = {timestamp: 0 for timestamp in nominal_times}
+    for reference, operation in inventory.items():
+        operations_by_time[operation.intent.nominal_time][reference] = operation
+    inspected = 0
+    for realization_index, realization in enumerate(
+        realizations, start=realization_index_offset
+    ):
+        for constraint in realization.constraints:
+            inspected += 1
+            predecessor = (realization_index, constraint.predecessor.domain,
+                           constraint.predecessor.index)
+            successor = (realization_index, constraint.successor.domain,
+                         constraint.successor.index)
+            try:
+                predecessor_time = inventory[predecessor].intent.nominal_time
+                successor_time = inventory[successor].intent.nominal_time
+            except KeyError as error:
+                raise ValueError(
+                    "compiled constraint references an unknown operation"
+                ) from error
+            if predecessor_time > successor_time:
+                message = (
+                    "nominal boundary depends on later compiled work"
+                    if successor_time == nominal_times[0]
+                    else "compiled constraint reverses nominal time"
+                )
+                raise ValueError(message)
+            if predecessor_time == successor_time:
+                constraints_by_time[predecessor_time].append(
+                    (predecessor, successor, constraint.reason)
+                )
+            else:
+                outgoing_by_time[predecessor_time] += 1
     return tuple(
         _resolve_nominal_boundary(
             realizations,
-            inventory=inventory,
+            selected=operations_by_time[nominal_time],
+            constraints=constraints_by_time[nominal_time],
+            inspected=inspected,
+            outgoing=outgoing_by_time[nominal_time],
             nominal_time=nominal_time,
             declared_realization_index=declarations[nominal_time],
             realization_index_offset=realization_index_offset,
@@ -261,25 +300,21 @@ def _resolve_nominal_boundaries(
 def _resolve_nominal_boundary(
     realizations: tuple[BpfCompiledRealization, ...],
     *,
-    inventory: dict[_Reference, _BoundaryOperation],
+    selected: dict[_Reference, _BoundaryOperation],
+    constraints: list[tuple[_Reference, _Reference, str]],
+    inspected: int,
+    outgoing: int,
     nominal_time: datetime,
     declared_realization_index: int,
     realization_index_offset: int = 0,
 ) -> _NominalBoundary:
-    selected = {
-        reference: operation
-        for reference, operation in inventory.items()
-        if operation.intent.nominal_time == nominal_time
-    }
-    selected_realization_indexes = {declared_realization_index}
     if any(
         operation.realization_index != declared_realization_index
         for operation in selected.values()
     ):
         raise ValueError("activation boundary contains foreign realization work")
-    source_constraint_count = sum(
-        len(realizations[index - realization_index_offset].constraints)
-        for index in selected_realization_indexes
+    source_constraint_count = len(
+        realizations[declared_realization_index - realization_index_offset].constraints
     )
     stable_keys = [_stable_operation_key(value) for value in selected.values()]
     if len(set(stable_keys)) != len(stable_keys):
@@ -291,69 +326,19 @@ def _resolve_nominal_boundary(
         reference: set() for reference in selected
     }
     indegree = {reference: 0 for reference in selected}
-    inspected = 0
     applied = 0
-    outgoing = 0
-    later = 0
+    # Preserve the established evidence counts, including duplicate constraints
+    # and constraints belonging to other boundaries, without inspecting them again.
+    later = inspected - len(constraints) - outgoing
     reasons: dict[str, int] = {}
     constraint_edges: list[tuple[_Reference, _Reference, str]] = []
-    for realization_index, realization in enumerate(
-        realizations, start=realization_index_offset
-    ):
-        for constraint in realization.constraints:
-            inspected += 1
-            predecessor = (
-                realization_index,
-                constraint.predecessor.domain,
-                constraint.predecessor.index,
-            )
-            successor = (
-                realization_index,
-                constraint.successor.domain,
-                constraint.successor.index,
-            )
-            try:
-                predecessor_operation = inventory[predecessor]
-                successor_operation = inventory[successor]
-            except KeyError as error:
-                raise ValueError(
-                    "compiled constraint references an unknown operation"
-                ) from error
-            predecessor_selected = predecessor in selected
-            successor_selected = successor in selected
-            if predecessor_selected and successor_selected:
-                if successor not in successors[predecessor]:
-                    successors[predecessor].add(successor)
-                    indegree[successor] += 1
-                    applied += 1
-                    reasons[constraint.reason] = (
-                        reasons.get(constraint.reason, 0) + 1
-                    )
-                    constraint_edges.append(
-                        (predecessor, successor, constraint.reason)
-                    )
-                continue
-            if successor_selected:
-                if predecessor_operation.intent.nominal_time > nominal_time:
-                    raise ValueError(
-                        "nominal boundary depends on later compiled work"
-                    )
-                later += 1
-                continue
-            if predecessor_selected:
-                if successor_operation.intent.nominal_time < nominal_time:
-                    raise ValueError(
-                        "compiled constraint points behind the active frontier"
-                    )
-                outgoing += 1
-            else:
-                if predecessor_operation.intent.nominal_time > (
-                    successor_operation.intent.nominal_time
-                ):
-                    raise ValueError(
-                        "compiled constraint reverses nominal time"
-                    )
-                later += 1
+    for predecessor, successor, reason in constraints:
+        if successor not in successors[predecessor]:
+            successors[predecessor].add(successor)
+            indegree[successor] += 1
+            applied += 1
+            reasons[reason] = reasons.get(reason, 0) + 1
+            constraint_edges.append((predecessor, successor, reason))
 
     ready: list[tuple[tuple[object, ...], _Reference]] = []
     for reference, degree in indegree.items():
@@ -380,12 +365,6 @@ def _resolve_nominal_boundary(
     projection = realizations[
         declared_realization_index - realization_index_offset
     ]._physical_world_projection
-    if any(
-        realizations[index - realization_index_offset]._physical_world_projection
-        != projection
-        for index in source_indexes
-    ):
-        raise ValueError("one boundary spans different PhysicalWorld projections")
     operation_counts = tuple(
         (domain, sum(value.domain == domain for value in ordered))
         for domain, _ in _DOMAIN_ATTRIBUTES
@@ -429,9 +408,12 @@ def _write_runner_artifact(
     writer = _RunnerArtifactWriter(
         directory, execution_observer=execution_observer
     )
-    for realization in realizations:
-        writer.append(realization)
-    return writer.finalize()
+    try:
+        for realization in realizations:
+            writer.append(realization)
+        return writer.finalize()
+    finally:
+        writer.close()
 
 
 class _RunnerArtifactWriter:
@@ -442,7 +424,18 @@ class _RunnerArtifactWriter:
         directory: Path,
         *,
         execution_observer: _ExecutionObserver | None = None,
+        continuation: _RunnerArtifactWriter | None = None,
+        final: bool = True,
     ) -> None:
+        if type(final) is not bool:
+            raise TypeError("final must be a bool")
+        if continuation is not None and (
+            not isinstance(continuation, _RunnerArtifactWriter)
+            or not continuation._finalized or continuation._failed
+            or continuation._delivery is None or continuation._delivery["final"]
+            or continuation._continued
+        ):
+            raise ValueError("continuation requires one unconsumed nonfinal sealed batch")
         root = Path(directory)
         if root.is_symlink():
             raise ValueError("Runner artifact root must not be a symlink")
@@ -469,8 +462,54 @@ class _RunnerArtifactWriter:
         self._capacity_demand: _RuntimeCapacityDemandAccumulator | None = None
         self._logical_ports: dict[OperationalConnectionId, tuple[int, int]] = {}
         self._finalized = False
+        self._failed = False
+        self._continued = False
+        self._delivery = None
+        if continuation is not None or not final:
+            self._delivery = {
+                "index": 0 if continuation is None else continuation._delivery["index"] + 1,
+                "previous_manifest_sha256": None if continuation is None else sha256(
+                    (continuation._root / _MANIFEST_NAME).read_bytes()).hexdigest(),
+                "final": final,
+                "prior_generation": None if continuation is None else continuation._capacity_demand._total_generations - 1,
+                "prior_end": None if continuation is None else continuation._previous_boundary_time.isoformat(),
+                "prior_plan_id": None if continuation is None else continuation._previous.source_plan_id,
+                "prior_state_fingerprint": None if continuation is None else continuation._previous.output_state_fingerprint,
+                "observation_interval_seconds": None,
+            }
+        if continuation is not None:
+            self._previous = continuation._previous
+            self._previous_boundary_time = continuation._previous_boundary_time
+            self._projection = continuation._projection
+            self._zone_prefixes = continuation._zone_prefixes
+            self._logical_ports = dict(continuation._logical_ports)
+            self._capacity_demand = continuation._capacity_demand
+            self._capacity_demand.begin_batch()
+            continuation._continued = True
+            continuation._previous = None
 
     def append(self, realization: BpfCompiledRealization) -> None:
+        if self._finalized:
+            raise RuntimeError("Runner artifact is already finalized")
+        if self._failed:
+            raise RuntimeError('Runner artifact writer previously failed')
+        try:
+            self._append(realization)
+        except Exception:
+            self._failed = True
+            self.close()
+            raise
+
+    def close(self) -> None:
+        """Close staging resources; failed or abandoned writers cannot seal."""
+        if not self._record_stream.closed:
+            self._record_stream.close()
+        if self._record_path.exists():
+            self._record_path.unlink()
+        if not self._finalized:
+            self._failed = True
+
+    def _append(self, realization: BpfCompiledRealization) -> None:
         """Normalize one value now; retain no rich planned-state history."""
 
         total_started = perf_counter()
@@ -480,6 +519,8 @@ class _RunnerArtifactWriter:
             raise TypeError("Runner artifact requires BpfCompiledRealization values")
         validation_started = perf_counter()
         _validate_sequence_pair(self._previous, realization)
+        if self._delivery is not None:
+            self._delivery["observation_interval_seconds"] = realization.observation_interval.total_seconds()
         projection = realization._physical_world_projection
         zone_prefixes = tuple(realization.zone_prefixes)
         if self._projection is None:
@@ -492,6 +533,9 @@ class _RunnerArtifactWriter:
             raise ValueError("Runner artifact static PhysicalWorld metadata changed")
 
         realization_index = len(self._lineage)
+        self._record_observation("sequence-verification", validation_started,
+            realization_index, realization, {"realizations": 1})
+        normalization_started = perf_counter()
         boundaries = _resolve_nominal_boundaries(
             (realization,), realization_index_offset=realization_index
         )
@@ -499,13 +543,14 @@ class _RunnerArtifactWriter:
             if boundaries[0].nominal_time <= self._previous_boundary_time:
                 raise ValueError("Runner artifact boundaries are not a strict suffix")
         self._record_observation(
-            "semantic-normalization", validation_started, realization_index,
+            "semantic-normalization", normalization_started, realization_index,
             realization, {"activation_boundaries": len(boundaries)},
         )
-        packing_started = perf_counter()
+        capacity_seconds = encoding_seconds = hashing_seconds = writing_seconds = 0.0
         boundary_start = len(self._record_index)
         packed_bytes = 0
         for boundary in boundaries:
+            stage_started = perf_counter()
             assert self._capacity_demand is not None
             self._capacity_demand.add(boundary)
             for operation in boundary.operations:
@@ -516,16 +561,17 @@ class _RunnerArtifactWriter:
                         if first + 1 > 0xFFFFFFFF:
                             raise ValueError("Runner logical port identity capacity exceeded")
                         self._logical_ports[connection] = (first, first + 1)
+            capacity_seconds += perf_counter() - stage_started
+            stage_started = perf_counter()
             packed = _pack(_boundary_to_data(boundary))
-            decoded = _decode_boundary_data(
-                _unpack(packed), physical_world_projection=projection
-            )
-            if decoded != boundary:
-                raise ValueError("Runner artifact packed boundary changed semantics")
+            encoding_seconds += perf_counter() - stage_started
+            stage_started = perf_counter()
+            digest = sha256(packed).digest()
+            hashing_seconds += perf_counter() - stage_started
+            stage_started = perf_counter()
             self._record_stream.write(packed)
-            self._record_index.append(
-                (len(packed), len(boundary.operations), sha256(packed).digest())
-            )
+            writing_seconds += perf_counter() - stage_started
+            self._record_index.append((len(packed), len(boundary.operations), digest))
             packed_bytes += len(packed)
         self._previous_boundary_time = boundaries[-1].nominal_time
         self._lineage.append(
@@ -542,10 +588,16 @@ class _RunnerArtifactWriter:
                 "boundary_count": len(boundaries),
             }
         )
-        self._record_observation(
-            "typed-packing", packing_started, realization_index, realization,
-            {"records": len(boundaries), "packed_bytes": packed_bytes},
-        )
+        if self._observer is not None:
+            for stage, duration in (
+                ('capacity-and-logical-port-derivation', capacity_seconds),
+                ('typed-encoding', encoding_seconds), ('record-hashing', hashing_seconds),
+                ('record-file-writing', writing_seconds),
+            ):
+                self._observer.record(component='runner-artifact-writer', stage=stage,
+                    phase='one-shot', duration_seconds=duration,
+                    scope={'realization_index': realization_index},
+                    work={'records': len(boundaries), 'packed_bytes': packed_bytes})
         self._previous = realization
         self._record_observation(
             "writer-total", total_started, realization_index, realization,
@@ -553,7 +605,10 @@ class _RunnerArtifactWriter:
         )
 
     def finalize(self) -> Path:
-        """Validate all packed records and atomically publish binary then seal."""
+        """Seal the generated sequence with binary integrity and lineage hashes."""
+
+        if self._failed:
+            raise RuntimeError("failed Runner artifact writer cannot seal")
 
         if self._finalized:
             raise RuntimeError("Runner artifact is already finalized")
@@ -565,7 +620,8 @@ class _RunnerArtifactWriter:
         ):
             raise ValueError("Runner artifact requires at least one realization")
         self._finalized = True
-        self._previous = None
+        if self._delivery is None or self._delivery["final"]:
+            self._previous = None
         self._record_stream.flush()
         os.fsync(self._record_stream.fileno())
         self._record_stream.close()
@@ -634,6 +690,8 @@ class _RunnerArtifactWriter:
             "lineage": self._lineage,
         }
         manifest_path = self._root / _MANIFEST_NAME
+        if self._delivery is not None:
+            manifest["delivery"] = self._delivery
         _write_bytes_atomic(
             manifest_path, _canonical_json_bytes(manifest, trailing_newline=True)
         )
@@ -772,6 +830,8 @@ class _RunnerArtifact:
             "boundary_decode": "indexed-on-demand",
             "rich_compiled_realizations_reconstructed": False,
             "runtime_capacity_demand": self.runtime_capacity_demand,
+            "delivery": self._snapshot["delivery"],
+            "manifest_sha256": self._snapshot["manifest_sha256"],
         }
 
     def close(self) -> None:
@@ -849,7 +909,7 @@ def _read_runner_artifact_manifest_snapshot(manifest_path: Path) -> dict[str, An
         "physical_world", "zone_prefixes", "runtime_capacity_demand", "logical_ports",
         "timeline", "lineage",
     }
-    if not isinstance(manifest, dict) or set(manifest) != expected:
+    if not isinstance(manifest, dict) or set(manifest) not in (expected, expected | {"delivery"}):
         raise ValueError("Runner artifact manifest schema differs")
     if manifest["artifact_type"] != _ARTIFACT_TYPE or manifest["format_version"] != _FORMAT_VERSION or manifest["encoding"] != _ENCODING or manifest["terminal"] is not True or manifest["semantic_validation"] != "complete-before-seal":
         raise ValueError("Runner artifact manifest/version/seal is unsupported")
@@ -871,11 +931,34 @@ def _read_runner_artifact_manifest_snapshot(manifest_path: Path) -> dict[str, An
     boundary_count = binary["boundary_count"]
     if isinstance(boundary_count, bool) or not isinstance(boundary_count, int) or not 0 < boundary_count <= _MAX_BOUNDARIES:
         raise ValueError("Runner artifact boundary count is invalid")
+    if not isinstance(manifest["timeline"], dict) or manifest["timeline"].get("boundary_count") != boundary_count:
+        raise ValueError("Runner artifact Timeline boundary count differs")
     lineage = manifest["lineage"]
     if not isinstance(lineage, list) or len(lineage) != manifest["realization_count"]:
         raise ValueError("Runner artifact lineage count differs")
     if _sequence_sha256(lineage) != manifest["sequence_sha256"]:
         raise ValueError("Runner artifact lineage hash differs")
+    delivery = manifest.get("delivery")
+    if delivery is not None:
+        fields = {"index", "previous_manifest_sha256", "final", "prior_generation",
+                  "prior_end", "prior_plan_id", "prior_state_fingerprint", "observation_interval_seconds"}
+        if (not isinstance(delivery, dict) or set(delivery) != fields
+            or type(delivery["index"]) is not int or delivery["index"] < 0
+            or type(delivery["final"]) is not bool
+            or type(delivery["observation_interval_seconds"]) not in (float, int)
+            or not 0 < delivery["observation_interval_seconds"] < float("inf")):
+            raise ValueError("Runner artifact delivery metadata differs")
+        prior_fields = ("previous_manifest_sha256", "prior_generation", "prior_end",
+                        "prior_plan_id", "prior_state_fingerprint")
+        if delivery["index"] == 0:
+            if any(delivery[key] is not None for key in prior_fields):
+                raise ValueError("initial batch must not have a predecessor")
+        elif (any(delivery[key] is None for key in prior_fields)
+              or type(delivery["prior_generation"]) is not int
+              or not 0 <= delivery["prior_generation"] < 0xFFFFFFFF
+              or lineage[0]["source_previous_plan_id"] != delivery["prior_plan_id"]
+              or lineage[0]["input_state_fingerprint"] != delivery["prior_state_fingerprint"]):
+            raise ValueError("continued artifact predecessor metadata differs")
     physical = manifest["physical_world"]
     if not isinstance(physical, dict) or set(physical) != {"nodes", "zones", "fingerprint"}:
         raise ValueError("Runner artifact PhysicalWorld metadata differs")
@@ -921,6 +1004,8 @@ def _read_runner_artifact_manifest_snapshot(manifest_path: Path) -> dict[str, An
         "physical_world_projection": projection, "zone_prefixes": zone_prefixes,
         "runtime_capacity_demand": capacity_demand, "logical_ports": logical_ports,
         "timeline": manifest["timeline"], "lineage": tuple(dict(value) for value in lineage),
+        "delivery": delivery,
+        "manifest_sha256": sha256(path.read_bytes()).hexdigest(),
     }
 
 

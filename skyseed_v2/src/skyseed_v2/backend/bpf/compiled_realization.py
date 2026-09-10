@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
 
@@ -299,6 +299,7 @@ class BpfCompiledRealization:
     semantic_precedence_folding: tuple[tuple[str, int], ...]
     _intended_state: _IntendedState
     _physical_world_projection: _PhysicalWorldProjection
+    _incremental_indexes: tuple | None = field(default=None, repr=False, compare=False)
 
     def __init__(self) -> None:
         raise TypeError("BpfCompiledRealization is created by compile_bpf")
@@ -518,6 +519,7 @@ class BpfCompiledRealization:
         object.__setattr__(
             instance, "_physical_world_projection", physical_world_projection
         )
+        object.__setattr__(instance, "_incremental_indexes", None)
         return instance
 
     @property

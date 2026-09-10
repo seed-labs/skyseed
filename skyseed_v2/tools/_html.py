@@ -228,10 +228,54 @@ def write_text(path: Path, text: str) -> None:
 
 
 def write_json(path: Path, value: object) -> None:
-    write_text(
-        path,
-        json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp")
+    try:
+        with temporary.open("w", encoding="utf-8") as stream:
+            json.dump(value, stream, ensure_ascii=False, indent=2, sort_keys=True)
+            stream.write("\n")
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _write_compact_json(path: Path, value: object) -> None:
+    """Stream nested evidence collections using C encoding for each record.
+
+    No full-history text/string-list copy. Three collection levels split Traffic
+    sections, frame/packet/transition arrays and their individual records.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp")
+    encoder = json.JSONEncoder(ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+    def chunks(item, depth=0):
+        if depth < 3 and isinstance(item, dict):
+            yield "{"
+            for index, key in enumerate(sorted(item)):
+                if index:
+                    yield ","
+                yield encoder.encode(key)
+                yield ":"
+                yield from chunks(item[key], depth+1)
+            yield "}"
+        elif depth < 3 and isinstance(item, (list, tuple)):
+            yield "["
+            for index, record in enumerate(item):
+                if index:
+                    yield ","
+                yield from chunks(record, depth+1)
+            yield "]"
+        else:
+            yield encoder.encode(item)
+
+    try:
+        with temporary.open("w", encoding="utf-8") as stream:
+            stream.writelines(chunks(value))
+            stream.write("\n")
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def write_failed_tool(directory: Path, tool_name: str, error: BaseException) -> None:

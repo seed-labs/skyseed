@@ -87,3 +87,12 @@ def _elevation_deg_from_local_up_and_distance(
 
 
 __all__: list[str] = []
+
+
+def _elevation_degrees_array(delta, local_up, distances):
+    """Apply the same clamped WGS84 formula to bounded physical query tiles."""
+    import numpy as np
+    if np.any(distances == 0):
+        raise ValueError("elevation is undefined for coincident positions")
+    sine_elevation = np.sum(delta * local_up, axis=-1) / distances
+    return 90.0 - np.degrees(np.arccos(np.clip(sine_elevation, -1, 1)))

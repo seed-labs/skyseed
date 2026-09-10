@@ -14,6 +14,7 @@ import pytest
 from examples.complete_static_emulator.emu import build_emulator
 from examples.complete_static_emulator.simu import (
     create_complete_static_simulator,
+    create_complete_static_planner,
     run_complete_static_chain,
 )
 from tools.bpf_compiler import write_bpf_compiler_tool
@@ -44,8 +45,11 @@ def evidence_set(tmp_path_factory):
     root = tmp_path_factory.mktemp("traffic-tool")
     history = root / "history"
     simulator = create_complete_static_simulator(build_emulator())
+    # This focused lineage fixture deliberately crosses a batch boundary.
+    planner = create_complete_static_planner(simulator)
+    planner._frames_per_batch = 3
     plans, realizations, _ = run_complete_static_chain(
-        simulator, evidence_path=history
+        simulator, planner=planner, evidence_path=history
     )
     compiler_output = root / "compiler"
     write_bpf_compiler_tool(plans, realizations, compiler_output)
@@ -442,8 +446,19 @@ def test_ping_pairing_separates_reverse_flows_with_reused_icmp_identity() -> Non
 
 
 def test_replay_uses_physical_frames_and_explicit_planned_route_truth(
-    evidence_set,
+    evidence_set, monkeypatch,
 ) -> None:
+    from skyseed_v2.simulator.planning import values
+    from tools.traffic import reader
+    original = values.apply_plan_transition
+    replayed = []
+
+    def replay(state, transition):
+        replayed.append(transition.timestamp)
+        return original(state, transition)
+
+    monkeypatch.setattr(values, "apply_plan_transition", replay)
+    monkeypatch.setattr(reader, "apply_plan_transition", replay)
     data = collect_traffic_replay_data(
         evidence_set["telemetry"],
         evidence_set["frames"],
@@ -455,6 +470,8 @@ def test_replay_uses_physical_frames_and_explicit_planned_route_truth(
     assert data["inventory"]["plans"] == 2
     assert data["inventory"]["compiled_realizations"] == 2
     assert data["inventory"]["formal_activation_boundaries"] == 4
+    assert replayed == [transition.timestamp for plan in evidence_set["plans"]
+                        for transition in plan.transitions]
     by_id = {value["identifier"]: value for value in data["transactions"]}
     assert by_id[10]["planned_reachability"] == "reachable"
     assert by_id[10]["classification"] == "observed-reachable"
@@ -644,12 +661,13 @@ def test_writer_emits_json_html_checksums_and_tool_accounting(
         "inventory.json",
         "summary.txt",
         "traffic-replay.json",
+        "data",
     }
     payload = json.loads((tmp_path / "traffic-replay.json").read_text())
     assert payload["tool_accounting"]["peak_rss_bytes"] > 0
     page = (tmp_path / "index.html").read_text()
     assert "explicit planned reachability" in page
-    assert "unexplained reachable loss" in page
+    assert "other reachable loss remains unexplained" in page
     for line in (tmp_path / "checksums.sha256").read_text().splitlines():
         digest, relative = line.split("  ", 1)
         assert sha256((tmp_path / relative).read_bytes()).hexdigest() == digest
@@ -729,6 +747,8 @@ def test_zone_endpoint_uses_service_satellite_as_physical_source(
             value["source_ipv4"] = zone_address
         else:
             value["destination_ipv4"] = zone_address
+            value["decision"] = "local/pass"
+            value["reason"] = "local-route"
     _write_telemetry(telemetry, rows)
 
     data = _collect(evidence_set, telemetry=telemetry)
@@ -903,14 +923,11 @@ def test_transaction_pairing_marks_temporal_collision_ambiguous() -> None:
         (packet(10, 8), packet(12, 8), packet(14, 0))
     )
 
-    assert len(transactions) == 2
-    ambiguous = next(
-        value for value in transactions if value["pairing_status"] == "ambiguous"
-    )
-    assert ambiguous["reply"] is None
-    assert any(
-        value["pairing_status"] == "paired" for value in transactions
-    )
+    assert len(transactions) == 1
+    assert transactions[0]["pairing_status"] == "ambiguous"
+    assert transactions[0]["observed_reply"] is True
+    assert transactions[0]["packet_observations"] == 3
+    assert transactions[0]["association_uncertainty"]
 
 
 def test_connection_pair_and_generation_boundary_corruption_fail_closed(
@@ -957,7 +974,7 @@ def test_future_generation_links_do_not_enter_current_active_graph(
         value for value in data["transactions"] if value["identifier"] == 10
     )
 
-    assert {value["generation"] for value in data["telemetry"]["interfaces"]} == {
+    assert {generation for generation, _ in data["telemetry"]["interfaces"]["generations"]} == {
         1
     }
     assert transaction["formal_boundary_timestamp"] == (
@@ -1273,7 +1290,7 @@ def test_write_produces_dependency_free_file_url_bundle(
     page = (tmp_path / "index.html").read_text(encoding="utf-8")
 
     assert result["status"] == "PASS"
-    assert set(result["files"]) == {
+    assert {f for f in result["files"] if not f.startswith("data/")} == {
         "traffic-replay.json",
         "index.html",
         "summary.txt",
@@ -1454,7 +1471,8 @@ def test_qualification_inputs_project_plan_execution_and_runner_evidence(
     data = json.loads((output / "traffic-replay.json").read_text())
     inventory = json.loads((output / "inventory.json").read_text())
 
-    assert result["status"] == "PASS"
+    assert result["status"] == "WARN"
+    assert data["qualification"]["summary"]["coverage_status"] == "NOT PROVEN"
     assert data["qualification"]["summary"]["plan_revision_id"] == (
         probe.revision_id
     )
@@ -1519,7 +1537,7 @@ def test_latest_canonical_artifact_is_v3_or_explicitly_stale_before_rerun(
     planned = data["planned_evidence"]
     transitions = planned["formal_transitions"]
 
-    assert data["format_version"] == 5
+    assert data["format_version"] == 6
     assert len(transitions) == data["inventory"]["formal_planning_boundaries"]
     assert len(transitions) == 4
     assert set(planned) == {
@@ -1561,6 +1579,29 @@ def test_compact_planning_replay_rejects_dropped_transition(
         project_traffic_replay(TrafficReplayRead(snapshot))
 
 
+def test_direct_collection_reuses_reader_replay_with_identical_projection(evidence_set, monkeypatch):
+    from tools.traffic import projection
+    reference = project_traffic_replay(_read_observation(evidence_set))
+    monkeypatch.setattr(projection, "apply_plan_transition",
+                        lambda *_args: pytest.fail("collection must reuse completed reader replay"))
+    assert _collect(evidence_set) == reference
+
+
+def test_json_stream_preserves_bytes_and_previous_file_on_failure(tmp_path):
+    from tools._html import _write_compact_json, write_json
+    path = tmp_path / "evidence.json"
+    data = {"多语言": [1, {"ordered": "yes", "missing": None}], "empty": ()}
+    expected = json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    write_json(path, data)
+    assert path.read_text() == expected
+    with pytest.raises(TypeError):
+        write_json(path, {"valid": data, "invalid": object()})
+    assert path.read_text() == expected
+    assert not path.with_name(".evidence.json.tmp").exists()
+    _write_compact_json(path, data)
+    assert path.read_text() == json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
+
+
 def test_compact_planning_replay_rejects_mutated_transition_fingerprint(
     evidence_set,
 ) -> None:
@@ -1595,3 +1636,74 @@ def test_actual_boundary_time_does_not_follow_ideal_clock_when_runner_lags(tmp_p
     assert transaction["formal_boundary_timestamp"] == "2026-01-01T00:00:00+00:00"
     assert transaction["request"]["generation"] == 0
     assert transaction["request"]["generation_boundary_timestamp"] == "2026-01-01T00:00:00+00:00"
+
+
+def test_compact_identity_stream_preserves_legacy_packet_and_generation_evidence(tmp_path, evidence_set):
+    from itertools import groupby
+    from tools.traffic.reader import _read_telemetry
+    rows = [json.loads(line) for line in evidence_set['telemetry'].read_text().splitlines()]
+    old = _read_telemetry(evidence_set['telemetry'])
+    compact = [row for row in rows if row.get('record_type') != 'interface_identity']
+    compact[0] = {**compact[0], 'format_version':2}
+    current = {}
+    for generation, group in groupby((r for r in rows if r.get('record_type')=='interface_identity'), key=lambda r:r['generation']):
+        values = list(group)
+        next_values = {r['logical_port_id']:{k:v for k,v in r.items() if k not in {'record_type','generation','boundary_timestamp'}} for r in values}
+        for port,value in next_values.items():
+            if current.get(port) != value:
+                compact.append({'record_type':'interface_update', **value})
+        compact.append({'record_type':'interface_generation', 'generation':generation,
+                        'boundary_timestamp':values[0]['boundary_timestamp'], 'withdrawn':sorted(current.keys()-next_values.keys())})
+        current = next_values
+    path = tmp_path/'compact.jsonl'
+    path.write_text(''.join(json.dumps(r)+'\n' for r in compact))
+    new = _read_telemetry(path)
+    for key in ('packets','ping_transactions','interfaces','boundaries','loss_records','telemetry_complete','telemetry_losses'):
+        assert new[key] == old[key]
+
+
+def test_browser_data_is_lazy_and_transaction_controls_work_without_a_browser(tmp_path, evidence_set):
+    """Execute controls against an in-memory DOM double; no pages/images opened."""
+    import os
+    import shutil
+    import subprocess
+    from tools._shell_display import _SHELL_SCRIPT
+    from tools.traffic._spatial import _write_spatial_assets, _browser_index
+    from tools.traffic._spatial_renderer import _traffic_spatial_script
+    node = os.environ.get('SKYSEED_TEST_NODE') or shutil.which('node')
+    if not node:
+        pytest.skip('Node required for nonvisual JavaScript execution')
+    data = _collect(evidence_set)
+    paths = _write_spatial_assets(data, tmp_path)
+    index = _browser_index(data)
+    assert len([p for p in paths if p.name.startswith('frame-')]) == len(data['physical_evidence']['frames'])
+    for p in paths:
+        value = json.loads(p.read_text().split('=', 1)[1].rstrip(';\n'))
+        if p.name.startswith('transactions-'):
+            assert len(value) <= 25
+            assert 'positions' not in p.read_text()
+    program = _SHELL_SCRIPT + _traffic_spatial_script(data)
+    assert 'traffic-replay.json' not in program and 'route_destination_sets' not in program
+    (tmp_path/'program.js').write_text(program)
+    harness = r'''
+const vm=require('node:vm'),fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict');
+const root=process.argv[1],elements=new Map(),requests=[];let context;
+const drawing=new Proxy({}, {get(target,key){return target[key]||(()=>{})},set(target,key,value){target[key]=value;return true}});
+class Element{
+ constructor(tag='div'){this.tagName=tag;this.style={};this.dataset={};this.children=[];this.checked=true;this.value='0';this.textContent='';this.attrs={};}
+ append(...children){this.children.push(...children);for(const child of children)if(child.tagName==='script'){requests.push(child.src);vm.runInContext(fs.readFileSync(path.join(root,child.src),'utf8'),context);child.onload()}}
+ replaceChildren(...v){this.children=v}remove(){}setAttribute(k,v){this.attrs[k]=v}getAttribute(k){return this.attrs[k]??null}querySelectorAll(){return []}addEventListener(){}setPointerCapture(){}
+ getBoundingClientRect(){return{width:800,height:400}}getContext(){return drawing}
+}
+const document={getElementById(id){if(!elements.has(id))elements.set(id,new Element());return elements.get(id)},createElement(tag){return new Element(tag)},createTextNode(s){return s},querySelectorAll(){return[]},body:new Element('body')};
+document.getElementById('traffic-direction').value='request';document.getElementById('traffic-planned').checked=false;
+context=vm.createContext({document,devicePixelRatio:1,console,assert,addEventListener(){}});context.window=context;
+vm.runInContext(fs.readFileSync(path.join(root,'program.js'),'utf8'),context);
+assert.deepEqual(requests,['data/frame-000.js']);
+vm.runInContext(`selectTransaction(0);assert.equal(selectedTransaction.index,0);assert.equal(selectedIndex,0);assert.ok(selectedTransaction.request.length>0);assert.ok(Object.keys(shardData).length<=25);`,context);
+assert.equal(requests.filter(v=>v.startsWith('data/transactions-')).length,1);
+vm.runInContext(`const oldIndex=selectedIndex;selectStep(selectedSteps().length-1);assert.equal(Number(step.value),selectedSteps().length-1);direction.value='reply';direction.onchange();assert.equal(selectedSteps(),selectedTransaction.reply);assert.equal(Number(step.value),0);cursor.value='1';cursor.oninput();assert.equal(selectedIndex,oldIndex);assert.equal(frameIndex,1);query='no such transaction';renderTraffic();assert.match(document.getElementById('traffic-visible-count').textContent,/0 matching/);assert.equal(selectedIndex,oldIndex);`,context);
+console.log(JSON.stringify({status:'PASS',kind:'nonvisual DOM-double functional check',requests}));
+'''
+    result = subprocess.run([node, '-e', harness, str(tmp_path)], text=True, capture_output=True)
+    assert result.returncode == 0, result.stderr

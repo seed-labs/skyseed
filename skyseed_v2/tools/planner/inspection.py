@@ -15,6 +15,7 @@ from .projection import project_planner_data
 from .reader import (
     PlannerInspectionRead,
     iter_planner_history,
+    _iter_projection_planner_history,
     read_planner_inspection,
 )
 from .renderer import render_planner_page
@@ -86,7 +87,7 @@ def write_planner_history_tool(
         return path
 
     observation = PlannerInspectionRead(
-        evidence=iter_planner_history(Path(planner_history_path)),
+        evidence=_iter_projection_planner_history(Path(planner_history_path)),
         snapshot={
             "format_version": 2,
             "tool": "planner-inspection",

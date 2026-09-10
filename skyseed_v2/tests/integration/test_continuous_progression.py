@@ -147,8 +147,8 @@ def test_one_producer_preserves_every_formal_boundary_and_lineage(
         expected_timestamps
     )
     assert snapshot["transition_count"] == len(expected_timestamps)
-    assert snapshot["plan_count"] == len(plans) == 2
-    assert snapshot["realization_count"] == len(realizations) == 2
+    assert snapshot["plan_count"] == len(plans) == 1
+    assert snapshot["realization_count"] == len(realizations) == 1
     assert snapshot["domain_history_sealed"] is True
 
     state = None
@@ -189,9 +189,9 @@ def test_one_producer_preserves_every_formal_boundary_and_lineage(
         "expected_formal_frames": 4,
         "prehistory_frames": 0,
         "formal_frames": 4,
-        "plans": 2,
+        "plans": 1,
         "transitions": 4,
-        "realizations": 2,
+        "realizations": 1,
     }
     assert manifest["timeline"]["observation_interval"] == {
         "days": 0,
@@ -220,8 +220,8 @@ def test_bounded_300_seconds_preserves_exact_plan_and_compiler_semantics(
     assert len(timestamps) == 31
     assert transition_timestamps == timestamps
     assert activation_timestamps == timestamps
-    assert len(chain.plans) == len(chain.realizations) == 15
-    assert [len(plan.transitions) for plan in chain.plans] == [3] + [2] * 14
+    assert len(chain.plans) == len(chain.realizations) == 1
+    assert [len(plan.transitions) for plan in chain.plans] == [31]
 
     state = None
     previous = None
@@ -272,9 +272,9 @@ def test_bounded_300_seconds_preserves_exact_plan_and_compiler_semantics(
         "expected_formal_frames": 31,
         "prehistory_frames": 0,
         "formal_frames": 31,
-        "plans": 15,
+        "plans": 1,
         "transitions": 31,
-        "realizations": 15,
+        "realizations": 1,
     }
 
 
@@ -283,6 +283,9 @@ def test_common_producer_is_lazy_bounded_and_terminal_is_idempotent(
 ) -> None:
     chain = bounded_300_chain
     assert chain.initial == {
+        "physical_prediction": {},
+        "evidence_queue_peak": 0,
+        "evidence_queue_wait_seconds": 0.0,
         "formal_frame_count": 0,
         "prehistory_frame_count": 0,
         "physical_link_observation_count": 0,
@@ -317,15 +320,15 @@ def test_common_producer_is_lazy_bounded_and_terminal_is_idempotent(
             "manifest": None,
         },
     }
-    assert chain.first_pull["formal_frame_count"] == 4
+    assert chain.first_pull["formal_frame_count"] == 31
     assert chain.first_pull["plan_count"] == 1
     assert chain.first_pull["realization_count"] == 1
-    assert chain.first_pull["formal_input_exhausted"] is False
-    assert chain.first_pull["planner_finished"] is False
+    assert chain.first_pull["formal_input_exhausted"] is True
+    assert chain.first_pull["planner_finished"] is True
     assert chain.first_pull["frontiers"] == {
-        "physical_observation": "2026-01-01T00:00:30+00:00",
-        "planning": "2026-01-01T00:00:30+00:00",
-        "publication": "2026-01-01T00:00:20+00:00",
+        "physical_observation": "2026-01-01T00:05:00+00:00",
+        "planning": "2026-01-01T00:05:00+00:00",
+        "publication": "2026-01-01T00:05:00+00:00",
     }
     assert chain.terminal["formal_frame_count"] == 31
     assert chain.terminal["formal_input_exhausted"] is True
@@ -336,7 +339,7 @@ def test_common_producer_is_lazy_bounded_and_terminal_is_idempotent(
     assert chain.previous_realization is chain.realizations[-1]
     assert chain.peaks == {
         "buffered_plans": 0,
-        "unpublished": 1,
+        "unpublished": 0,
         "published_evidence": 0,
     }
     assert chain.manifest_sha256 == sha256(
@@ -375,7 +378,7 @@ def test_released_durable_history_feeds_tools_without_domain_reexecution(
 
     assert tuple(value.plan for value in detached) == chain.plans
     assert len(compiled["realizations"]) == len(chain.realizations)
-    assert projected["inventory"]["plans"] == 15
+    assert projected["inventory"]["plans"] == 1
     assert projected["inventory"]["formal_transitions"] == 31
     assert before == {
         path.name: sha256(path.read_bytes()).hexdigest()
@@ -442,11 +445,11 @@ def test_1000_step_common_producer_working_set_remains_bounded() -> None:
             realization_count += 1
             transition_count += len(producer.latest_plan.transitions)
 
-        assert realization_count == 500
+        assert realization_count == 32
         assert transition_count == 1_000
         assert snapshot["formal_frame_count"] == 1_000
-        assert snapshot["plan_count"] == 500
-        assert snapshot["realization_count"] == 500
+        assert snapshot["plan_count"] == 32
+        assert snapshot["realization_count"] == 32
         assert snapshot["formal_input_exhausted"] is True
         assert snapshot["planner_finished"] is True
         assert len(producer._plans) == 0
@@ -455,7 +458,7 @@ def test_1000_step_common_producer_working_set_remains_bounded() -> None:
         assert len(planner._published_evidence) == 0
         assert peaks == {
             "buffered_plans": 0,
-            "unpublished": 1,
+            "unpublished": 0,
             "published_evidence": 0,
             "lifecycle_pairs": 1,
             "parameter_memory": 2,

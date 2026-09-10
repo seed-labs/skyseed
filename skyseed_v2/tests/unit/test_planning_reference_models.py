@@ -34,7 +34,7 @@ from skyseed_v2.simulator import (
     SimulationDefinition,
     SimulationTimeline,
     Simulator,
-    TimeHorizonPlanningWindowPolicy,
+    FrameBatchPlanningWindowPolicy,
     UnreachableRouteOutcome,
     ZoneRouteDemandTarget,
     ZoneServiceAssignment,
@@ -208,7 +208,7 @@ def test_gateway_candidates_are_static_ordered_bounded_and_two_way() -> None:
             scenario.physical_world,
             (assignment,),
         )
-        assert demands == model.create_route_demands(
+        assert demands is model.create_route_demands(
             scenario.physical_world,
             (assignment,),
         )
@@ -268,12 +268,30 @@ def test_gateway_candidates_are_static_ordered_bounded_and_two_way() -> None:
             outcomes.outcomes,
         )
         assert repeated.outcomes == outcomes.outcomes
+        assert all(a is b for a, b in zip(repeated.outcomes, outcomes.outcomes))
         assert repeated.transitions == ()
+        assert model._construction_work["route_request_objects_reused"] == 4
 
         changed_assignment_demands = model.create_route_demands(
             scenario.physical_world,
             (ZoneServiceAssignment("zone", first_satellite),),
         )
+        assert changed_assignment_demands is not demands
+        changed = model.plan_route_outcomes(scenario.physical_world,
+            _connected_operational_graph(scenario),
+            (ZoneServiceAssignment("zone", first_satellite),), changed_assignment_demands, outcomes.outcomes)
+        reference = GatewayHopCountRoutePlanningModel(gateway_candidate_count=2)
+        try:
+            expected = reference.plan_route_outcomes(scenario.physical_world,
+                _connected_operational_graph(scenario),
+                (ZoneServiceAssignment("zone", first_satellite),), changed_assignment_demands, outcomes.outcomes)
+            assert changed == expected
+            removed = model.plan_route_outcomes(scenario.physical_world, (),
+                (ZoneServiceAssignment("zone", first_satellite),), changed_assignment_demands, changed.outcomes)
+            assert removed == reference.plan_route_outcomes(scenario.physical_world, (),
+                (ZoneServiceAssignment("zone", first_satellite),), changed_assignment_demands, expected.outcomes)
+        finally:
+            reference.shutdown()
         assert {
             demand.target.ground_station_id
             for demand in changed_assignment_demands
@@ -428,15 +446,20 @@ def test_gateway_routes_reuse_one_tree_for_a_shared_service_satellite(
 
     assert len(demands) == len(result.outcomes) == 8
     assert all(isinstance(value, ReachableRouteOutcome) for value in result.outcomes)
-    assert calls == [
-        ("ground", first_station, frozenset({second_satellite})),
-        ("ground", second_station, frozenset({second_satellite})),
-        (
-            "zone",
-            second_satellite,
-            frozenset({first_station, second_station}),
-        ),
-    ]
+    context = model._routing_context
+    requests = tuple(route_computation._RoutePathRequest(i,
+        isinstance(d.target, GroundStationRouteDemandTarget), d.source,
+        d.target.ground_station_id if isinstance(d.target, GroundStationRouteDemandTarget)
+        else second_satellite) for i, d in enumerate(sorted(demands,
+            key=lambda d: (d.source.value, str(d.target)))))
+    engine = route_computation._GroupedRouteEngine()
+    try:
+        reference = engine.compute(context, requests, choice_resolvers=(_ground, _zone))
+        compact = engine.compute(context, requests)
+        assert compact == reference
+        assert len(calls) == 3
+    finally:
+        engine.shutdown()
     zone_paths = {
         (value.demand.source, value.demand.target.zone_id): value.path
         for value in result.outcomes
@@ -465,182 +488,78 @@ PARAMETER_CONNECTION_ID = OperationalConnectionId(
 )
 
 
-def _parameter_model(
-    *,
-    deadband_us: int = 5,
-    persistence: timedelta = timedelta(0),
-    max_staleness: timedelta | None = None,
-) -> AccumulatedDeadbandParameterPlanningModel:
-    configuration = ParameterKindConfiguration(
-        bandwidth_bps=1_000_000,
-        packet_loss_ppm=20,
-        delay_deadband_us=deadband_us,
-        persistence=persistence,
-        max_staleness=max_staleness,
-    )
+def _parameter_model(*, threshold=0.10, max_staleness=timedelta(seconds=120)):
+    configuration = ParameterKindConfiguration(1_000_000, 20,
+        delay_relative_threshold=threshold, max_staleness=max_staleness)
     return AccumulatedDeadbandParameterPlanningModel(
-        {kind: configuration for kind in OperationalConnectionKind}
-    )
+        {kind: configuration for kind in OperationalConnectionKind})
 
 
-def _parameter_observation(
-    delay_us: int,
-) -> tuple[ConnectionParameterObservation, ...]:
+def _parameter_observation(delay_us):
     return (ConnectionParameterObservation(PARAMETER_CONNECTION_ID, delay_us),)
 
 
-def test_parameter_deadband_accumulates_from_last_effective_target() -> None:
-    model = _parameter_model(deadband_us=5)
-    initial = model.plan_effective_parameters(
-        START,
-        _parameter_observation(10),
-        (),
-    )
-    inside = model.plan_effective_parameters(
-        START + timedelta(seconds=10),
-        _parameter_observation(14),
-        initial.memory,
-    )
-    outside = model.plan_effective_parameters(
-        START + timedelta(seconds=20),
-        _parameter_observation(16),
-        inside.memory,
-    )
-
-    assert initial.established_connections == initial.connections
-    assert initial.connections[0].endpoint_a_to_b.delay_us == 10
-    assert inside.parameter_updated_connections == ()
-    assert inside.connections[0].endpoint_a_to_b.delay_us == 10
-    assert outside.connections[0].endpoint_a_to_b.delay_us == 16
-    assert outside.parameter_updated_connections == outside.connections
-    assert outside.memory[0].last_update == START + timedelta(seconds=20)
+@pytest.mark.parametrize('values, expected', [
+    ([100, 104, 109, 110, 120, 121], [100, 100, 100, 110, 110, 121]),
+    ([100, 96, 91, 90, 81], [100, 100, 100, 90, 81]),
+    ([0, 0, 1, 0, 5], [0, 0, 1, 0, 5]),
+])
+def test_relative_delay_accumulates_equals_rebases_and_handles_zero(values, expected):
+    model, memory, actual = _parameter_model(), (), []
+    for i, candidate in enumerate(values):
+        result = model.plan_effective_parameters(START+timedelta(seconds=5*i),
+            _parameter_observation(candidate), memory)
+        actual.append(result.memory[0].effective.delay_us)
+        if i:
+            assert bool(result.parameter_updated_connections) == (actual[-1] != actual[-2])
+        memory = result.memory
+    assert actual == expected
 
 
-def test_parameter_persistence_requires_one_stable_pending_target() -> None:
-    model = _parameter_model(
-        deadband_us=5,
-        persistence=timedelta(seconds=10),
-    )
-    initial = model.plan_effective_parameters(
-        START,
-        _parameter_observation(10),
-        (),
-    )
-    pending = model.plan_effective_parameters(
-        START + timedelta(seconds=10),
-        _parameter_observation(16),
-        initial.memory,
-    )
-    still_pending = model.plan_effective_parameters(
-        START + timedelta(seconds=15),
-        _parameter_observation(16),
-        pending.memory,
-    )
-    ready = model.plan_effective_parameters(
-        START + timedelta(seconds=20),
-        _parameter_observation(16),
-        still_pending.memory,
-    )
-
-    assert pending.parameter_updated_connections == ()
-    assert pending.memory[0].pending_delay_us == 16
-    assert pending.memory[0].pending_since == START + timedelta(seconds=10)
-    assert still_pending.memory[0].pending_since == pending.memory[0].pending_since
-    assert ready.parameter_updated_connections == ready.connections
-    assert ready.connections[0].endpoint_a_to_b.delay_us == 16
-    assert ready.memory[0].pending_delay_us is None
-    assert ready.memory[0].pending_since is None
+def test_maximum_refresh_is_first_formal_sample_and_noop_updates_memory():
+    model = _parameter_model()
+    initial = model.plan_effective_parameters(START, _parameter_observation(100), ())
+    before = model.plan_effective_parameters(START+timedelta(seconds=119),
+        _parameter_observation(109), initial.memory)
+    assert before.memory == initial.memory
+    refreshed = model.plan_effective_parameters(START+timedelta(seconds=120),
+        _parameter_observation(109), before.memory)
+    assert refreshed.memory[0].effective.delay_us == 109
+    assert refreshed.parameter_updated_connections == refreshed.connections
+    noop = model.plan_effective_parameters(START+timedelta(seconds=240),
+        _parameter_observation(109), refreshed.memory)
+    assert not noop.parameter_updated_connections
+    assert noop.memory[0].last_update == START+timedelta(seconds=240)
+    assert noop.memory[0].effective.bandwidth_bps == 1_000_000
+    assert noop.memory[0].effective.packet_loss_ppm == 20
 
 
-def test_parameter_max_staleness_bounds_deadband_suppression() -> None:
-    model = _parameter_model(
-        deadband_us=1_000,
-        max_staleness=timedelta(seconds=20),
-    )
-    initial = model.plan_effective_parameters(
-        START,
-        _parameter_observation(10),
-        (),
-    )
-    suppressed = model.plan_effective_parameters(
-        START + timedelta(seconds=10),
-        _parameter_observation(11),
-        initial.memory,
-    )
-    stale = model.plan_effective_parameters(
-        START + timedelta(seconds=20),
-        _parameter_observation(12),
-        suppressed.memory,
-    )
-
-    assert suppressed.parameter_updated_connections == ()
-    assert suppressed.connections[0].endpoint_a_to_b.delay_us == 10
-    assert stale.parameter_updated_connections == stale.connections
-    assert stale.connections[0].endpoint_a_to_b.delay_us == 12
-    assert stale.memory[0].last_update == START + timedelta(seconds=20)
-
-
-def test_parameter_removal_and_reestablishment_reset_pending_memory() -> None:
-    model = _parameter_model(
-        deadband_us=5,
-        persistence=timedelta(seconds=20),
-    )
-    initial = model.plan_effective_parameters(
-        START,
-        _parameter_observation(10),
-        (),
-    )
-    pending = model.plan_effective_parameters(
-        START + timedelta(seconds=10),
-        _parameter_observation(16),
-        initial.memory,
-    )
-    removed = model.plan_effective_parameters(
-        START + timedelta(seconds=20),
-        (),
-        pending.memory,
-    )
-    reestablished = model.plan_effective_parameters(
-        START + timedelta(seconds=30),
-        _parameter_observation(103),
-        removed.memory,
-    )
-    inside_new_deadband = model.plan_effective_parameters(
-        START + timedelta(seconds=40),
-        _parameter_observation(106),
-        reestablished.memory,
-    )
-
-    assert pending.memory[0].pending_delay_us == 16
-    assert removed.connections == ()
-    assert removed.memory == ()
+def test_parameter_removal_and_reestablishment_reset_baseline():
+    model = _parameter_model()
+    first = model.plan_effective_parameters(START, _parameter_observation(100), ())
+    removed = model.plan_effective_parameters(START+timedelta(seconds=5), (), first.memory)
     assert removed.withdrawn_connection_ids == (PARAMETER_CONNECTION_ID,)
-    assert reestablished.established_connections == reestablished.connections
-    assert reestablished.connections[0].endpoint_a_to_b.delay_us == 103
-    assert reestablished.memory[0].pending_delay_us is None
-    assert inside_new_deadband.parameter_updated_connections == ()
-    assert inside_new_deadband.connections[0].endpoint_a_to_b.delay_us == 103
+    assert removed.memory == ()
+    new = model.plan_effective_parameters(START+timedelta(seconds=10),
+        _parameter_observation(103), removed.memory)
+    assert new.established_connections == new.connections
+    assert new.memory[0].effective.delay_us == 103
 
 
-def test_time_horizon_policy_validates_alignment_and_bounds_prehistory() -> None:
-    policy = TimeHorizonPlanningWindowPolicy(
-        planning_horizon=timedelta(seconds=20),
-        publication_horizon=timedelta(seconds=10),
-        maximum_prehistory=timedelta(seconds=20),
-    )
+@pytest.mark.parametrize('value', [-1, float('inf'), float('nan'), True])
+def test_relative_threshold_rejects_invalid_configuration(value):
+    with pytest.raises(ValueError):
+        _parameter_model(threshold=value)
 
-    assert policy.planning_horizon == timedelta(seconds=20)
-    assert policy.publication_horizon == timedelta(seconds=10)
-    assert policy.required_prehistory(timedelta(0)) == timedelta(0)
-    assert policy.required_prehistory(timedelta(seconds=10)) == timedelta(
-        seconds=10
-    )
-    assert policy.required_prehistory(timedelta(seconds=30)) == timedelta(
-        seconds=20
-    )
-    assert policy.validate_observation_interval(timedelta(seconds=10)) is None
-    with pytest.raises(ValueError, match="align"):
-        policy.validate_observation_interval(timedelta(seconds=7))
+
+def test_frame_batch_policy_is_independent_of_sampling_cadence():
+    policy = FrameBatchPlanningWindowPolicy(frames_per_batch=32)
+    assert policy.validate_observation_interval(timedelta(seconds=7)) is None
+    for invalid in (0, -1, True, 1.5):
+        with pytest.raises(ValueError):
+            FrameBatchPlanningWindowPolicy(frames_per_batch=invalid)
+    with pytest.raises(ValueError):
+        policy.validate_observation_interval(timedelta(0))
 
 
 def test_default_coordination_returns_only_caller_required_precedence() -> None:

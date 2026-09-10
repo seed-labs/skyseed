@@ -63,14 +63,15 @@ Canonical S3 retains these frozen assumptions:
 - 720 Satellites, 355 GroundStations, and 732 Zones;
 - maximum simultaneous ISLs per Satellite: 4;
 - desired policy mix: 2 same-plane plus 2 cross-plane;
-- bounded cross-plane candidate scope: K3;
+- current example cross-plane candidate scope: K1 (historical S3 used K3);
 - deterministic retain-first selection;
-- configurable ISL acquisition reference: 20 seconds;
+- ISL and GS preparation: 5 simulated seconds;
+- minimum useful service after preparation: ISL 180 seconds, GS 60 seconds;
 - bounded sampled prehistory for warm initialization;
-- accepted warm-oracle comparison: 714 cross-plane selections and 12
-  underfilled Satellites at its defined boundary.
+- the prior-policy warm-oracle record (714 cross-plane selections and 12
+  underfilled Satellites) remains historical evidence, not a new-policy oracle.
 
-The value `4` is an explicit scenario capability assumption. The 2+2/K3 rule is
+The value `4` is an explicit scenario capability assumption. The 2+2/K rule is
 planning policy, not physical hardware identity.
 
 ## Planner ownership
@@ -86,10 +87,14 @@ publishes self-contained Plans. It owns distinct physical-observation,
 planning, and publication frontiers, bounded unpublished transitions, compact
 inspection evidence, and Route worker shutdown.
 
-GroundStation access policy remains separate from ISL acquisition. Zone
+GroundStation and ISL selection policies remain separate; both reserve endpoint
+capacity during preparation. Zone
 serving is a Planner decision. Routes are planned only over operational
 Connections, and failure is represented explicitly by a reason such as
-`ZONE_UNSERVED` or `NO_OPERATIONAL_PATH`.
+`ZONE_UNSERVED` or `NO_OPERATIONAL_PATH`. The existing Route engine may reuse
+paths for current requests while their source-reachable satellite components and
+relevant GS source/terminal accesses are unchanged. Complete component identity
+covers additions, shorter paths, merges and splits. Its bounded derived cache does not own route truth.
 
 ## Operational values and Plans
 
@@ -117,26 +122,103 @@ Every later Plan names its immediate predecessor and consumes the previous
 output fingerprint. Adjacent transitions are exactly one observation interval
 apart, and a later Plan begins exactly one interval after the prior Plan ends.
 `apply_plan_transition` and `apply_plan` are the common semantic replay contract
-used by Planner publication, Compiler validation, detached inspection, and
-qualification.
+used by public Plan construction, Compiler lowering, detached inspection, and
+qualification. Planner constructs its validated output once; publication reuses
+that state instead of rebuilding and replaying an expected state.
 
 Fingerprints are schema-tagged, deterministic across processes, canonical with
 respect to tuple ordering, and based only on semantic content.
 
-## Window and publication policy
+## Admission, preparation, and parameter memory
 
-The canonical policy combines a 5-second formal observation interval, a
-50-second planning horizon, and a 20-second publication horizon.
+`PhysicalContactWindow` carries a proven usable interval from the physical link
+Model to Planner. Its finite end bounds prediction coverage and does not assert
+physical disappearance; `end_timestamp=None` is an analytical all-future proof.
+Missing proof means unknown future feasibility. The circular-orbit Model uses
+all-phase bounds where valid and conservative continuous-motion bounds around
+sample cells elsewhere. Unknown cells never count as proved service. Predictions
+cover the finite experiment and only each connection kind's required admission
+tail. They do not run future Planner, Route, Compiler, or Tool work.
 
-Before normal publication, the Planner plans up to 50 seconds from the current
-publication frontier, then publishes the earliest contiguous prefix of at most
-20 seconds. Event timestamps retain 5-second resolution. Publication does not
-quantize events to a Plan edge.
+A new connection is admissible only if usable contact covers preparation plus
+its minimum post-preparation service. This is a forward-looking test, not a
+180/60-second elapsed-selection timer. Preparation retains its original start
+across samples and reserves capacity at both endpoints. Cancellation or physical
+loss releases reservations. Operational incumbents survive while physically
+feasible. A full-port replacement incurs a break-before-make service gap and
+new preparation; overlap requires genuine spare endpoint capacity.
 
-At Timeline end the window shrinks and the remaining prefix is flushed once.
-No formal timestamp is skipped, duplicated, or shared by two Plans. Canonical
-10-minute S3 therefore has 121 formal transitions, 30 Plans, 30 compiled
-realizations, and 121 compiled activation timestamps.
+The current Starlink examples use retain-first 2+2/K1, cyclic same-plane
+predecessors/successors in authoritative mean-anomaly order, and four nearest
+admission-eligible cross-plane candidates per endpoint/neighbor plane. Wider
+same-plane scope, K3 and unbounded cross-plane neighbor counts remain configurable.
+Pending/operational incumbents are queried regardless of their current rank.
+
+GS allocation lexicographically maximizes covered stations, distinct satellites,
+and total selected connections, then minimizes changed valid assignments and
+applies deterministic quality ranking. Reservations receive the same continuity
+value as operational incumbents but provide no service until preparation ends.
+The exact integer residual solver seeds feasible retained assignments and cancels
+negative circulation cycles until residual optimality certifies all five objectives.
+Loose cardinality bounds remain a cheap sufficient shortcut; coverage alone is
+insufficient. Cold allocation retains successive shortest paths. The fifth cost is
+the existing sum of deterministic per-station ranks and satellite indices; equal
+totals can admit several assignments. Canonical residual traversal can choose a
+different equal-objective assignment from cold SSP. Formal comparisons retain
+those ties and their subsequent continuity/lifecycle effects explicitly.
+The optimum is over the admitted search graph, not an unqueried physical graph.
+
+`default_ground_station_limit=4` is the example's engineering fallback for
+unspecified device capability. Explicit 2/4/8 capacities override that fallback;
+optional `ground_station_policy_limit` is a separate ceiling (default None).
+Satellite-side capacity remains two in these inputs. The initial GS query budget
+32 is a search count, not a hardware range or connection limit. Physical queries
+include retained/pending pairs and use proven contact-duration predicates; the
+Producer repeats the same query with a wider count when Planner's Model detects
+candidate/endpoint competition. It does not own selection or lifecycle.
+Primitive geometry still evaluates the configured elevation/distance envelope;
+only selected query rows become candidate objects. Full contact proofs are
+retained independently of rank. `*_pairs_not_returned` counts physically feasible
+rows excluded by query scope/contact predicates, not physical disappearance.
+Zone highest-elevation service semantics remain unchanged.
+Zone assignment remains globally unique across all Shells. Current Starlink
+examples keep ISLs within Shells and forbid GS transit. Their static geographic
+three-GS associations are separate from Zone service and GS allocation; bilateral
+reachability is not guaranteed by association. Tool logical-pair presentation
+does not change these policies. Coordinated Zone/GS selection and cross-Shell
+communication remain deferred work.
+
+Delay updates compare `abs(current-effective)/abs(effective) >= 0.10`, including
+equality, increases and decreases. The adopted value becomes the new baseline;
+a zero reference changes on any nonzero value. At the first formal sample at
+least 120 seconds after the last adoption/refresh, current delay is refreshed.
+An unchanged refresh advances memory without a parameter event. The old fixed
+integer delay target persistence requirement is removed. Bandwidth, loss, and
+directional semantics remain as configured.
+
+These durations and the threshold are reference-scenario engineering choices.
+ISL preparation abstracts known-ephemeris setup; GS preparation is a 5-second engineering assumption (one sample at the
+reference 5-second cadence), not a measured commercial gateway acquisition time.
+The authorized S1 qualification also uses 1-second observations; preparation,
+minimum service and parameter-refresh durations remain measured in seconds.
+
+## Frame batching and publication policy
+
+The canonical policy uses a 5-second formal interval and `frames_per_batch=32`.
+`FrameBatchPlanningWindowPolicy` removes the independent publication lookahead.
+It publishes each complete 32-frame prefix immediately and flushes the remaining
+prefix once at Timeline end. Batch size is not a control interval. No formal
+timestamp is skipped, duplicated, quantized, or shared by two Plans.
+
+Prehistory is the maximum preparation dependency rounded up to formal cadence;
+per-kind prediction tail is rounded preparation plus minimum effective service.
+Canonical S3 therefore needs 5 seconds of preparation history, at most 185
+seconds of ISL tail and 65 seconds of GS tail. Stable all-future ISL proofs need
+no extra sampled ISL tail. The 10-minute S3 has 121 formal transitions across
+4 Plans (32/32/32/25), 4 realizations, and 121 activation timestamps.
+The authorized 600-second S1/1-second condition uses 601 transitions and 19
+Plans/realizations (18 full batches plus 25 frames), with the same durations
+in seconds and no independent publication lookahead.
 
 ## One incremental producer
 
@@ -147,7 +229,9 @@ pending Plan queue, incremental Compiler calls, previous-realization lineage,
 and per-invocation evidence.
 
 `produce_next_realization()` advances only as far as needed to publish and
-compile the next result. Precomputed mode drains this exact producer. There is
+compile the next result. Physical, Planner and Compiler cutoffs consume this
+same cursor; physical cutoff computes prediction and every formal observation
+without invoking Planner progression. Precomputed mode drains this exact producer. There is
 no separate batch planning or compilation algorithm.
 
 The Plan is the only Planner semantic value crossing into compilation. Planner
@@ -182,7 +266,7 @@ compile_bpf(
 ```
 
 The Compiler validates world provenance, Plan lineage, input fingerprints, and
-semantic replay. It then lowers Connection, parameter, Zone, Route, and
+one chronological semantic replay during lowering. It then lowers Connection, parameter, Zone, Route, and
 precedence changes into backend intentions. It does not run physical,
 selection, acquisition, Zone, parameter, or Route algorithms.
 
@@ -196,32 +280,130 @@ pairwise constraints are retained only as a fail-closed fallback. Zone lowering
 separates readiness, forwarding publication, and retirement. Empty semantic
 transitions still create activation boundaries.
 
-The authoritative Plan remains in Planner history rather than being copied into
+Compiler retains immutable backend indexes in the previous realization and
+updates them from Plan deltas. These are derived private indexes, not new state
+owners or runtime planning input. The artifact normalizer indexes operations and constraints once per batch.
+Capacity derivation maintains resource/qdisc/forwarding/Zone indexes and
+reference-counted per-node destinations, preserving shared-route counts,
+add-before-withdraw peaks and collision checks. The same private boundary
+materializer supports initial Preparation and admitted batch construction; it creates no runtime
+lifecycle authority. The authoritative Plan remains in Planner history rather than being copied into
 every realization. During generation, the artifact writer validates predecessor
 and state-fingerprint continuity, equal cadence, exact next starts, and boundary
 references before sealing the sequence. Execution verifies identity, hashes and
-metadata; Preparation checks the binary header/index bounds and decodes every
-record with its hash and operation-count checks. Readers do not repeat the
+metadata; Preparation or Maintenance checks the opened batch’s binary
+header/index bounds and decodes every record with its hash and operation-count checks. Mandatory encode/full-decode/
+full-object comparison is qualification and codec-test work, removed from normal
+generation; sequence, identity, reference and integrity checks remain required. Readers do not repeat the
 writer's sequence-relationship validation or Compiler lowering. Full semantic
 qualification and Traffic inspection use the aligned authoritative Plan stream.
+
+## Consecutive finite delivery
+
+The approved continuation mode keeps the node set fixed and accepts sequential,
+append-only finite sealed batches. Each optional v3 `delivery` manifest extension
+carries its batch index, prior manifest hash, prior end/Plan/state/generation,
+cadence and final flag. It extends the same artifact format; existing single
+final artifacts remain readable. No loaded future may be replaced.
+`terminal: true` seals one artifact; `delivery.final` independently identifies
+the last delivery in the finite session. Neither creates a contact ending.
+Writer continuation validates sequence relationships at generation time. Execution
+checks source/input identity, seals, hashes and timeline metadata. Runner append
+checks the compact chain identity; artifact open and decoding remain batch work.
+
+`Planner.flush()` publishes an unpublished prefix without finishing, advancing
+physical time or resetting Planner retention, acquisition or parameter memory.
+The existing Producer pauses at a cadence-aligned delivery endpoint and resumes
+with the same Timeline cursor, Planner and Compiler predecessor. Prediction
+covers the whole known finite horizon plus policy tails. The first version does
+not extend that horizon online, recalibrate, change nodes or create artificial
+contact endings at a seam. Sampling cadence, internal publication frame count,
+delivered coverage and resident capacity are independent quantities.
+
+`BpfRunner.append_batch(runtime_artifact: Path)` registers at most one pending
+successor. A ready successor can coexist with that pending registration; runtime
+loads at most one successor to the current batch. Initial Preparation initializes
+deployment bindings, helper, sockets, maps and programs once, fully prepares the
+first batch and activates B0. Automatic `run()` uses one fixed origin and executes
+each boundary once. Continued execution requires automatic scheduling; the
+single-delivery manual API remains available.
+
+For a delivery starting at T and covering D, Maintenance begins at T − αD.
+`batch_lead_fraction` defaults to 0.75 and must be in (0,1]; it is an engineering
+configuration, not an optimum. The qualification seam is `[0,300)` followed by
+`[300,600]`: 60 plus 61 five-second timestamps, B0 once and 120 Main boundaries.
+The second batch starts loading at nominal 75 s with a 225 s budget. The bounded
+planning estimate scales dated S1 decode/construction/prewrite by successor
+boundary count and runtime node count. S1/1 s gives about 101 s; the same-cadence
+S1/5 s reference gives about 141 s. The 225 s budget exceeds both, with about
+84 s margin over the larger estimate. This estimate does not establish linear
+scaling or replace measured READY margin and Main-overlap evidence.
+
+Resident admission uses fixed reservations derived from the first batch and
+`batch_capacity_factor` (default 2, integer 1–16). In continuation mode each
+node's entry envelope uses the first batch's peak among nodes of the same typed
+entity kind, multiplied by the factor. This allows forwarding work to move to a
+previously lightly used peer. The exact sealed per-node demand stays unchanged;
+the larger reservation has an explicit memory cost. Active/route maps reserve
+twice that per-batch envelope for overlap, while live bindings use the envelope
+directly. Boundary/generation limits retain the first batch's counts and factor.
+Boundary/generation and per-node entry demand are checked before decoding/prewriting; existing resident
+reservations include retained generations. No map is sized from the assumed
+complete future session. A successor exceeding this envelope fails admission.
+Generation IDs increase monotonically and exhaustion is explicit; they are not
+silently recycled. Immutable evidence and artifacts remain on disk for historical
+analysis; the runtime releases retired plans and mappings after actual activation.
+
+The existing privileged helper writes at most 64 nodes / 2048 semantic entries
+per prewrite request, and bounded reclaim requests consume at most 1024 work
+units. Main has channel priority; background requests yield near the next
+deadline and between units. Equal node content shares one immutable version;
+global generations map to node versions. Reclaim first checks actual active
+generation and old-generation readers, and decrements retained version
+references before deleting unreferenced table entries. Packet readers increment
+a generation counter, recheck the stable single-entry active-generation ARRAY,
+and release on every exit. Monotonic identities prevent ABA; a reader that raced
+publication retries before touching generation tables. Retries are bounded and
+failure drops with recorded dataplane evidence. These private Linux mechanisms
+do not introduce a new public type, dataplane or lifecycle authority.
+
+Maintenance neither publishes network state nor delays formal withdrawals.
+Main creates current-boundary resources, publishes generation selection and
+joins all owned withdrawal/deletion work before advancing formal ACTIVE. Stable
+per-connection retirement groups preserve cross-batch live ownership without
+assuming future withdrawal cohorts. Published generations remain immutable;
+only future versions are prewritten. Missing READY at the deadline or failed
+Maintenance makes the session failed/incomplete without waiting, resetting time
+or skipping a boundary. Terminal Cleanup retains its session-ending ownership.
 
 ## Runner and Traffic
 
 The public constructor is `BpfRunner(*, compose_project_name: str,
-runtime_artifact: Path)`. The `pathlib.Path` names the sealed finite artifact
+runtime_artifact: Path, batch_lead_fraction: float = 0.75,
+batch_capacity_factor: int = 2)`. The `pathlib.Path` names the sealed finite artifact
 manifest; the realization-object/supplier constructor input and old experiment
 realization handoff are removed. The reader supports indexed access, but Runner
-decodes the entire sequence during Preparation, not on demand during Main.
+decodes the entire first delivery during Preparation and each successor during
+Maintenance, never on demand during Main.
 
-`BpfRunner` owns one-shot Preparation, formal Main, cleanup, and realized-state
-snapshots. Preparation opens the sealed finite artifact, validates its metadata
-and binary structure, decodes every record, and builds the complete sequence of
-immutable delta plans and their activation JSON wire representation.
+`BpfRunner` owns initial Preparation, formal Main, optional continued-batch
+Maintenance, cleanup, and realized-state snapshots. Preparation opens and fully
+decodes the first sealed finite delivery, checks its metadata and binary
+structure, and constructs all of that delivery's immutable delta plans and
+activation JSON commands. Single-delivery execution prepares the whole sequence;
+continued execution does not initially decode or prewrite its successor.
 Artifact-local caches reuse decoded identities/timestamps; Preparation reuses
 previous route/access state, stable names/slots, and route-by-interface indexes.
 It discovers container incarnations once, retains
 namespace descriptors and rtnetlink sockets, initializes maps/programs at the
-sealed cumulative capacity, and prewrites every generation-semantic entry.
+sealed cumulative capacity for one delivery, or fixed resident reservations
+based on the first delivery and configured capacity factor for continuation.
+Continued per-node entry envelopes use first-batch peaks of the same typed
+entity kind; they allow peer work migration while retaining fixed limits
+and exact sealed-demand accounting. The extra reservation consumes memory.
+It prewrites the first delivery's generation semantics. Equal per-node content
+shares an immutable node version across generations; unchanged entries are not
+written again. The static demand index is built once per admitted batch.
 Preparation then physically executes boundary 0, from no network to the initial
 network, before returning. The formal clock begins in `run()`, whose first
 possible activation is boundary 1. A one-boundary experiment has no formal
@@ -229,7 +411,10 @@ network activation.
 
 Main consumes a prepared immutable delta: changed connections, affected nodes,
 and normalized operation nodes. Each veth creation includes both deterministic
-MACs, one RX/TX queue per endpoint, and its exact future retirement cohort.
+MACs, one RX/TX queue per endpoint, and its owned retirement group.
+Single finite execution groups known future retirement cohorts; continuation
+uses stable per-connection groups, preserving ownership across unknown future
+withdrawals and re-establishment.
 Interfaces start down; Main configures qdisc/BPF and readiness, changes
 routes/neighbours and live port bindings, then commits
 `active_generation`, then withdraws obsolete routes/bindings and deletes
@@ -240,14 +425,20 @@ batches use bounded persistent helper workers initialized in Preparation; one
 worker owns each socket and all batches join before Main completes. Cleanup
 uses the same owned cohorts, retains uncertain ownership, and closes the workers.
 Candidate rollback deletes individual new pairs because their future groups can
-also contain previously live pairs. Generation-semantic maps remain immutable throughout formal
-runtime. Future veths remain absent until their own boundary.
+also contain previously live pairs. Published generation content is immutable;
+Maintenance writes only future content and reclaims only eligible retired
+versions. Future veths remain absent until their own boundary.
 
-There is no Maintenance thread, READY producer/wait, deferred generation
-completion, or generation reclaim. All finite semantic entries stay resident
-until cleanup. Capacity or identity failures stop generation/Preparation;
-formal Main handles the return status of actual mutations without full-network
-validation or PID/netns rediscovery.
+Single-delivery execution retains finite semantic entries until Cleanup.
+For append-only continuation, Runner/backend Maintenance loads and prewrites the
+next sealed batch, then marks it READY. It reclaims eligible older plans and
+map versions after actual activation, preserving in-flight readers and retained
+references. Main alone executes boundaries, including timely withdrawals and
+joined physical deletion. It never waits for READY past the nominal deadline:
+missing/late READY or Maintenance failure produces an explicit failed/incomplete
+run, without clock shifts, skipped boundaries or a successful fallback.
+Capacity and identity failures are fail-closed. Formal Main handles actual
+mutation results without full-network validation or PID/netns rediscovery.
 
 One privileged command stream is established in Preparation. Its long-lived
 process uses retained namespace rtnetlink sockets and BPF file descriptors.
@@ -265,8 +456,8 @@ partial live state is reported. After publication, selected-generation resources
 are retained for final cleanup. Generation reuse does not invent a publication.
 
 Main records compact boundary/barrier timing and enqueues telemetry template
-references with live binding deltas. A background writer expands and serializes
-identity records; observation never gates the next boundary. Cleanup owns final
+references with live binding deltas. A background writer serializes changed endpoint identities and generation membership
+deltas; retained endpoints are shared. Observation never gates the next boundary. Cleanup owns final
 network/BPF teardown, telemetry drain, privileged facility closure, and artifact
 handle closure. Automatic deadlines use one fixed monotonic runtime origin plus
 each nominal offset. Lateness consumes available idle time; an overrun executes
@@ -287,25 +478,30 @@ authority. Simulator, Planner and Compiler ownership is unchanged.
 The private BPF logical port is a non-zero uint32 allocated by the finite
 artifact writer for one node-side connection endpoint. The manifest stores each
 connection and both endpoint IDs explicitly; IDs survive withdrawal/recreation
-across every generation of that artifact. They are not public domain values or
+across generations and continued artifacts in the same fixed-node session. They are not public domain values or
 root exports. Live ifindexes occur only in small per-node binding maps.
 
 | Map | Key | Value |
 |---|---|---|
-| `active_generation` | `0` | generation |
-| per-node `active_links` | `(generation, logical_ingress_port_id)` | `1` |
-| per-node `routes` | `(generation, destination_ipv4_u32)` | logical egress port; `0` for local |
+| `active_generation` ARRAY | `0` | generation |
+| per-node `generation_versions` | generation | immutable node content version |
+| continued-session `generation_readers` | generation | in-flight reader count |
+| per-node `active_links` | `(node_version, logical_ingress_port_id)` | `1` |
+| per-node `routes` | `(node_version, destination_ipv4_u32)` | logical egress port; `0` for local |
 | per-node `ingress_bindings` | live ifindex | logical port |
 | per-node `egress_bindings` | logical port | live ifindex |
 
-The packet program reads the active generation, translates ingress ifindex,
-checks the generation's active logical ingress, resolves the destination, passes
+The packet program reads the active generation and its node content version,
+translates ingress ifindex, checks the version’s active logical ingress, resolves
+the destination, passes
 local routes, and translates a non-local logical egress before redirecting.
 Missing generation, active link, route, or required live binding drops the
 packet. Prewritten future entries remain invisible until generation publication.
 Binding capacities use the add-before-withdraw interface high-water; semantic
-map capacities use complete finite cumulative demand. No generation is reclaimed
-during formal runtime.
+map capacities use finite cumulative demand for one delivery or fixed admitted
+resident reservations for continuation. Continued generations use bounded
+reader accounting and retained version references for safe runtime reclaim;
+single-delivery entries remain until Cleanup.
 
 Traffic consumes aligned authoritative Plans, explicit compiled planned
 reachability, plus Runner
@@ -320,6 +516,11 @@ for the corresponding completed Runner ACTIVE frontier, so a slowed
 Runner neither exposes future actions early nor truncates an episode merely
 because its ideal deadline passed.
 
+Generator control retries one Docker RPC timeout with the same unique process
+identity, recording both attempts. Identity mismatch and exhausted retries remain
+execution failures. The executor worker completes its bounded generator teardown
+before the caller's final check; teardown does not race the worker's state or IO.
+
 ## Durable evidence and Tools
 
 For Mini and Starlink's Compiler mode, `main.py` completes semantic generation,
@@ -327,6 +528,17 @@ compiled realizations, the sealed artifact, output and control scripts before
 deployment. `start.sh` deploys; `run.sh` starts Runner/Traffic; `launch.sh`
 combines start and run; `cleanup.sh` is independent. Detached Tools render the
 already-produced evidence without participating in network lifecycle.
+Generated deployment cleanup snapshots exact project-labelled immutable IDs,
+reverses declared and namespace dependencies, and uses bounded count-based
+batches within the same deployment owner. After executor/Runner evidence and
+cleanup complete, explicitly marked generated disposable network services can
+be force-removed without an idle grace period. Explicit stop signal/grace or
+pre-stop hooks retain graceful behavior; hooks address immutable IDs. Failure
+stops subsequent dependency removal. External networks and volumes/images are
+retained; retries inventory resources still present. Startup batch size and
+Compose concurrency remain separate. The count policy and its unqualified
+full-scale settings are documented in the
+[Compose owner README](../src/skyseed_v2/compose/README.md).
 The deployable `complete_static_emulator` teaching Example keeps its own
 start/cleanup controls; it does not package this Runner start/run/launch chain.
 
@@ -352,7 +564,13 @@ hash, and manifest hash. Neither authority is inferred from the other.
 
 These artifacts are semantically owned, deterministic, and detached. They
 contain no live objects or pickles. Tools read them; they never run domain
-Models or become a production dependency. The terminal domain-history manifest
+Models or become a production dependency. Planner/Traffic collection performs one required semantic replay. Traffic
+reconstructs the Plan portion of sealed history without materializing unused
+Model inspection objects; the Planner Tool retains complete inspection. Public
+projection of a detached mutable Traffic snapshot still validates its replay. Planner browser records are projected directly
+from validated selections, with invocation-local RouteDemand display identities.
+Runner projection detaches caller inputs once; bundle inventory and checksum
+publication reuse the same payload hashes. The terminal domain-history manifest
 is published atomically only after the producer has been drained through its
 terminal `None`; incomplete, truncated, cadence-gapped, cross-stream-mismatched,
 or coherently relocated histories fail closed.
@@ -380,7 +598,13 @@ offline compilation.
 Full S3 Compose deployment uses generated controls under explicit live
 qualification authorization. Scoped teardown preserves unrelated resources.
 
-Changes to PhysicalFrame fields, S3 inputs, K3/2+2/20-second policy,
+Changes to PhysicalFrame fields, S3 inputs, configured ISL neighborhoods/2+2 targets or the approved admission policy,
 GroundStation acquisition, traffic-aware resource allocation, Runner phase
 authority, observable runtime-state semantics, Runner activation semantics, or
 backend selection require explicit approval from both the user and ChatGPT.
+
+Global unique Zone service and shared GS admission can select incompatible,
+disconnected Shell components. Resolving this is future Model coordination work.
+Per-Shell serving/routing contexts over shared GS entities and Zone geometry are
+only a recorded alternative, not an adopted design; shared GS physical capacity
+must not be duplicated. This closeout changes no routing or Model policy.

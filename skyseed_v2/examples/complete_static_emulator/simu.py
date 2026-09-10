@@ -34,13 +34,13 @@ from skyseed_v2.simulator import (
     ParameterKindConfiguration,
     Plan,
     Planner,
-    QualityFirstGroundStationAccessPlanningModel,
+    CoverageFirstGroundStationAccessPlanningModel,
     RetainFirstInterSatelliteConfiguration,
     RetainFirstInterSatelliteConnectionPlanningModel,
     SimulationDefinition,
     SimulationTimeline,
     Simulator,
-    TimeHorizonPlanningWindowPolicy,
+    FrameBatchPlanningWindowPolicy,
 )
 
 
@@ -91,14 +91,14 @@ def create_complete_static_planner(simulator: Simulator) -> Planner:
             ParameterKindConfiguration(
                 bandwidth_bps=1_000_000_000,
                 packet_loss_ppm=100,
-                delay_deadband_us=5,
+                delay_relative_threshold=0.10,
             )
         ),
         OperationalConnectionKind.GROUND_STATION_ACCESS: (
             ParameterKindConfiguration(
                 bandwidth_bps=500_000_000,
                 packet_loss_ppm=200,
-                delay_deadband_us=5,
+                delay_relative_threshold=0.10,
             )
         ),
     }
@@ -120,7 +120,7 @@ def create_complete_static_planner(simulator: Simulator) -> Planner:
                 )
             )
         ),
-        ground_station_model=QualityFirstGroundStationAccessPlanningModel(
+        ground_station_model=CoverageFirstGroundStationAccessPlanningModel(
             default_ground_station_limit=1
         ),
         zone_service_model=HighestElevationZoneServicePlanningModel(),
@@ -129,10 +129,8 @@ def create_complete_static_planner(simulator: Simulator) -> Planner:
             gateway_candidate_count=1
         ),
         coordination_policy=DefaultCoordinationPolicy(),
-        planning_window_policy=TimeHorizonPlanningWindowPolicy(
-            planning_horizon=timedelta(seconds=30),
-            publication_horizon=timedelta(seconds=20),
-            maximum_prehistory=timedelta(0),
+        planning_window_policy=FrameBatchPlanningWindowPolicy(
+            frames_per_batch=32,
         ),
     )
 

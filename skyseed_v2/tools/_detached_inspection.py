@@ -349,6 +349,7 @@ def _detach_live_source(task: str, source: Mapping[str, object]) -> dict[str, An
             )
 
             return {
+                "delivery_batches": _delivered_batch_evidence(source.get("execution_definition_path")),
                 "compact_history": read_compact_bpf_compiler_evidence(
                     Path(str(source["compiler_history_path"])),
                 ),
@@ -429,6 +430,7 @@ def _build_from_snapshot(
         from tools.bpf_compiler.renderer import render_bpf_compiler_page
 
         observation_timing = snapshot.pop("observation_timing", None)
+        delivery_batches = snapshot.pop("delivery_batches", ())
         if "compact_history" in snapshot:
             data = project_compact_bpf_compiler_data(
                 snapshot["compact_history"],
@@ -441,10 +443,26 @@ def _build_from_snapshot(
                 compile_evidence=compile_evidence,
                 observation_timing=observation_timing,
             )
+        data["delivery_batches"] = delivery_batches
         return write_bpf_compiler_artifacts(
             data, render_bpf_compiler_page(data), directory
         )
     raise ValueError(f"unsupported detached snapshot task: {task}")
+
+
+def _delivered_batch_evidence(definition_path) -> tuple[dict, ...]:
+    """Read immutable packaging metadata; never open runtime binary contents."""
+    if definition_path is None:
+        return ()
+    path = Path(definition_path)
+    definition = json.loads(path.read_text())
+    output = path.parent.parent
+    manifests = [definition["runner_artifact"]["manifest"]]
+    manifests.extend(value["manifest"] for value in definition.get("runner_batches", ()))
+    return tuple({"index": index, "manifest": relative,
+                  "timeline": (value := json.loads((output / relative).read_text()))["timeline"],
+                  "delivery": value.get("delivery"), "binary": value["binary"]}
+                 for index, relative in enumerate(manifests))
 
 
 def _build_observation(path: Path, directory: Path) -> dict[str, object]:

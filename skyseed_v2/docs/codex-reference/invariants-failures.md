@@ -58,8 +58,10 @@ Main advances formal ACTIVE only after withdrawal and all helper deletion jobs
 join successfully. Failure preserves the last completed frontier and
 conservative cleanup ownership. Pre-publication candidate rollback and
 post-publication retention do not invent a completed boundary or erase uncertain
-physical responsibility. All finite generation entries remain until cleanup;
-there is no runtime generation reclaim or deferred completion.
+physical responsibility. Single-delivery entries remain until Cleanup;
+continuation reclaims only actually retired generations with no in-flight
+readers or retained references. Missing READY by the nominal delivery deadline
+fails the session; it never postpones required Main withdrawals or resets time.
 
 External subprocess failure includes bounded diagnostic context but does not
 trigger a second execution path.

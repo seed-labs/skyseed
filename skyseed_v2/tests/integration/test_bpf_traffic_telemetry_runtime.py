@@ -12,7 +12,8 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_privileged_kernel_accepts_instrumented_sched_cls_program() -> None:
+@pytest.mark.parametrize("continued", (False, True))
+def test_privileged_kernel_accepts_instrumented_sched_cls_program(continued) -> None:
     image = os.environ.get("SKYSEED_BPF_HELPER_IMAGE")
     if not image:
         pytest.skip("set SKYSEED_BPF_HELPER_IMAGE to run the privileged verifier test")
@@ -27,7 +28,7 @@ from skyseed_v2.backend.bpf._runner.privileged_runtime_command import (
 )
 descriptors = []
 try:
-    active_generation = _create_map("t_active_gen", key_size=4, max_entries=1)
+    active_generation = _create_map("t_active_gen", key_size=4, max_entries=1, map_type=_BPF_MAP_TYPE_ARRAY)
     active_links = _create_map("t_links", key_size=8, max_entries=8)
     routes = _create_map("t_routes", key_size=8, max_entries=8)
     ingress = _create_map("t_ingress", key_size=4, max_entries=8)
@@ -46,7 +47,9 @@ try:
         max_entries=1,
         map_type=_BPF_MAP_TYPE_ARRAY,
     )
-    descriptors.extend((active_generation, active_links, routes, ingress, egress, events, losses))
+    versions = _create_map("t_versions", key_size=4, max_entries=8)
+    readers = _create_map("t_readers", key_size=4, value_size=8, max_entries=8)
+    descriptors.extend((active_generation, active_links, routes, ingress, egress, events, losses, versions, readers))
     program = _load_program(
         active_generation,
         active_links,
@@ -56,6 +59,8 @@ try:
         telemetry_ring_map=events,
         telemetry_loss_map=losses,
         node_slot=0,
+        generation_versions_map=versions,
+        generation_readers_map=readers if CONTINUED else None,
     )
     descriptors.append(program)
     print(json.dumps({"status": "ok", "program_fd": program}))
@@ -80,7 +85,7 @@ finally:
         "/host",
         sys.executable,
         "-c",
-        script,
+        script.replace("CONTINUED", repr(continued)),
     )
     result = subprocess.run(
         command,

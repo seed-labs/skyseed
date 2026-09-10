@@ -3,6 +3,8 @@
 These short documents are the graphical human review surface. Each global
 diagram has exactly one maintenance home:
 
+- [qualification 性能与工作量视图](qualification-performance.md)
+- [从配置构建、定制和执行卫星网络](framework-construction-execution.md)
 - [system overview](system-overview.md)
 - [Emulator chain](emulator-chain.md)
 - [Simulator chain](simulator-chain.md)

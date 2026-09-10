@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import json
+from time import perf_counter
 from pathlib import Path
 import re
 import subprocess
@@ -31,6 +33,7 @@ from examples.mini_satellite_internet.emu import (
 )
 from examples.mini_satellite_internet.simu import (
     create_mini_satellite_internet_producer,
+    mini_satellite_internet_configuration,
 )
 from examples.mini_satellite_internet.traffic_workload import (
     planned_zone_service_segments,
@@ -49,15 +52,14 @@ from skyseed_v2.experiment.execution import (
     _write_generated_run_script,
 )
 from skyseed_v2.experiment.traffic.probe_plan import (
-    TrafficProbePlanBuilder,
+    IncrementalTrafficProbePlanBuilder,
     write_traffic_probe_plan,
 )
 from tools._html import write_aggregate_index
 from tools.bpf_compiler import write_bpf_compiler_tool
 from tools.observation import write_observation_tool
 from tools.physical_world import write_physical_world_tool
-from tools.planner import write_planner_tool
-from tools.planner.reader import read_planner_history
+from tools.planner import write_planner_history_tool
 from tools.zone import write_zone_tool
 
 
@@ -195,6 +197,7 @@ def _write_inspection_tools(
     realizations,
     physical_frame,
     physical_link_observation,
+    through="compiler",
 ) -> tuple[dict[str, dict[str, object]], dict[str, str]]:
     """Run detached observers without controlling Runner artifact validity."""
 
@@ -215,8 +218,8 @@ def _write_inspection_tools(
         "zone": lambda: write_zone_tool(
             simulator.get_physical_world(), inspection / "zone"
         ),
-        "planner": lambda: write_planner_tool(
-            read_planner_history(output / "domain-history/planning.jsonl.gz"),
+        "planner": lambda: write_planner_history_tool(
+            output / "domain-history/planning.jsonl.gz",
             inspection / "planner",
             physical_frames_path=(
                 output / "domain-history/physical-frames.jsonl"
@@ -235,6 +238,10 @@ def _write_inspection_tools(
             ),
         ),
     }
+    if through == 'physical-world':
+        calls.pop('planner')
+    if through != 'compiler':
+        calls.pop('bpf-compiler')
     for name, call in calls.items():
         try:
             results[name] = dict(call())
@@ -252,8 +259,18 @@ def _write_inspection_tools(
     return results, failures
 
 
+def _write_optional_observations(simulator):
+    try:
+        simulator._write_execution_observations()
+    except Exception as error:
+        return f"{type(error).__name__}: {error}"
+    return None
+
+
 def main(argv: list[str] | None = None) -> int:
+    total_started = perf_counter()
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--through", choices=("physical-world", "planner", "compiler"), default="compiler")
     parser.add_argument("--scenario", type=Path, default=DEFAULT_SCENARIO)
     parser.add_argument("--zones", type=Path, default=DEFAULT_ZONES)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
@@ -269,6 +286,7 @@ def main(argv: list[str] | None = None) -> int:
         help="disable InternetMap for fault isolation only",
     )
     arguments = parser.parse_args(argv)
+    arguments.output = arguments.output.expanduser().resolve()
 
     snapshots = _capture_input_files(arguments.scenario, arguments.zones)
     _guard_existing_output(arguments.output, override=arguments.override)
@@ -277,14 +295,15 @@ def main(argv: list[str] | None = None) -> int:
     snapshot_scenario = arguments.output / "inputs/scenario.yaml"
 
     emulator = build_mini_satellite_internet_emulator(snapshot_scenario)
-    emulator.render()
-    emulator.compile(
-        Docker(
-            namingScheme="as{asn}{role}-{displayName}",
-            internetMapEnabled=not arguments.no_internet_map,
-        ),
-        str(runtime_output),
-    )
+    if arguments.through == "compiler":
+        emulator.render()
+        emulator.compile(
+            Docker(
+                namingScheme="as{asn}{role}-{displayName}",
+                internetMapEnabled=not arguments.no_internet_map,
+            ),
+            str(runtime_output),
+        )
     compose_project_name = f"{COMPOSE_PROJECT_PREFIX}-{uuid4().hex[:16]}"
     project_file = arguments.output / _PROJECT_NAME_FILE
     project_file.parent.mkdir(parents=True, exist_ok=True)
@@ -313,13 +332,24 @@ def main(argv: list[str] | None = None) -> int:
     )
     plans = []
     realizations = []
+    traffic_builder = IncrementalTrafficProbePlanBuilder(physical_world=simulator.get_physical_world()) if arguments.through == 'compiler' else None
     try:
         while True:
-            realization = producer.produce_next_realization()
-            if realization is None:
-                break
-            plans.append(producer.latest_plan)
-            realizations.append(realization)
+            if arguments.through == 'physical-world':
+                if producer.produce_next_observation() is None:
+                    break
+            elif arguments.through == 'planner':
+                plan = producer.produce_next_plan()
+                if plan is None:
+                    break
+                plans.append(plan)
+            else:
+                realization = producer.produce_next_realization()
+                if realization is None:
+                    break
+                plans.append(producer.latest_plan)
+                realizations.append(realization)
+                traffic_builder.append(producer.latest_plan, realization)
         producer_snapshot = producer.snapshot()
         physical_frame, physical_link_observation = (
             producer.first_formal_input()
@@ -328,6 +358,31 @@ def main(argv: list[str] | None = None) -> int:
         producer.close()
     plan_values = tuple(plans)
     realization_values = tuple(realizations)
+    def readiness(status, materials_seconds, tools=None):
+        elapsed = perf_counter()-total_started
+        value = {'format_version': 1, 'artifact_type': 'finite-generation-status',
+            'through': arguments.through, 'status': status,
+            'materials_ready_seconds': materials_seconds,
+            'tools_completion_seconds': elapsed if tools is not None else None,
+            'tools_wall_seconds': elapsed-materials_seconds if tools is not None else None,
+            'producer': producer_snapshot, 'tools': tools,
+            'configuration': mini_satellite_internet_configuration(),
+            'python_executable': sys.executable}
+        path = arguments.output / 'generation-status.json'
+        staging = path.with_suffix('.tmp')
+        staging.write_text(json.dumps(value, indent=2, sort_keys=True, default=str)+'\n', encoding='utf-8')
+        staging.replace(path)
+    if arguments.through != 'compiler':
+        _write_optional_observations(simulator)
+        materials_seconds = perf_counter()-total_started
+        readiness('MATERIALS_READY', materials_seconds)
+        print(f'Materials ready after {materials_seconds:.3f}s: {arguments.output}', flush=True)
+        results, failures = _write_inspection_tools(arguments.output, simulator=simulator,
+            plans=plan_values, realizations=realization_values, physical_frame=physical_frame,
+            physical_link_observation=physical_link_observation, through=arguments.through)
+        readiness('TOOLS_FAILED' if failures else 'TOOLS_COMPLETE', materials_seconds, results)
+        print(f'{arguments.through}: {producer_snapshot}')
+        return 0
     if not plan_values or len(plan_values) != len(realization_values):
         raise RuntimeError("Mini producer did not emit a complete Plan lineage")
 
@@ -338,7 +393,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     traffic_output = arguments.output / "inspection/traffic"
     write_traffic_probe_plan(
-        TrafficProbePlanBuilder().build(plan_values, realization_values),
+        traffic_builder.finalize(),
         traffic_output / "probe-plan.json",
     )
     timeline = simulator.get_timeline()
@@ -379,13 +434,12 @@ def main(argv: list[str] | None = None) -> int:
         ),
         traffic_workload_path="inputs/traffic-workload.json",
     )
-    observation_failure = None
+    observation_failure = _write_optional_observations(simulator)
+    materials_seconds = perf_counter()-total_started
+    readiness('MATERIALS_READY', materials_seconds)
+    print(f'Materials ready after {materials_seconds:.3f}s: {arguments.output}', flush=True)
     try:
-        simulator._write_execution_observations()
-    except Exception as error:
-        observation_failure = f"{type(error).__name__}: {error}"
-    try:
-        _, tool_failures = _write_inspection_tools(
+        tool_results, tool_failures = _write_inspection_tools(
             arguments.output,
             simulator=simulator,
             plans=plan_values,
@@ -399,6 +453,8 @@ def main(argv: list[str] | None = None) -> int:
         }
     if observation_failure is not None:
         tool_failures["observation-evidence"] = observation_failure
+    readiness("TOOLS_FAILED" if tool_failures else "TOOLS_COMPLETE", materials_seconds,
+              tool_results if not tool_failures else {"failures": tool_failures})
 
     print(f"runtime directory: {runtime_output}")
     print(

@@ -12,6 +12,7 @@ import pytest
 from examples.complete_static_emulator.emu import build_emulator
 from examples.complete_static_emulator.simu import (
     create_complete_static_simulator,
+    create_complete_static_planner,
     run_complete_static_chain,
 )
 from skyseed_v2.shared import NodeId
@@ -93,8 +94,11 @@ def _rewrite_stream(
 def complete_evidence(tmp_path_factory):
     root = tmp_path_factory.mktemp("planner-tool")
     simulator = create_complete_static_simulator(build_emulator())
+    # This focused lineage fixture deliberately crosses a batch boundary.
+    planner = create_complete_static_planner(simulator)
+    planner._frames_per_batch = 3
     plans, realizations, snapshot = run_complete_static_chain(
-        simulator, evidence_path=root / "history"
+        simulator, planner=planner, evidence_path=root / "history"
     )
     evidence = read_planner_history(root / "history/planning.jsonl.gz")
     return root, evidence, plans, realizations, snapshot
@@ -289,13 +293,17 @@ def test_writer_emits_json_html_inventory_and_deterministic_checksums(
     page = (tmp_path / "index.html").read_text()
     assert "PHYSICAL CANDIDATE" in page
     assert "SELECTED / ACQUIRING" in page
-    assert "RouteDemand from selected source" in page
+    assert "Stable Zone–GS pairs" in page
+    assert "Recorded demand identities at this time" in page
+    assert payload["pair_index"]
     assert 'data-stage="gs-validation"' not in page
     assert 'data-gs-step="allocation"' in page
     assert 'data-gs-step="validation"' in page
     assert "Advanced evidence / 高级证据" in page
-    assert "Advanced RouteDemand search" in page
-    assert "v.label.startsWith(source+' → ')" in page
+    assert "Include absent / withdrawn demands" in page
+    assert "v.label.startsWith(source+' → ')" not in page
+    assert "plannerRouteRelevant" in page
+    assert page.count("function showSpecial()") == 1
     assert 'globe.dataset.selectedRoute' in page
     assert 'map.dataset.selectedRoute' in page
     assert "Map-centered stage and boundary inspection" in page
@@ -461,3 +469,16 @@ def test_tool_sources_only_read_public_evidence() -> None:
     assert "compile_bpf(" not in combined
     reader = (PROJECT_ROOT / "tools/planner/reader.py").read_text()
     assert ".read_text(" not in reader
+
+
+def test_generated_planner_javascript_parses_without_opening_a_page(tmp_path, complete_evidence):
+    import os, re, shutil, subprocess
+    node = os.environ.get('SKYSEED_TEST_NODE') or shutil.which('node')
+    if not node:
+        pytest.skip('Node required for nonvisual syntax validation')
+    _, evidence, _, _, _ = complete_evidence
+    write_planner_tool(evidence, tmp_path)
+    page = (tmp_path/'index.html').read_text()
+    for script in re.findall(r'<script(?:\s[^>]*)?>(.*?)</script>', page, re.S):
+        result = subprocess.run([node, '-e', 'new (require("node:vm").Script)(require("node:fs").readFileSync(0,"utf8"))'], input=script, text=True, capture_output=True)
+        assert result.returncode == 0, result.stderr

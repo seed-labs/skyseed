@@ -1,0 +1,8 @@
+# One shared AS, GroundStation inventory and Zone layout; no cross-Shell ISLs.
+shells: [S1, S2, S3, S4, S5]
+sampling_interval_seconds: 5
+total_duration_seconds: 600
+delivered_coverage_seconds: 300
+# Engineering choices, qualified with a measured loading margin; not an optimum.
+batch_lead_fraction: 0.75
+batch_capacity_factor: 2

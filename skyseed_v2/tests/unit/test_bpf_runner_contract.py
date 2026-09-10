@@ -144,6 +144,7 @@ def test_public_runner_surface_and_constructor_validation_remain_closed(
     ]
     assert {name for name in vars(BpfRunner) if not name.startswith("_")} == {
         "prepare",
+        "append_batch",
         "activate_next",
         "run",
         "cleanup",
@@ -482,7 +483,7 @@ def test_prepare_activates_boundary_zero_and_is_one_shot(monkeypatch):
     assert len(kernel.links) == 2
     assert all(action == "prewrite_generation" for action, _ in kernel.actions[1:-1])
     assert kernel.actions[-1][0] == "activate_boundary"
-    assert not hasattr(runner, "_maintenance_thread")
+    assert runner._maintenance_thread is None
     assert not hasattr(runner, "_ready")
     with pytest.raises(RuntimeError, match="only once"):
         runner.prepare()

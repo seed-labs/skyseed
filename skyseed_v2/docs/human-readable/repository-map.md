@@ -98,6 +98,7 @@ flowchart LR
     EMU --> SEED
     ENTITIES --> SHARED
     EXPERIMENT --> BPF
+    EXPERIMENT --> COMPOSE
     EXPERIMENT --> PLANNING
     EXPERIMENT --> SHARED
     EXPERIMENT --> SIM
@@ -134,3 +135,11 @@ Maintained output roots are `inspection/physical-world`, `zone`,
 
 No package directory or output root is retained solely to forward an obsolete
 contract.
+
+The standalone `examples/starlink_multi_shell_satellite_internet` composes the
+existing S1–S5 definitions and shared policy/packaging support; it adds no
+production package. `backend/bpf/_runner_artifact.py` carries sealed delivery
+metadata, while the existing Runner and private helper own loading/prewriting/
+reclaim and Main activation. The dependency arrows above remain unchanged.
+The lightweight retained-output entry links original Tool portals, without an
+additional application or payload owner.

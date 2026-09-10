@@ -97,6 +97,20 @@ def ground_station_input(
     )
 
 
+def test_public_projection_isolates_input_and_owned_path_retains_frames(physical_world):
+    from copy import deepcopy
+    from tools.physical_world.reader import read_physical_world
+    from tools.physical_world.projection import project_physical_world_data, _project_owned_snapshot
+    read = read_physical_world(physical_world)
+    before = deepcopy(read.snapshot)
+    projected = project_physical_world_data(read)
+    projected["counts"]["satellites"] = -1
+    assert read.snapshot == before
+    frames = read.snapshot["physical_frames"]
+    owned = _project_owned_snapshot(read.snapshot)
+    assert owned["_physical_frames"] is frames
+
+
 def test_collector_counts_public_tuples_and_checks_owner_facade_identity(
     physical_world,
 ) -> None:
@@ -180,6 +194,7 @@ def test_orbit_ring_uses_only_public_static_plane_parameters(physical_world) -> 
         "altitude_km",
         "inclination_deg",
         "right_ascension_deg",
+        "epoch_utc",
         "satellite_count",
         "satellite_ids",
         "satellites",
@@ -193,6 +208,7 @@ def test_orbit_ring_uses_only_public_static_plane_parameters(physical_world) -> 
             "node_id": satellite.node_id.value,
             "satellite_id": satellite.satellite_id,
             "orbit_index": satellite.orbit_index,
+            "mean_anomaly_deg": satellite.mean_anomaly_deg,
             "max_simultaneous_ground_station_accesses": (
                 satellite.max_simultaneous_ground_station_accesses
             ),
@@ -215,7 +231,7 @@ def test_orbit_ring_uses_only_public_static_plane_parameters(physical_world) -> 
         ]
         for satellite in ring["satellites"]
     } == {4}
-    assert "mean_anomaly_deg" not in json.dumps(data)
+    assert ring["epoch_utc"] == orbit.epoch_utc.isoformat()
     assert data["temporal_inventory"]["formal_frames"] == 0
 
 
@@ -316,7 +332,7 @@ def test_physical_world_renderer_writes_embedded_offline_artifacts(
     assert "globe.onpointermove" in html
     assert "Concrete model descriptor" in html
     assert "feasible input facts only" in html
-    assert "mean_anomaly_deg" not in html
+    assert "mean_anomaly_deg" in html
     assert "http://" not in html
     assert "https://" not in html
     assert "fetch(" not in html

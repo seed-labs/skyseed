@@ -148,9 +148,18 @@ because they are versioned with this record.
 
 The archive is historical evidence, **not a runnable relocated output**. Large
 Runner binaries, Docker images, packet telemetry and rendered tool payloads are
-not included; their original local outputs remain untouched. Full output is not
-claimed to be backed up by this commit. Old source snapshots cannot be recovered
+not included; the archive-creation closeout left their original local outputs
+untouched. Full output was not claimed to be backed up by that commit. Old source snapshots cannot be recovered
 from hashes alone. The commit introducing this record preserves the final code.
+
+The authorized 2026-09-08 deployment/qualification closeout later removed
+rebuildable historical Docker contexts/images, duplicate binaries and rendered
+Tool payloads. It retained necessary source/input/history/raw-runtime evidence
+and original checksum records as explicitly non-runnable historical subsets.
+The archive and all 75 indexed members were reverified unchanged. Current full
+baselines and the exact cleanup scope are linked from
+[the maintained performance view](../human-readable/qualification-performance.md).
+This retention update does not change any historical measurement below.
 
 Closeout used `skyseed_dev`, Python 3.12.13 at
 `/home/lionheart/miniconda3/envs/skyseed_dev/bin/python` (pip 26.1.2).
@@ -171,3 +180,10 @@ separately from non-privileged test results. The full documentation gate passed
 (84 authoritative documents, 63 Mermaid diagrams); import dependency and
 whitespace checks passed. All 75 archived members matched the indexed hashes
 and original files. These checks do not replace the original live qualification.
+
+
+The accepted 2026-09-10 closeout removed superseded external raw experiment subsets
+and portals after retaining compact useful comparisons in normal Example output.
+This versioned archive, its evidence index and all 75 archived members remain
+unchanged. Historical statements above describe their recorded verification dates;
+missing external original files are not claimed as currently retained raw evidence.

@@ -36,7 +36,28 @@ from skyseed_v2.simulator.planning import create_plan
 @pytest.fixture(scope="module")
 def complete_chain():
     simulator = create_complete_static_simulator(build_emulator())
-    plans, realizations, snapshot = run_complete_static_chain(simulator)
+    generated, _, snapshot = run_complete_static_chain(simulator)
+    transitions = tuple(t for p in generated for t in p.transitions)
+    plans, realizations, state = [], [], None
+    # Force a predecessor boundary in this Compiler fixture, independently of
+    # the Example's production batch size.
+    for start in range(0, len(transitions), 3):
+        batch = transitions[start:start+3]
+        timestamps = {transition.timestamp for transition in batch}
+        plan = create_plan(state, previous_plan_id=None if not plans else plans[-1].plan_id,
+            physical_world_fingerprint=simulator.get_physical_world().semantic_fingerprint(),
+            observation_interval=simulator.get_timeline().observation_interval,
+            start_timestamp=transitions[start].timestamp, transitions=batch,
+            semantic_event_precedences=tuple(
+                precedence for published in generated
+                for precedence in published.semantic_event_precedences
+                if precedence.predecessor.timestamp in timestamps
+                and precedence.successor.timestamp in timestamps))
+        realization = compile_bpf(plan, simulator.get_physical_world(), None if not realizations else realizations[-1])
+        plans.append(plan)
+        realizations.append(realization)
+        state = realization.output_planned_state
+    plans, realizations = tuple(plans), tuple(realizations)
     return simulator, plans, realizations, snapshot
 
 
@@ -70,7 +91,7 @@ def test_observed_compile_records_real_stage_and_total_durations(
     assert actual == realizations[0]
     records = observer.snapshot()["records"]
     assert tuple(value["stage"] for value in records) == (
-        "plan-lineage-and-replay",
+        "plan-lineage",
         "event-and-world-indexing",
         "transition-lowering",
         "constraint-folding-and-materialization",
@@ -79,9 +100,7 @@ def test_observed_compile_records_real_stage_and_total_durations(
         "compile-total",
     )
     assert all(value["duration_seconds"] > 0 for value in records)
-    assert records[0]["work"]["replayed_transitions"] == len(
-        plans[0].transitions
-    )
+    assert records[0]["work"]["replayed_transitions"] == 0
     assert records[-1]["duration_role"] == "rollup"
     assert all(value["scope"]["compile_index"] == 7 for value in records)
 

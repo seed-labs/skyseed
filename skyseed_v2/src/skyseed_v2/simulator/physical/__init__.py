@@ -8,6 +8,7 @@ from .physical_link import (
     PhysicalLinkModel,
     PhysicalLinkObservation,
     PhysicalLinkRequest,
+    PhysicalContactWindow,
     PhysicalLinkWorkCounts,
     ZoneServiceCandidate,
 )
@@ -42,6 +43,7 @@ __all__ = [
     "PhysicalLinkModel",
     "PhysicalLinkObservation",
     "PhysicalLinkRequest",
+    "PhysicalContactWindow",
     "PhysicalLinkWorkCounts",
     "PositionModel",
     "Satellite",

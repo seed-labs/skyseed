@@ -14,10 +14,16 @@ from skyseed_v2.shared._domain_history import (
     _read_domain_history_manifest,
     _timedelta_from_data,
 )
-from skyseed_v2.simulator import PublishedPlanningEvidence, apply_plan
+from skyseed_v2.simulator import (
+    PublishedPlanningEvidence, Plan, PlanningFrontiers, apply_plan,
+    plan_transition_fingerprint,
+)
 from skyseed_v2.simulator.planning import (
     published_planning_evidence_from_data,
+    plan_from_data,
 )
+
+from skyseed_v2.simulator.planning.evidence import _frontiers_from_data
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,8 +49,60 @@ def iter_planner_history(path: Path) -> Iterator[PublishedPlanningEvidence]:
     return _iter_planner_history(manifest)
 
 
+def _iter_projection_planner_history(path):
+    # The projection performs the required replay and checks both fingerprints;
+    # this path validates stream integrity/lineage without replaying it twice.
+    manifest = _read_domain_history_manifest(Path(path), minimum_through='planner')
+    return _iter_planner_history(manifest, replay=False)
+
+
+@dataclass(frozen=True, slots=True)
+class _PlanHistoryRead:
+    """Semantic portion of a sealed publication for the Traffic consumer."""
+
+    plan: Plan
+    transition_fingerprints: tuple[str, ...]
+    frontiers: PlanningFrontiers
+
+
+def _read_plan_history_entry(data):
+    if not isinstance(data, dict) or set(data) != {
+        "schema", "plan", "transition_fingerprints", "frames", "frontiers"
+    }:
+        raise ValueError("invalid published planning evidence envelope")
+    if data["schema"] not in {"skyseed-v2-published-planning-evidence-v2",
+                               "skyseed-v2-published-planning-evidence-v3"}:
+        raise ValueError("unsupported PublishedPlanningEvidence schema")
+    plan = plan_from_data(data["plan"])
+    fingerprints = tuple(data["transition_fingerprints"])
+    if fingerprints != tuple(plan_transition_fingerprint(value) for value in plan.transitions):
+        raise ValueError("transition_fingerprints must match exact Plan transitions")
+    frames = data["frames"]
+    if not isinstance(frames, list) or any(not isinstance(frame, dict) for frame in frames):
+        raise ValueError("invalid planning frame evidence")
+    if tuple(frame.get("timestamp") for frame in frames) != tuple(
+        value.timestamp.isoformat() for value in plan.transitions
+    ):
+        raise ValueError("frame timestamps must match Plan transitions")
+    if data["schema"].endswith("-v3") and any("ground_station_preparations" not in frame for frame in frames):
+        raise ValueError("v3 evidence requires GS preparation records")
+    frontiers = _frontiers_from_data(data["frontiers"])
+    if frontiers.publication != plan.end_timestamp:
+        raise ValueError("evidence publication frontier must equal Plan end")
+    return _PlanHistoryRead(plan, fingerprints, frontiers)
+
+
+def _iter_traffic_planner_history(path):
+    # Integrity, lineage, full Plan validation and terminal coverage are shared.
+    # Traffic replays the semantic Plan once; Model inspection remains in the
+    # authoritative sealed stream and is reconstructed by the Planner Tool.
+    manifest = _read_domain_history_manifest(Path(path), minimum_through="compiler")
+    return _iter_planner_history(manifest, replay=False, plan_only=True)
+
+
 def _iter_planner_history(
     manifest: _DomainHistoryManifest,
+    *, replay: bool = True, plan_only: bool = False,
 ) -> Iterator[PublishedPlanningEvidence]:
     """Validate the sealed streams together while yielding one Plan at a time."""
 
@@ -98,7 +156,8 @@ def _iter_planner_history(
         data = row["data"]
         if not isinstance(data, dict):
             raise TypeError("Planner evidence data must be an object")
-        evidence = published_planning_evidence_from_data(data)
+        evidence = (_read_plan_history_entry(data) if plan_only
+                    else published_planning_evidence_from_data(data))
         plan = evidence.plan
         if plan.physical_world_fingerprint != world_fingerprint:
             raise ValueError(
@@ -125,11 +184,12 @@ def _iter_planner_history(
             if plan.start_timestamp <= previous.plan.end_timestamp:
                 raise ValueError("Planner evidence timestamp coverage overlaps")
 
-        state = apply_plan(
-            state,
-            plan,
-            physical_world_fingerprint=world_fingerprint,
-        )
+        if replay:
+            state = apply_plan(
+                state,
+                plan,
+                physical_world_fingerprint=world_fingerprint,
+            )
         for transition in plan.transitions:
             if transition_count >= counts["expected_formal_frames"]:
                 raise ValueError(

@@ -36,13 +36,13 @@ Reference implementations are:
 
 - `RetainFirstInterSatelliteConnectionPlanningModel` with
   `RetainFirstInterSatelliteConfiguration`;
-- `QualityFirstGroundStationAccessPlanningModel`;
+- `CoverageFirstGroundStationAccessPlanningModel`;
 - `HighestElevationZoneServicePlanningModel`;
 - `AccumulatedDeadbandParameterPlanningModel` with
   `ParameterKindConfiguration`;
 - `GatewayHopCountRoutePlanningModel`;
 - `DefaultCoordinationPolicy`;
-- `TimeHorizonPlanningWindowPolicy`.
+- `FrameBatchPlanningWindowPolicy`.
 
 Replacing only the ISL Model does not change Position projection, physical-link
 geometry, GroundStation or Zone observations, the remaining planning roles,
@@ -53,10 +53,11 @@ Compiler, or Runner.
 PhysicalWorld capability expresses the maximum simultaneous ISLs. The ISL
 Model owns candidate scope, desired relationship mix, deterministic selection,
 and acquisition lifecycle. Canonical S3 uses maximum 4, desired 2 same-plane
-plus 2 cross-plane, K3 cross-plane candidate scope, and a 20-second acquisition
-reference.
+plus 2 cross-plane (historical S3 K3; current Starlink examples K1), and a 5-second preparation reference with 180-second future useful service.
 
-GroundStation access has no acquisition lifecycle. Zone service is planned
+GroundStation access has 5-second preparation and 60-second future-service
+admission. Valid incumbent and pending assignments receive continuity priority
+after station coverage, distinct satellite coverage and connection count. Zone service is planned
 after operational accesses. Route planning receives only operational
 Connections and explicit demands.
 
@@ -78,3 +79,35 @@ The built-in Route Model reuses a bounded eight-worker compute pool. It does not
 claim Python threads provide CPU parallelism. It skips recomputation for
 position-only and parameter-only changes, and `shutdown(wait=...)` is required
 on success and failure.
+
+## Physical prediction and derived data
+
+`GeometricPhysicalLinkModel.predict_contacts(world, request, *, start_timestamp,
+end_timestamp, observation_interval, inter_satellite_tail, ground_station_tail)`
+prepares a compact physical contact index and returns work counts. The existing
+physical Model owns prediction; Producer supplies bounds derived from Planner
+Model dependencies. Later candidate observations carry immutable
+`PhysicalContactWindow` values. An arbitrary PositionModel without a proved
+continuous-motion bound supplies unknown future feasibility; observed samples
+alone are not proof of contact continuity.
+
+Circular elements and fixed station coordinates are reused inside the Position
+Model. Batched exact geometry shares geometry-owned elevation arithmetic; safe
+range/elevation/ellipsoid bounds prune expensive tests. Prediction builds no
+future rich candidate graph, Planner state or routing work. Zone IDs, satellite
+membership, unchanged demand tuples and unchanged routing graph/indexes are
+reused in their existing Models. Route workers receive compact integer adjacency
+and request tuples, preserve deterministic minimum-hop semantics, and use spawn
+to avoid inheriting active serialization threads. The bounded worker limit is
+unchanged; small jobs still execute locally.
+
+## Current candidate query configuration
+
+`RetainFirstInterSatelliteConfiguration.same_plane_neighbor_span` selects cyclic
+mean-anomaly neighbors (`None` enumerates the full same-plane graph).
+`cross_plane_neighbor_count` bounds current nearest eligible neighbors in each
+queried plane; `maximum_cross_plane_separation` remains the cyclic plane scope.
+The example uses span 1, count 4, K1. GS `initial_candidate_count=32` expands under
+competition; `default_ground_station_limit=4` is fallback device capability and
+`ground_station_policy_limit=None` leaves explicit 2/4/8 capabilities effective.
+These fields do not change the physical distance/elevation envelope.

@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from skyseed_v2.simulator import PhysicalLinkObservation, PhysicalWorld
+from skyseed_v2.shared._durable_evidence import _OrderedEvidenceWriter
 
 
 _FORMAT_VERSION = 1
@@ -28,6 +29,8 @@ _WORK_FIELDS = (
     "zone_service_pairs_requested",
     "zone_service_pairs_evaluated",
     "zone_service_pairs_feasible",
+    "ground_station_pairs_not_returned",
+    "inter_satellite_pairs_not_returned",
 )
 
 
@@ -106,6 +109,7 @@ class _PhysicalLinkInspectionWriter:
             "zone_service": 0,
         }
         self._finalized = False
+        self._jobs = _OrderedEvidenceWriter(maximum_pending=2)
         self._write(
             {
                 "record_type": "physical_link_inspection_header",
@@ -147,6 +151,11 @@ class _PhysicalLinkInspectionWriter:
         return self._path
 
     def record(self, observation: PhysicalLinkObservation) -> None:
+        if self._finalized:
+            raise RuntimeError('inspection-evidence writer is finalized')
+        self._jobs.submit(self._record, observation)
+
+    def _record(self, observation: PhysicalLinkObservation) -> None:
         if self._finalized:
             raise RuntimeError("inspection-evidence writer is finalized")
         if not isinstance(observation, PhysicalLinkObservation):
@@ -204,6 +213,7 @@ class _PhysicalLinkInspectionWriter:
         self._candidate_totals["zone_service"] += len(zone_service)
 
     def finalize(self) -> Path:
+        self._jobs.finish()
         if self._finalized:
             return self._manifest_path
         self._stream.flush()
@@ -243,6 +253,14 @@ class _PhysicalLinkInspectionWriter:
         return self._manifest_path
 
     def close(self) -> None:
+        try:
+            self._jobs.finish()
+        except Exception:
+            pass  # record/finalize reports the optional Tool failure; close only releases handles.
+        finally:
+            self._close_stream()
+
+    def _close_stream(self) -> None:
         if not self._finalized:
             self._stream.close()
             if not self._raw.closed:
@@ -448,6 +466,8 @@ def _validate_record(
             ):
                 raise ValueError("physical-link Zone index is invalid")
     work = value["work_counts"]
+    if isinstance(work, dict):
+        work = {"ground_station_pairs_not_returned": 0, "inter_satellite_pairs_not_returned": 0, **work}
     if not isinstance(work, dict) or set(work) != set(_WORK_FIELDS):
         raise ValueError("physical-link inspection work counts are malformed")
     if len(value["inter_satellite"]) != work["inter_satellite_pairs_feasible"]:

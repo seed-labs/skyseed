@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 from collections import deque
+from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from hashlib import sha256
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
-from threading import Condition, RLock
+from threading import Condition, RLock, Thread
 from time import monotonic, monotonic_ns, sleep, time
 from typing import Any, Mapping, Sequence
 
@@ -160,6 +161,37 @@ class _PrivilegedHelper:
         self._started = False
         self._process: subprocess.Popen[str] | None = None
         self._command_lock = RLock()
+        self._channel_condition = Condition(RLock())
+        self._channel_busy = False
+        self._main_waiters = 0
+        self._main_deadline = None
+
+    def _set_main_deadline(self, deadline):
+        with self._channel_condition:
+            self._main_deadline = deadline
+            self._channel_condition.notify_all()
+
+    @contextmanager
+    def _channel(self, action):
+        main = action == "activate_boundary"
+        background = action in {"prewrite_generation", "reclaim_generations"}
+        with self._channel_condition:
+            self._main_waiters += int(main)
+            try:
+                while self._channel_busy or (background and (
+                    self._main_waiters or (self._main_deadline is not None
+                    and monotonic() >= self._main_deadline - 0.02)
+                )):
+                    self._channel_condition.wait(0.01)
+                self._channel_busy = True
+            finally:
+                self._main_waiters -= int(main)
+        try:
+            yield
+        finally:
+            with self._channel_condition:
+                self._channel_busy = False
+                self._channel_condition.notify_all()
 
     def start(self) -> None:
         if self._started:
@@ -254,7 +286,7 @@ class _PrivilegedHelper:
             return values
 
         try:
-            with self._command_lock:
+            with self._channel(action), self._command_lock:
                 process = self._process
                 if process is None or process.poll() is not None:
                     raise RuntimeError("Runner privileged execution channel is unavailable")
@@ -365,7 +397,7 @@ class _PrivilegedHelper:
         self._started = False
 
 class BpfRunner:
-    """Own one-shot finite Preparation, formal Main, and final cleanup.
+    """Own initial Preparation, finite-batch Maintenance, Main and cleanup.
 
     Layer: Backend Runner.
     Public because generated execution needs the explicit lifecycle owner.
@@ -377,6 +409,8 @@ class BpfRunner:
         *,
         compose_project_name: str,
         runtime_artifact: Path,
+        batch_lead_fraction: float = 0.75,
+        batch_capacity_factor: int = 2,
     ) -> None:
         if not isinstance(compose_project_name, str):
             raise TypeError("compose_project_name must be a string")
@@ -385,6 +419,10 @@ class BpfRunner:
             raise ValueError("compose_project_name must be a non-empty single line")
         if not isinstance(runtime_artifact, Path):
             raise TypeError("runtime_artifact must be a pathlib.Path")
+        if type(batch_lead_fraction) not in (int, float) or not 0 < batch_lead_fraction <= 1:
+            raise ValueError("batch_lead_fraction must be in (0, 1]")
+        if type(batch_capacity_factor) is not int or not 1 <= batch_capacity_factor <= 16:
+            raise ValueError("batch_capacity_factor must be an integer from 1 through 16")
         self._compose_project_name = project_name
         self._artifact_path = runtime_artifact.resolve()
         self._artifact = None
@@ -415,6 +453,73 @@ class BpfRunner:
         self._main_in_flight = False
         self._nominal_origin: datetime | None = None
         self._wall_origin: float | None = None
+        self._batch_lead_fraction = float(batch_lead_fraction)
+        self._batch_capacity_factor = batch_capacity_factor
+        self._prepared_base = 0
+        self._batch_index = 0
+        self._batch_final = True
+        self._batch_interval = None
+        self._batch_end = None
+        self._pending_batches = deque()
+        self._delivery_tail = None
+        self._ready_batch = None
+        self._retired_plan_batches = deque()
+        self._pending_retirement = None
+        self._maintenance_thread = None
+        self._maintenance_stop = False
+        self._maintenance_error = None
+
+    @staticmethod
+    def _delivery_contract(path):
+        if path.is_symlink():
+            raise ValueError("batch manifest must not be a symlink")
+        raw = path.read_bytes()
+        value = json.loads(raw)
+        delivery = value.get("delivery")
+        if not isinstance(delivery, dict):
+            raise ValueError("batch append requires explicit sealed delivery metadata")
+        return {"path": path.resolve(), "manifest_sha256": sha256(raw).hexdigest(),
+                "delivery": delivery, "timeline": value["timeline"],
+                "world": sha256(json.dumps([value["physical_world"], value["zone_prefixes"]], sort_keys=True).encode()).hexdigest(),
+                "last_plan": value["lineage"][-1]["source_plan_id"],
+                "last_state": value["lineage"][-1]["output_state_fingerprint"],
+                "generation_count": value["runtime_capacity_demand"]["generation_count"]}
+
+    def append_batch(self, runtime_artifact: Path) -> None:
+        """Register one immutable next sealed batch; Maintenance loads its data.
+
+        Only one pending delivery is admitted. A later append is possible after
+        its predecessor has become current. A terminal batch closes delivery.
+        """
+        if not isinstance(runtime_artifact, Path):
+            raise TypeError("runtime_artifact must be a pathlib.Path")
+        candidate = self._delivery_contract(runtime_artifact)
+        with self._condition:
+            if self._state not in {"new", "prepared"} or self._pending_batches or self._ready_batch is not None:
+                raise RuntimeError("Runner accepts only one next delivery at a time")
+            previous = self._delivery_tail or self._delivery_contract(self._artifact_path)
+            before, after = previous["delivery"], candidate["delivery"]
+            step = before["observation_interval_seconds"]
+            previous_generation = ((before["prior_generation"] or 0)
+                                   + previous["generation_count"] - 1)
+            if (before["final"] or after["index"] != before["index"] + 1
+                or after["previous_manifest_sha256"] != previous["manifest_sha256"]
+                or candidate["world"] != previous["world"]
+                or after["observation_interval_seconds"] != step
+                or after["prior_end"] != previous["timeline"]["end"]
+                or after["prior_plan_id"] != previous["last_plan"]
+                or after["prior_state_fingerprint"] != previous["last_state"]
+                or after["prior_generation"] != previous_generation
+                or datetime.fromisoformat(candidate["timeline"]["start"])
+                != datetime.fromisoformat(previous["timeline"]["end"]) + timedelta(seconds=step)):
+                raise ValueError("batch is non-contiguous, incompatible, replaced, or has broken continuation identity")
+            self._pending_batches.append(candidate)
+            self._delivery_tail = candidate
+            self._condition.notify_all()
+        self._record("batch_appended", batch_index=after["index"],
+                     manifest_sha256=candidate["manifest_sha256"],
+                     timeline=candidate["timeline"], final=after["final"],
+                     binary_loading="scheduled-maintenance")
 
     def _enable_traffic_telemetry(self, directory: Path) -> None:
         if self._state != "new":
@@ -432,7 +537,7 @@ class BpfRunner:
         self._event_history = _NonBlockingEventHistory(path)
 
     def prepare(self) -> None:
-        """Prepare every finite plan and activate boundary 0 exactly once."""
+        """Prepare the first finite delivery and activate B0 exactly once."""
 
         if self._state != "new":
             raise RuntimeError("BpfRunner preparation may run only once")
@@ -448,6 +553,17 @@ class BpfRunner:
             artifact_started = monotonic_ns()
             self._artifact = _open_runner_artifact(self._artifact_path)
             self._artifact_snapshot = self._artifact.snapshot()
+            delivery = self._artifact_snapshot.get("delivery")
+            if delivery is not None:
+                if delivery["index"] != 0:
+                    raise ValueError("Runner session must begin with delivery zero")
+                self._batch_final = delivery["final"]
+                self._batch_interval = timedelta(seconds=delivery["observation_interval_seconds"])
+                self._batch_end = datetime.fromisoformat(self._artifact.timeline_end)
+                if self._pending_batches and self._pending_batches[0]["delivery"]["previous_manifest_sha256"] != self._artifact_snapshot["manifest_sha256"]:
+                    raise ValueError("initial batch changed after its successor was registered")
+                if self._delivery_tail is None:
+                    self._delivery_tail = self._delivery_contract(self._artifact_path)
             self._artifact_boundary_count = self._artifact.boundary_count
             self._artifact_end = self._artifact.timeline_end
             self._artifact_expected_node_count = self._artifact.physical_world_node_count
@@ -502,6 +618,8 @@ class BpfRunner:
                 bindings=bindings,
                 telemetry_enabled=self._traffic_telemetry_directory is not None,
                 worker_count=self._runtime_worker_count,
+                continuation_enabled=delivery is not None and not delivery["final"],
+                batch_capacity_factor=self._batch_capacity_factor,
             )
             self._bindings = bindings
             self._foundation_token = foundation_token
@@ -570,6 +688,8 @@ class BpfRunner:
                 raise RuntimeError("automatic and manual Runner modes are exclusive")
             if self._state != "prepared":
                 raise RuntimeError("manual activation requires a prepared Runner")
+            if not self._batch_final:
+                raise RuntimeError("continued delivery requires the automatic fixed-origin run")
             self._execution_mode = "manual"
         self._activate_prepared(ideal_activation=None, paced_not_before=None)
 
@@ -594,27 +714,182 @@ class BpfRunner:
                      wall_origin=wall_origin, activation_limit=activation_limit,
                      artifact_boundary_count=self._artifact_boundary_count)
         start_count = self._active_count
-        while self._active_count < len(self._prepared_plans):
-            if activation_limit is not None and self._active_count - start_count >= activation_limit:
-                break
-            plan = self._prepared_plans[self._active_count]
-            ideal = wall_origin + (plan.nominal_time - nominal_origin).total_seconds()
-            paced = ideal
-            remaining = paced - monotonic()
-            if remaining > 0:
-                sleep(remaining)
-            self._activate_prepared(ideal_activation=ideal, paced_not_before=paced)
-        self._record("automatic_run_end", active_frontier=self._iso(self._active_frontier),
-                     activation_limit=activation_limit,
-                     stopped_by_activation_limit=activation_limit is not None and self._active_count - start_count >= activation_limit)
+        if not self._batch_final:
+            self._maintenance_thread = Thread(target=self._maintain_batches, name="skyseed-runner-maintenance")
+            self._maintenance_thread.start()
+        try:
+            while True:
+                if activation_limit is not None and self._active_count - start_count >= activation_limit:
+                    break
+                index = self._active_count - self._prepared_base
+                seam = index == len(self._prepared_plans)
+                if seam and self._batch_final:
+                    break
+                timestamp = (self._batch_end + self._batch_interval if seam
+                             else self._prepared_plans[index].nominal_time)
+                ideal = wall_origin + (timestamp - nominal_origin).total_seconds()
+                self._helper._set_main_deadline(ideal)
+                remaining = ideal - monotonic()
+                if remaining > 0:
+                    sleep(remaining)
+                if self._maintenance_error is not None:
+                    raise RuntimeError("Runner Maintenance failed; session is incomplete") from self._maintenance_error
+                if seam:
+                    with self._condition:
+                        ready = self._ready_batch
+                        if ready is None or ready[2] > ideal:
+                            self._state = "failed"
+                            self._record("batch_exhausted", batch_index=self._batch_index + 1,
+                                         nominal_timestamp=timestamp.isoformat(),
+                                         deadline_monotonic_seconds=ideal, clock_shifted=False)
+                            raise RuntimeError("next sealed batch was not ready by its activation deadline")
+                        plans, contract, ready_at = ready
+                        self._pending_retirement = self._prepared_plans, self._artifact
+                        self._artifact = None
+                        self._prepared_plans = plans
+                        self._prepared_base = self._active_count
+                        self._batch_index = contract["delivery"]["index"]
+                        self._batch_final = contract["delivery"]["final"]
+                        self._batch_end = datetime.fromisoformat(contract["timeline"]["end"])
+                        self._ready_batch = None
+                        self._condition.notify_all()
+                    self._record("batch_activation_start", batch_index=self._batch_index,
+                                 boundary_timestamp=timestamp.isoformat(),
+                                 nominal_timestamp=timestamp.isoformat(), ready_monotonic_seconds=ready_at,
+                                 deadline_monotonic_seconds=ideal)
+                self._activate_prepared(ideal_activation=ideal, paced_not_before=ideal)
+                if self._pending_retirement is not None:
+                    with self._condition:
+                        self._retired_plan_batches.append(self._pending_retirement)
+                        self._pending_retirement = None
+                self._helper._set_main_deadline(None)
+                with self._condition:
+                    self._condition.notify_all()
+            self._record("automatic_run_end", active_frontier=self._iso(self._active_frontier),
+                         activation_limit=activation_limit,
+                         stopped_by_activation_limit=activation_limit is not None and self._active_count - start_count >= activation_limit)
+        except BaseException as error:
+            self._state = "failed"
+            self._record_failure("automatic-run", error, active_frontier=self._iso(self._active_frontier))
+            raise
+        finally:
+            self._stop_maintenance()
+
+    def _stop_maintenance(self):
+        with self._condition:
+            self._maintenance_stop = True
+            self._condition.notify_all()
+        if self._helper is not None:
+            self._helper._set_main_deadline(None)
+        if self._maintenance_thread is not None:
+            self._maintenance_thread.join()
+            self._maintenance_thread = None
+
+    def _maintenance_checkpoint(self, deadline=None):
+        if self._maintenance_stop:
+            raise RuntimeError("Runner Maintenance stopped")
+        if deadline is not None and monotonic() >= deadline:
+            raise RuntimeError("batch loading exceeded its fixed activation deadline")
+        sleep(0)
+
+    def _maintain_batches(self):
+        try:
+            while not self._maintenance_stop:
+                retired = None
+                with self._condition:
+                    if self._retired_plan_batches:
+                        retired = self._retired_plan_batches.popleft()
+                    candidate = self._pending_batches[0] if self._pending_batches and self._ready_batch is None else None
+                if retired is not None:
+                    retired_started = monotonic()
+                    old_plans, old_artifact = retired
+                    count = len(old_plans)
+                    if old_artifact is not None:
+                        old_artifact.close()
+                    del old_plans, old_artifact, retired
+                    self._record("batch_plan_reclaimed", before_batch_index=self._batch_index,
+                                 released_boundaries=count, historical_evidence_preserved=True,
+                                 duration_seconds=monotonic() - retired_started)
+                if candidate is not None:
+                    start = datetime.fromisoformat(candidate["timeline"]["start"])
+                    end = datetime.fromisoformat(candidate["timeline"]["end"])
+                    duration = (end - start).total_seconds() + (0 if candidate["delivery"]["final"] else self._batch_interval.total_seconds())
+                    duration = max(duration, self._batch_interval.total_seconds())
+                    deadline = self._wall_origin + (start - self._nominal_origin).total_seconds()
+                    scheduled = deadline - self._batch_lead_fraction * duration
+                    if monotonic() >= scheduled:
+                        self._load_batch(candidate, scheduled, deadline)
+                        continue
+                reclaim_started = monotonic()
+                result = self._runtime_realization.reclaim()
+                if result.get("work_units") or result.get("reader_wait"):
+                    self._record("generation_reclaim", **result, duration_seconds=monotonic() - reclaim_started)
+                if result.get("work_units"):
+                    self._maintenance_checkpoint()
+                    continue
+                with self._condition:
+                    if not self._maintenance_stop:
+                        self._condition.wait(0.05)
+        except BaseException as error:
+            if not self._maintenance_stop:
+                self._maintenance_error = error
+                self._record_failure("maintenance", error)
+                with self._condition:
+                    self._condition.notify_all()
+
+    def _load_batch(self, contract, scheduled, deadline):
+        started = monotonic()
+        index = contract["delivery"]["index"]
+        self._record("batch_load_start", batch_index=index,
+                     boundary_timestamp=contract["timeline"]["start"],
+                     scheduled_monotonic_seconds=scheduled, deadline_monotonic_seconds=deadline,
+                     lead_fraction=self._batch_lead_fraction)
+        if contract["timeline"]["boundary_count"] > self._runtime_realization._batch_capacity_basis["boundary_count"] * self._batch_capacity_factor:
+            raise RuntimeError("batch exceeds resident boundary admission before decoding")
+        if sha256(contract["path"].read_bytes()).hexdigest() != contract["manifest_sha256"]:
+            raise ValueError("registered batch manifest was replaced")
+        artifact = _open_runner_artifact(contract["path"])
+        try:
+            if artifact._snapshot["manifest_sha256"] != contract["manifest_sha256"]:
+                raise ValueError("registered batch manifest was replaced")
+            loaded = monotonic()
+            self._runtime_realization._admit_batch(artifact.runtime_capacity_demand)
+            boundaries = []
+            for boundary in artifact.boundaries():
+                self._maintenance_checkpoint(deadline)
+                boundaries.append(boundary)
+            decoded = monotonic()
+            plans = self._runtime_realization.prepare_all(
+                boundaries, logical_ports=artifact.logical_ports,
+                work_checkpoint=lambda: self._maintenance_checkpoint(deadline))
+            constructed = monotonic()
+            self._maintenance_checkpoint(deadline)
+            with self._condition:
+                self._pending_batches.popleft()
+                self._artifact_boundary_count += len(plans)
+                self._artifact_end = artifact.timeline_end
+                self._ready_batch = plans, contract, constructed
+                self._condition.notify_all()
+            self._record("batch_ready", batch_index=index, boundary_count=len(plans),
+                         boundary_timestamp=contract["timeline"]["start"],
+                         ready_monotonic_seconds=constructed, deadline_monotonic_seconds=deadline,
+                         readiness_margin_seconds=deadline - constructed,
+                         load_seconds=loaded - started, decode_seconds=decoded - loaded,
+                         construction_prewrite_seconds=constructed - decoded,
+                         total_seconds=constructed - started,
+                         phases=self._runtime_realization._preparation_timings,
+                         resident_capacity=self._runtime_realization.working_set_counts(),
+                         manifest_sha256=contract["manifest_sha256"])
+        finally:
+            artifact.close()
 
     def _activate_prepared(self, *, ideal_activation, paced_not_before, preparation=False) -> None:
         with self._condition:
             if self._state != "prepared" or self._main_in_flight:
                 raise RuntimeError("BpfRunner is not available for activation")
-            if self._active_count >= len(self._prepared_plans):
+            if self._active_count - self._prepared_base >= len(self._prepared_plans):
                 raise RuntimeError("BpfRunner finite experiment has no next boundary")
-            plan = self._prepared_plans[self._active_count]
+            plan = self._prepared_plans[self._active_count - self._prepared_base]
             self._main_in_flight = True
         started = monotonic()
         timestamp = plan.nominal_time.isoformat()
@@ -698,6 +973,7 @@ class BpfRunner:
             return
         started = monotonic()
         phases = {}
+        self._stop_maintenance()
         with self._condition:
             if self._main_in_flight:
                 raise RuntimeError("Runner cleanup requires the current Main operation to finish")
@@ -743,6 +1019,13 @@ class BpfRunner:
             artifact_started = monotonic_ns()
             self._artifact.close()
             phases["artifact_handle_close_seconds"] = (monotonic_ns() - artifact_started) / 1e9
+        if self._pending_retirement is not None:
+            self._retired_plan_batches.append(self._pending_retirement)
+            self._pending_retirement = None
+        while self._retired_plan_batches:
+            _, artifact = self._retired_plan_batches.popleft()
+            if artifact is not None:
+                artifact.close()
         self._state = "cleaned"
         self._record(
             "cleanup_end",
@@ -765,6 +1048,13 @@ class BpfRunner:
             execution_mode = self._execution_mode
             active_count = self._active_count
             active_frontier = self._active_frontier
+            delivery = {"current_batch_index": self._batch_index,
+                        "current_batch_final": self._batch_final,
+                        "next_batch_ready": self._ready_batch is not None,
+                        "pending_batch_count": len(self._pending_batches),
+                        "lead_fraction": self._batch_lead_fraction,
+                        "capacity_factor": self._batch_capacity_factor,
+                        "maintenance_failed": self._maintenance_error is not None}
         with self._event_lock:
             events = tuple(self._events)
             event_count = self._event_count
@@ -785,6 +1075,7 @@ class BpfRunner:
             "runner": {
                 "lifecycle_state": lifecycle_state,
                 "execution_mode": execution_mode,
+                "delivery": delivery,
                 "execution_contract": "sealed-precomputed-only",
                 "cleanup_finalization": getattr(self, "_cleanup_finalization", None),
                 "frontiers": {

@@ -57,14 +57,39 @@ classDiagram
     class CircularOrbitPositionModel {
         <<reference Position Model>>
         +compute_positions()
+        +semantic_fingerprint_material()
     }
     class GeometricPhysicalLinkModel {
         <<reference physical-link Model>>
         +compute_observation()
+        +predict_contacts()
     }
 ```
 
 | Diagram class | Public contract | Required public members |
 |---|---|---|
-| `CircularOrbitPositionModel` | `skyseed_v2.simulator.models.CircularOrbitPositionModel` | `compute_positions()` |
-| `GeometricPhysicalLinkModel` | `skyseed_v2.simulator.models.GeometricPhysicalLinkModel` | `compute_observation()` |
+| `CircularOrbitPositionModel` | `skyseed_v2.simulator.models.CircularOrbitPositionModel` | `compute_positions()`, `semantic_fingerprint_material()` |
+| `GeometricPhysicalLinkModel` | `skyseed_v2.simulator.models.GeometricPhysicalLinkModel` | `compute_observation()`, `predict_contacts()` |
+
+## Finite prediction and reuse
+
+`GeometricPhysicalLinkModel.predict_contacts(...)` receives finite bounds and
+per-kind admission tails from Producer and prepares physical proofs. Circular
+all-phase separation/LOS bounds identify stable ISLs; conservative motion bounds
+certify other complete sample cells. Unproved cells stay unknown. Other Position
+Models need their own physical proof; sampled points alone do not imply future
+continuity. No future Planner, routing or Compiler is invoked for prediction.
+
+`_contact_prediction.py` stores compact contact intervals and all-future proofs;
+`_batched_geometry.py` uses bounded 720-satellite surface tiles and shared exact
+geometry after safe distance pruning. Only current feasible observations become
+rich candidates. The geometric producer freezes those facts from already
+validated identities and array results; public value constructors still validate
+caller inputs. Surface identities are sorted once, and the request already
+orders unique ISL pairs. The tile size reduces Python/native handoffs in the
+measured threaded pipeline; it is a bounded engineering choice, not a universal
+optimum. Static circular elements, fixed station coordinates, Zone
+coordinates and local-up vectors are reused. `semantic_fingerprint_material()`
+keeps derived Position caches out of world identity. The scalar restricted-query
+path remains an exhaustive reference for equivalent geometry, not an alternate
+generation path or policy.

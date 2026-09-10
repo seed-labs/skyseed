@@ -32,6 +32,12 @@ never a global candidate graph and never selected or operational labels. Exact
 single-frame position and candidate detail is part of this Tool; there is no
 separate PhysicalFrame inspection surface.
 
+Typed Shell checkboxes support multi-select, select-all and solo viewing, with
+stable Shell colors. Shared GroundStations and Zones have independent visibility
+switches. All filters keep one world and time cursor, preserve exact ECEF/altitude,
+and show visible/global counts. A hidden focused entity or relationship is
+explicitly marked; changing visibility neither reloads history nor runs a Model.
+
 Model provenance shows concrete type/config descriptors supplied from the same
 maintained assembly values that construct the Models. Configuration uses public materialized values only;
 unexposed implementation parameters are reported as unavailable rather than
@@ -42,3 +48,10 @@ Tests: `tests/tools/test_physical_world_tool.py` and
 
 Contracts: `docs/codex-reference/inspection-tools.md` and
 `docs/codex-reference/physical-world-zone-contracts.md`.
+
+The shared Shell controls include a compact owner-qualified Shell → Orbit
+selector, All orbits and Reset. Orbit membership comes from recorded AS/Shell/
+orbit fields; display names are not parsed. Multiple-Shell and shared GS/Zone
+controls remain independent. Filtering changes visibility only and reports hidden
+focused endpoints. Compiler can lazily embed this same view as physical context;
+its parent boundary message moves the existing cursor without recomputing facts.

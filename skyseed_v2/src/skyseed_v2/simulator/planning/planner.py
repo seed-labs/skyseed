@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from hashlib import sha256
 from time import perf_counter
@@ -41,7 +41,7 @@ from .models import (
     PlanningWindowPolicy,
     RoutePlanningModel,
     RoutePlanningResult,
-    TimeHorizonPlanningWindowPolicy,
+    FrameBatchPlanningWindowPolicy,
     ZoneServicePlanningModel,
     ZoneServicePlanningResult,
 )
@@ -69,7 +69,6 @@ from .values import (
     ZoneRouteDemandTarget,
     ZoneServiceAssignment,
     ZoneServiceTransition,
-    apply_plan_transition,
     _create_plan_with_output_state,
     plan_transition_fingerprint,
     planned_operational_state_fingerprint,
@@ -92,8 +91,8 @@ _STAGES = (
 
 
 @dataclass(frozen=True, slots=True)
-class _InterSatelliteLifecycle:
-    candidate: InterSatelliteLinkCandidate
+class _ConnectionPreparation:
+    candidate: InterSatelliteLinkCandidate | GroundStationAccessCandidate
     selected_since: datetime
     operational: bool
 
@@ -138,6 +137,46 @@ class InterSatelliteLifecycleEvidence:
     def __post_init__(self) -> None:
         if not isinstance(self.candidate, InterSatelliteLinkCandidate):
             raise TypeError("candidate must be an InterSatelliteLinkCandidate")
+        object.__setattr__(
+            self,
+            "selected_since",
+            normalize_utc_datetime(self.selected_since, "selected_since"),
+        )
+        for field_name in ("acquisition_duration", "remaining_acquisition"):
+            value = getattr(self, field_name)
+            if not isinstance(value, timedelta):
+                raise TypeError(f"{field_name} must be a timedelta")
+            if value < timedelta(0):
+                raise ValueError(f"{field_name} cannot be negative")
+        if self.remaining_acquisition > self.acquisition_duration:
+            raise ValueError(
+                "remaining_acquisition cannot exceed acquisition_duration"
+            )
+        if not isinstance(self.operational, bool):
+            raise TypeError("operational must be a bool")
+        if self.operational and self.remaining_acquisition != timedelta(0):
+            raise ValueError("operational lifecycle cannot have remaining acquisition")
+
+
+@dataclass(frozen=True, slots=True)
+class GroundStationLifecycleEvidence:
+    """Describe one selected GS access's physical fact and acquisition state.
+
+    Layer: public immutable Simulator planning-evidence value. It is public
+    because detached evidence and Tools must distinguish selected, acquiring,
+    and operational GS accesses. It is not authoritative lifecycle storage, an
+    OperationalConnection, or a physical candidate decision by itself.
+    """
+
+    candidate: GroundStationAccessCandidate
+    selected_since: datetime
+    acquisition_duration: timedelta
+    remaining_acquisition: timedelta
+    operational: bool
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.candidate, GroundStationAccessCandidate):
+            raise TypeError("candidate must be an GroundStationAccessCandidate")
         object.__setattr__(
             self,
             "selected_since",
@@ -289,6 +328,7 @@ class PlanningFrameEvidence:
     ]
     selected_zone_service_candidates: tuple[ZoneServiceCandidate, ...]
     inspection: PlanningInspection
+    ground_station_preparations: tuple[GroundStationLifecycleEvidence, ...] = ()
 
     def __post_init__(self) -> None:
         timestamp = normalize_utc_datetime(self.timestamp, "timestamp")
@@ -343,6 +383,17 @@ class PlanningFrameEvidence:
             raise ValueError(
                 "selected GroundStation count cannot exceed feasible count"
             )
+        preparations = _ordered_unique_evidence(
+            self.ground_station_preparations, GroundStationLifecycleEvidence,
+            lambda value: (_node_key(value.candidate.ground_station_id),
+                           _node_key(value.candidate.satellite_id)),
+            "ground_station_preparations",
+        )
+        if len(preparations) > summaries[1].feasible_count:
+            raise ValueError("GS preparations cannot exceed feasible candidates")
+        if preparations and tuple(value.candidate for value in preparations if value.operational) != selected_ground:
+            raise ValueError("operational GS preparation evidence must match selected accesses")
+        object.__setattr__(self, "ground_station_preparations", preparations)
         selected_zones = _ordered_unique_evidence(
             self.selected_zone_service_candidates,
             ZoneServiceCandidate,
@@ -460,11 +511,11 @@ class Planner:
         "_route_model",
         "_coordination_policy",
         "_planning_window_policy",
-        "_planning_horizon",
-        "_publication_horizon",
+        "_frames_per_batch",
         "_required_prehistory",
         "_execution_observer",
         "_lifecycle_by_pair",
+        "_ground_lifecycle_by_pair",
         "_parameter_memory",
         "_route_demands",
         "_route_demands_dirty",
@@ -500,7 +551,7 @@ class Planner:
         coordination_policy: CoordinationPolicy,
         route_demands: Iterable[RouteDemand] = (),
         planning_window_policy: PlanningWindowPolicy = (
-            TimeHorizonPlanningWindowPolicy()
+            FrameBatchPlanningWindowPolicy()
         ),
         execution_observer: _ExecutionObserver | None = None,
     ) -> None:
@@ -553,40 +604,22 @@ class Planner:
         _require_methods(
             planning_window_policy,
             "planning_window_policy",
-            ("required_prehistory", "validate_observation_interval"),
+            ("validate_observation_interval",),
         )
         planning_window_policy.validate_observation_interval(
             observation_interval
         )
-        planning_horizon = getattr(
-            planning_window_policy, "planning_horizon", None
+        frames_per_batch = getattr(planning_window_policy, "frames_per_batch", None)
+        if (isinstance(frames_per_batch, bool)
+                or not isinstance(frames_per_batch, int) or frames_per_batch <= 0):
+            raise ValueError("frames_per_batch must be a positive integer")
+        preparation = max(acquisition_duration, getattr(
+            ground_station_model, "acquisition_duration", timedelta(0)))
+        # Round the actual preparation dependency up to formal samples.
+        required_prehistory = observation_interval * (
+            (preparation + observation_interval - timedelta.resolution)
+            // observation_interval
         )
-        publication_horizon = getattr(
-            planning_window_policy, "publication_horizon", None
-        )
-        if not isinstance(planning_horizon, timedelta):
-            raise TypeError("planning_horizon must be a timedelta")
-        if not isinstance(publication_horizon, timedelta):
-            raise TypeError("publication_horizon must be a timedelta")
-        if planning_horizon <= timedelta(0):
-            raise ValueError("planning_horizon must be positive")
-        if publication_horizon <= timedelta(0):
-            raise ValueError("publication_horizon must be positive")
-        if publication_horizon > planning_horizon:
-            raise ValueError(
-                "publication_horizon cannot exceed planning_horizon"
-            )
-        required_prehistory = planning_window_policy.required_prehistory(
-            acquisition_duration
-        )
-        if not isinstance(required_prehistory, timedelta):
-            raise TypeError("required_prehistory must return a timedelta")
-        if required_prehistory < timedelta(0):
-            raise ValueError("required_prehistory cannot be negative")
-        if required_prehistory % observation_interval != timedelta(0):
-            raise ValueError(
-                "required_prehistory must align to observation_interval"
-            )
         if execution_observer is not None and not isinstance(
             execution_observer, _ExecutionObserver
         ):
@@ -605,13 +638,13 @@ class Planner:
         self._route_model = route_model
         self._coordination_policy = coordination_policy
         self._planning_window_policy = planning_window_policy
-        self._planning_horizon = planning_horizon
-        self._publication_horizon = publication_horizon
+        self._frames_per_batch = frames_per_batch
         self._required_prehistory = required_prehistory
         self._execution_observer = execution_observer
         self._lifecycle_by_pair: dict[
-            _IslPair, _InterSatelliteLifecycle
+            _IslPair, _ConnectionPreparation
         ] = {}
+        self._ground_lifecycle_by_pair = {}
         self._parameter_memory: tuple[ParameterPlanningMemory, ...] = ()
         self._route_demands = _validated_route_demands(route_demands)
         self._route_demands_dirty = True
@@ -631,10 +664,7 @@ class Planner:
         self._route_recomputation_count = 0
         self._unpublished: list[_FramePlanningResult] = []
         self._published_evidence: list[PublishedPlanningEvidence] = []
-        self._maximum_retained_evidence = max(
-            2,
-            int(planning_horizon / publication_horizon) + 2,
-        )
+        self._maximum_retained_evidence = 2
 
     def _set_execution_observer(self, observer: _ExecutionObserver) -> None:
         if not isinstance(observer, _ExecutionObserver):
@@ -652,6 +682,35 @@ class Planner:
         """Return exact immutable provenance required by the producer."""
 
         return self._physical_world_fingerprint, self._observation_interval
+
+    def _physical_prediction_requirements(self):
+        """Derive per-kind physical tails from preparation and useful service."""
+        def required(model):
+            preparation = getattr(model, 'acquisition_duration', timedelta(0))
+            rounded = self._observation_interval * (
+                (preparation + self._observation_interval - timedelta.resolution)
+                // self._observation_interval)
+            return rounded + getattr(model, 'minimum_service_duration', timedelta(0))
+        return required(self._inter_satellite_model), required(self._ground_station_model)
+
+    def _admissible_candidates(self, timestamp, candidates, lifecycle, model, key):
+        preparation = getattr(model, 'acquisition_duration', timedelta(0))
+        service = getattr(model, 'minimum_service_duration', timedelta(0))
+        rounded = self._observation_interval * (
+            (preparation + self._observation_interval - timedelta.resolution)
+            // self._observation_interval)
+        accepted = []
+        for candidate in candidates:
+            prior = lifecycle.get(key(candidate))
+            if prior is not None and prior.operational:
+                accepted.append(candidate)
+                continue
+            start = timestamp if prior is None else prior.selected_since
+            end = start + rounded + service
+            if (end <= timestamp or (candidate.contact_window is not None
+                    and candidate.contact_window.covers(timestamp, end))):
+                accepted.append(candidate)
+        return tuple(accepted)
 
     def create_physical_link_request(self) -> PhysicalLinkRequest:
         pairs = self._inter_satellite_model.create_inter_satellite_candidate_pairs(
@@ -681,6 +740,50 @@ class Planner:
             include_ground_station_access=True,
             include_zone_service=True,
         )
+
+    def _candidate_search_request(self, base):
+        # Lifecycle belongs to Planner; both pending and operational pairs
+        # remain in every physical query irrespective of nearest rank.
+        isl_tail, ground_tail = self._physical_prediction_requirements()
+        model = self._ground_station_model
+        limit = getattr(model, "initial_candidate_count", None)
+        if hasattr(model, "_search_hint"):
+            model._prepare_static_limits(self._physical_world)
+            dependency = limit, isl_tail, ground_tail, base
+            if model._search_hint is not None and model._search_hint[0] == dependency:
+                limit = model._search_hint[1]
+        return replace(base,
+            ground_station_minimum_contact_duration=ground_tail,
+            inter_satellite_minimum_contact_duration=isl_tail,
+            ground_station_candidate_limit=limit,
+            retained_ground_station_pairs=tuple(self._ground_lifecycle_by_pair),
+            cross_plane_neighbor_count=getattr(getattr(self._inter_satellite_model, "_configuration", None), "cross_plane_neighbor_count", None),
+            retained_inter_satellite_pairs=tuple(self._lifecycle_by_pair))
+
+    def _expanded_candidate_request(self, request, observation):
+        limit = request.ground_station_candidate_limit
+        model = self._ground_station_model
+        if (limit is None or not observation.work_counts.ground_station_pairs_not_returned
+                or not hasattr(model, "_station_limit_by_id")):
+            return None
+        candidates = self._admissible_candidates(observation.timestamp,
+            observation.ground_station_access_candidates, self._ground_lifecycle_by_pair,
+            model, lambda c: (c.ground_station_id, c.satellite_id))
+        if not model._candidate_search_needs_expansion(self._physical_world, candidates,
+                observation.ground_station_access_candidates, limit):
+            counts = {}
+            for candidate in observation.ground_station_access_candidates:
+                counts[candidate.ground_station_id] = counts.get(candidate.ground_station_id, 0) + 1
+            if all(count < limit for count in counts.values()):
+                isl_tail, ground_tail = self._physical_prediction_requirements()
+                base = replace(request, ground_station_minimum_contact_duration=timedelta(0),
+                    inter_satellite_minimum_contact_duration=timedelta(0), ground_station_candidate_limit=None,
+                    retained_ground_station_pairs=(), cross_plane_neighbor_count=None,
+                    retained_inter_satellite_pairs=())
+                model._search_hint = (model.initial_candidate_count, isl_tail, ground_tail, base), limit
+            return None
+        total = len(model._satellite_limits)
+        return replace(request, ground_station_candidate_limit=limit * 2 if limit * 2 < total else None)
 
     def set_route_demands(self, demands: Iterable[RouteDemand]) -> None:
         if self._finished_end is not None or self._shutdown:
@@ -797,6 +900,24 @@ class Planner:
             self._restore_private_state(snapshot)
             raise
 
+    def flush(self) -> tuple[Plan, ...]:
+        """Publish the observed prefix without ending acquisition or retention.
+
+        A delivered coverage seam may cut an internal publication batch. No
+        observation, contact ending, state reset or synthetic event is added.
+        """
+        if self._shutdown or self._finished_end is not None:
+            raise RuntimeError("Planner is closed for publication")
+        snapshot = self._snapshot_private_state()
+        try:
+            plans = []
+            while self._unpublished:
+                plans.append(self._publish_one_prefix(phase="steady"))
+            return tuple(plans)
+        except Exception:
+            self._restore_private_state(snapshot)
+            raise
+
     def finish(self, *, end_timestamp: datetime) -> tuple[Plan, ...]:
         """Verify Timeline completion and flush every remaining prefix once."""
 
@@ -886,16 +1007,7 @@ class Planner:
 
     def _publish_ready(self) -> tuple[Plan, ...]:
         plans: list[Plan] = []
-        assert self._planning_frontier is not None
-        assert self._expected_formal_start is not None
-        while self._unpublished:
-            origin = (
-                self._expected_formal_start
-                if self._publication_frontier is None
-                else self._publication_frontier
-            )
-            if self._planning_frontier < origin + self._planning_horizon:
-                break
+        while len(self._unpublished) >= self._frames_per_batch:
             plans.append(self._publish_one_prefix(phase="steady"))
         return tuple(plans)
 
@@ -907,20 +1019,7 @@ class Planner:
             raise RuntimeError(
                 "published Planner evidence must be released before progression"
             )
-        assert self._expected_formal_start is not None
-        origin = (
-            self._expected_formal_start
-            if self._publication_frontier is None
-            else self._publication_frontier
-        )
-        end_limit = origin + self._publication_horizon
-        count = 0
-        for value in self._unpublished:
-            if value.transition.timestamp > end_limit:
-                break
-            count += 1
-        if count == 0:
-            count = 1
+        count = min(len(self._unpublished), self._frames_per_batch)
         prefix = tuple(self._unpublished[:count])
         transitions = tuple(value.transition for value in prefix)
         precedences = tuple(
@@ -937,6 +1036,7 @@ class Planner:
             start_timestamp=transitions[0].timestamp,
             transitions=transitions,
             semantic_event_precedences=precedences,
+            _constructed_state=self._current_state,
         )
         plan_scope = {
             "plan_id": plan.plan_id,
@@ -998,6 +1098,7 @@ class Planner:
     def _snapshot_private_state(self) -> tuple:
         return (
             dict(self._lifecycle_by_pair),
+            dict(self._ground_lifecycle_by_pair),
             self._parameter_memory,
             self._route_demands_dirty,
             self._physical_observation_frontier,
@@ -1020,6 +1121,7 @@ class Planner:
     def _restore_private_state(self, snapshot: tuple) -> None:
         (
             lifecycle,
+            self._ground_lifecycle_by_pair,
             self._parameter_memory,
             self._route_demands_dirty,
             self._physical_observation_frontier,
@@ -1086,23 +1188,35 @@ class Planner:
 
         stage_started = perf_counter()
         retained_pairs = frozenset(self._lifecycle_by_pair)
+        observed_isl = {_candidate_pair(c): c for c in observation.inter_satellite_candidates}
+        admissible_isl = self._admissible_candidates(
+            timestamp, observation.inter_satellite_candidates,
+            self._lifecycle_by_pair, self._inter_satellite_model, _candidate_pair)
         selection = (
             self._inter_satellite_model.select_inter_satellite_links(
                 self._physical_world,
-                observation.inter_satellite_candidates,
+                admissible_isl,
                 retained_pairs,
             )
         )
+        admitted_pairs = {_candidate_pair(c) for c in admissible_isl}
+        excluded = tuple(CandidateDecision(
+            CandidateDecisionKind.REJECTED,
+            'future physical service after preparation is not established',
+            c.endpoint_a, c.endpoint_b)
+            for c in observation.inter_satellite_candidates
+            if _candidate_pair(c) not in admitted_pairs)
+        if excluded:
+            selection = InterSatelliteSelection(selection.selected_candidates,
+                selection.decisions + excluded, selection.underfilled_slots)
         selected_candidates = _validate_inter_satellite_selection(
             self._physical_world,
             selection,
             observation.inter_satellite_candidates,
             retained_pairs,
+            authoritative=observed_isl,
         )
-        feasible_pairs = {
-            _candidate_pair(value)
-            for value in observation.inter_satellite_candidates
-        }
+        feasible_pairs = observed_isl.keys()
         selected_pairs = {
             _candidate_pair(value) for value in selected_candidates
         }
@@ -1119,6 +1233,7 @@ class Planner:
                     for value in selection.decisions
                 ),
                 "underfilled_slots": selection.underfilled_slots,
+                **getattr(self._inter_satellite_model, "_selection_work", {}),
             },
         )
 
@@ -1164,6 +1279,76 @@ class Planner:
             resources={"lifecycle_entries": len(lifecycle)},
         )
 
+        ground_station_started = perf_counter()
+        stage_started = ground_station_started
+        admissible_ground = self._admissible_candidates(
+            timestamp, observation.ground_station_access_candidates,
+            self._ground_lifecycle_by_pair, self._ground_station_model,
+            lambda c: (c.ground_station_id, c.satellite_id))
+        proposed_ground = (
+            self._ground_station_model.select_ground_station_accesses(
+                self._physical_world,
+                admissible_ground,
+                frozenset(self._ground_lifecycle_by_pair),
+            )
+        )
+        self._record(
+            "ground-station-selection-and-ranking",
+            phase,
+            stage_started,
+            scope,
+            {
+                "feasible_candidates": len(
+                    observation.ground_station_access_candidates
+                ),
+                "proposed_accesses": (
+                    len(proposed_ground)
+                    if isinstance(proposed_ground, tuple)
+                    else 0
+                ),
+                **getattr(self._ground_station_model, "_allocation_work", {}),
+            },
+        )
+        stage_started = perf_counter()
+        selected_ground, ground_cardinality = _validate_selected_ground_candidates(
+            self._physical_world,
+            proposed_ground,
+            observation.ground_station_access_candidates,
+        )
+        self._record(
+            "ground-station-validation",
+            phase,
+            stage_started,
+            scope,
+            ground_cardinality,
+        )
+        previous_ground = self._ground_lifecycle_by_pair
+        duration = getattr(self._ground_station_model, 'acquisition_duration', timedelta(0))
+        next_ground = {}
+        for candidate in selected_ground:
+            key = (candidate.ground_station_id, candidate.satellite_id)
+            prior = previous_ground.get(key)
+            since = timestamp if prior is None else prior.selected_since
+            # Selected preparations consume the same endpoint capacities as
+            # operational links. Reassignment releases before acquiring anew.
+            next_ground[key] = _ConnectionPreparation(
+                candidate, since, timestamp-since >= duration)
+        self._ground_lifecycle_by_pair = next_ground
+        selected_ground = tuple(v.candidate for v in next_ground.values() if v.operational)
+        self._record(
+            "ground-station-planning",
+            phase,
+            ground_station_started,
+            scope,
+            {
+                "feasible_candidates": len(
+                    observation.ground_station_access_candidates
+                ),
+                "operational_accesses": len(selected_ground),
+            },
+            duration_role="rollup",
+        )
+
         if not publish:
             result = _PrehistorySelectionEvidence(
                 timestamp,
@@ -1183,57 +1368,6 @@ class Planner:
                 duration_role="rollup",
             )
             return result
-
-        ground_station_started = perf_counter()
-        stage_started = ground_station_started
-        proposed_ground = (
-            self._ground_station_model.select_ground_station_accesses(
-                self._physical_world,
-                observation.ground_station_access_candidates,
-            )
-        )
-        self._record(
-            "ground-station-selection-and-ranking",
-            phase,
-            stage_started,
-            scope,
-            {
-                "feasible_candidates": len(
-                    observation.ground_station_access_candidates
-                ),
-                "proposed_accesses": (
-                    len(proposed_ground)
-                    if isinstance(proposed_ground, tuple)
-                    else 0
-                ),
-            },
-        )
-        stage_started = perf_counter()
-        selected_ground, ground_cardinality = _validate_selected_ground_candidates(
-            self._physical_world,
-            proposed_ground,
-            observation.ground_station_access_candidates,
-        )
-        self._record(
-            "ground-station-validation",
-            phase,
-            stage_started,
-            scope,
-            ground_cardinality,
-        )
-        self._record(
-            "ground-station-planning",
-            phase,
-            ground_station_started,
-            scope,
-            {
-                "feasible_candidates": len(
-                    observation.ground_station_access_candidates
-                ),
-                "operational_accesses": len(selected_ground),
-            },
-            duration_role="rollup",
-        )
 
         stage_started = perf_counter()
         previous_state = self._current_state
@@ -1335,7 +1469,7 @@ class Planner:
             previous_route_outcomes = (
                 () if previous_state is None else previous_state.route_outcomes
             )
-            _validate_route_result(
+            validated_outcomes = _validate_route_result(
                 previous_route_outcomes,
                 active_route_demands,
                 route_result,
@@ -1347,6 +1481,7 @@ class Planner:
                 zone_assignments,
                 active_route_demands,
                 route_outcomes,
+                by_demand=validated_outcomes,
             )
             self._route_recomputation_count += 1
             route_recomputed = True
@@ -1372,6 +1507,8 @@ class Planner:
             {
                 "route_demands": len(active_route_demands),
                 "route_recomputed": int(route_recomputed),
+                **(getattr(self._route_model, "_route_work_counts", lambda: {})()
+                   if route_recomputed else {}),
                 "reachable_routes": reachable_count,
                 "unreachable_routes": len(route_outcomes) - reachable_count,
             },
@@ -1381,21 +1518,12 @@ class Planner:
             },
         )
 
-        expected_state = PlannedOperationalState(
+        authoritative_state = PlannedOperationalState(
             timestamp,
             parameter_result.connections,
             zone_assignments,
             route_outcomes,
         )
-        authoritative_state = apply_plan_transition(previous_state, transition)
-        if authoritative_state != expected_state:
-            raise ValueError(
-                "validated transition does not reconstruct complete Model state"
-            )
-        state_fingerprint = planned_operational_state_fingerprint(
-            authoritative_state
-        )
-        transition_fingerprint = plan_transition_fingerprint(transition)
         stage_started = perf_counter()
         canonical_events = semantic_event_references(transition)
         required_precedences = _required_semantic_precedences(
@@ -1444,9 +1572,6 @@ class Planner:
             resources={
                 "selected_isl_entries": len(self._lifecycle_by_pair),
                 "parameter_memory_entries": len(self._parameter_memory),
-                "state_fingerprint_words": len(state_fingerprint) // 16,
-                "transition_fingerprint_words": len(transition_fingerprint)
-                // 16,
             },
         )
 
@@ -1539,6 +1664,15 @@ class Planner:
             physical_link_work_counts=observation.work_counts,
             selected_inter_satellite_links=lifecycle_evidence,
             selected_ground_station_accesses=selected_ground,
+            ground_station_preparations=tuple(
+                GroundStationLifecycleEvidence(
+                    candidate=value.candidate,
+                    selected_since=value.selected_since,
+                    acquisition_duration=duration,
+                    remaining_acquisition=max(timedelta(0), duration-(timestamp-value.selected_since)),
+                    operational=value.operational,
+                ) for value in self._ground_lifecycle_by_pair.values()
+            ),
             selected_zone_service_candidates=selected_zone,
             inspection=inspection,
         )
@@ -1565,13 +1699,13 @@ class Planner:
         self,
         timestamp: datetime,
         selected: tuple[InterSatelliteLinkCandidate, ...],
-    ) -> tuple[dict[_IslPair, _InterSatelliteLifecycle], int, int, int]:
+    ) -> tuple[dict[_IslPair, _ConnectionPreparation], int, int, int]:
         previous = self._lifecycle_by_pair
         by_pair = {_candidate_pair(value): value for value in selected}
         reset = len(set(previous) - set(by_pair))
         started = 0
         completed = 0
-        next_values: dict[_IslPair, _InterSatelliteLifecycle] = {}
+        next_values: dict[_IslPair, _ConnectionPreparation] = {}
         acquisition_duration = self._inter_satellite_model.acquisition_duration
         for pair in sorted(by_pair, key=_pair_key):
             candidate = by_pair[pair]
@@ -1581,7 +1715,7 @@ class Planner:
                 operational = acquisition_duration.total_seconds() == 0.0
                 if operational:
                     completed += 1
-                value = _InterSatelliteLifecycle(
+                value = _ConnectionPreparation(
                     candidate, timestamp, operational
                 )
             else:
@@ -1590,7 +1724,7 @@ class Planner:
                 )
                 if operational and not prior.operational:
                     completed += 1
-                value = _InterSatelliteLifecycle(
+                value = _ConnectionPreparation(
                     candidate, prior.selected_since, operational
                 )
             next_values[pair] = value
@@ -1684,13 +1818,15 @@ def _validate_inter_satellite_selection(
     selection: object,
     observed: tuple[InterSatelliteLinkCandidate, ...],
     retained_pairs: frozenset[_IslPair],
+    *, authoritative=None,
 ) -> tuple[InterSatelliteLinkCandidate, ...]:
     if not isinstance(selection, InterSatelliteSelection):
         raise TypeError(
             "InterSatelliteConnectionPlanningModel must return "
             "InterSatelliteSelection"
         )
-    authoritative = {_candidate_pair(value): value for value in observed}
+    if authoritative is None:
+        authoritative = {_candidate_pair(value): value for value in observed}
     selected = []
     for candidate in selection.selected_candidates:
         physical_world.get_satellite(candidate.endpoint_a)
@@ -1723,48 +1859,33 @@ def _validate_inter_satellite_selection_evidence(
     selected_pairs: frozenset[_IslPair],
     retained_pairs: frozenset[_IslPair],
 ) -> None:
-    decisions_by_pair: dict[_IslPair, CandidateDecisionKind] = {}
+    remaining = dict.fromkeys(authoritative)
     underfilled_decisions = 0
     for decision in selection.decisions:
         if decision.decision is CandidateDecisionKind.UNDERFILLED:
             if decision.endpoint_a is not None or decision.endpoint_b is not None:
-                raise ValueError(
-                    "UNDERFILLED ISL evidence must not identify a candidate"
-                )
+                raise ValueError("UNDERFILLED ISL evidence must not identify a candidate")
             underfilled_decisions += 1
             continue
         if decision.endpoint_a is None or decision.endpoint_b is None:
-            raise ValueError(
-                "per-candidate ISL evidence must identify both endpoints"
-            )
-        physical_world.get_satellite(decision.endpoint_a)
-        physical_world.get_satellite(decision.endpoint_b)
-        pair = _canonical_pair(decision.endpoint_a, decision.endpoint_b)
-        if (decision.endpoint_a, decision.endpoint_b) != pair:
-            raise ValueError("ISL decision endpoints must be canonical")
+            raise ValueError("per-candidate ISL evidence must identify both endpoints")
+        pair = decision.endpoint_a, decision.endpoint_b
         if pair not in authoritative:
-            raise ValueError(
-                "ISL decision refers to a relationship absent from physical facts"
-            )
-        if pair in decisions_by_pair:
+            if (pair[1], pair[0]) in authoritative:
+                raise ValueError("ISL decision endpoints must be canonical")
+            raise ValueError("ISL decision refers to a relationship absent from physical facts")
+        # Membership in the validated observation already establishes node
+        # ownership and canonical endpoints. Consume each decision exactly once.
+        if pair not in remaining:
             raise ValueError("ISL decisions contain a duplicate candidate")
-        decisions_by_pair[pair] = decision.decision
-
-    if set(decisions_by_pair) != set(authoritative):
-        raise ValueError(
-            "ISL decisions must cover every authoritative candidate exactly once"
-        )
-    for pair, decision_kind in decisions_by_pair.items():
-        if pair not in selected_pairs:
-            expected = CandidateDecisionKind.REJECTED
-        elif pair in retained_pairs:
-            expected = CandidateDecisionKind.RETAINED
-        else:
-            expected = CandidateDecisionKind.SELECTED
-        if decision_kind is not expected:
-            raise ValueError(
-                "ISL decision contradicts the selected and retained relationships"
-            )
+        del remaining[pair]
+        expected = (CandidateDecisionKind.REJECTED if pair not in selected_pairs
+                    else CandidateDecisionKind.RETAINED if pair in retained_pairs
+                    else CandidateDecisionKind.SELECTED)
+        if decision.decision is not expected:
+            raise ValueError("ISL decision contradicts the selected and retained relationships")
+    if remaining:
+        raise ValueError("ISL decisions must cover every authoritative candidate exactly once")
 
     if selection.underfilled_slots == 0:
         if underfilled_decisions:
@@ -1822,8 +1943,8 @@ def _validate_selection_capabilities(
 
 
 def _validate_lifecycle_transition(
-    previous: dict[_IslPair, _InterSatelliteLifecycle],
-    current: dict[_IslPair, _InterSatelliteLifecycle],
+    previous: dict[_IslPair, _ConnectionPreparation],
+    current: dict[_IslPair, _ConnectionPreparation],
     selected: tuple[InterSatelliteLinkCandidate, ...],
     timestamp: datetime,
     acquisition_duration: timedelta,
@@ -1832,7 +1953,7 @@ def _validate_lifecycle_transition(
     if set(current) != set(selected_by_pair):
         raise ValueError("ISL lifecycle does not exactly cover current selection")
     for pair, value in current.items():
-        if not isinstance(value, _InterSatelliteLifecycle):
+        if not isinstance(value, _ConnectionPreparation):
             raise TypeError("ISL lifecycle contains an invalid value")
         if value.candidate != selected_by_pair[pair]:
             raise ValueError("ISL lifecycle candidate is not authoritative")
@@ -1966,11 +2087,6 @@ def _validate_parameter_result(
             )
         if remembered.last_update > timestamp:
             raise ValueError("Parameter memory last_update cannot be in the future")
-        if remembered.pending_since is not None and (
-            remembered.pending_since > timestamp
-            or remembered.pending_since < remembered.last_update
-        ):
-            raise ValueError("Parameter pending timestamp is inconsistent")
     previous = {
         value.connection_id: value
         for value in (
@@ -2083,7 +2199,7 @@ def _validate_route_result(
     previous_outcomes,
     demands: tuple[RouteDemand, ...],
     result: object,
-) -> None:
+) -> dict:
     if not isinstance(result, RoutePlanningResult):
         raise TypeError(
             "RoutePlanningModel must return RoutePlanningResult"
@@ -2116,6 +2232,7 @@ def _validate_route_result(
         raise ValueError(
             "Route compact changes do not exactly describe previous/current state"
         )
+    return outcomes
 
 
 def _validate_route_outcomes(
@@ -2124,25 +2241,24 @@ def _validate_route_outcomes(
     zone_assignments: tuple[ZoneServiceAssignment, ...],
     demands: tuple[RouteDemand, ...],
     outcomes,
+    *, by_demand=None,
 ) -> None:
-    values = tuple(outcomes)
-    if any(
-        not isinstance(value, (ReachableRouteOutcome, UnreachableRouteOutcome))
-        for value in values
-    ):
-        raise TypeError("Route model returned an invalid outcome")
-    by_demand = {value.demand: value for value in values}
-    if set(by_demand) != set(demands) or len(values) != len(demands):
-        raise ValueError("Route model must return exactly one outcome per demand")
+    if by_demand is None:
+        values = tuple(outcomes)
+        if any(
+            not isinstance(value, (ReachableRouteOutcome, UnreachableRouteOutcome))
+            for value in values
+        ):
+            raise TypeError("Route model returned an invalid outcome")
+        by_demand = {value.demand: value for value in values}
+        if set(by_demand) != set(demands) or len(values) != len(demands):
+            raise ValueError("Route model must return exactly one outcome per demand")
     assignments = {value.zone_id: value.satellite_id for value in zone_assignments}
     edges = {
-        _canonical_pair(
-            value.connection_id.endpoint_a,
-            value.connection_id.endpoint_b,
-        )
-        for value in connections
+        pair for value in connections
+        for pair in ((value.connection_id.endpoint_a, value.connection_id.endpoint_b),
+                     (value.connection_id.endpoint_b, value.connection_id.endpoint_a))
     }
-    context = _prepare_routing_core_context(physical_world, tuple(edges))
     unresolved_ground: dict[NodeId, set[NodeId]] = {}
     unresolved_zone: dict[NodeId, set[NodeId]] = {}
     for demand in demands:
@@ -2166,12 +2282,10 @@ def _validate_route_outcomes(
             assert terminal is not None
             if outcome.path[-1] != terminal:
                 raise ValueError("reachable Route terminates at the wrong target")
-            for node_id in outcome.path:
-                physical_world.get_node(node_id)
             for current, next_hop in zip(
                 outcome.path, outcome.path[1:], strict=False
             ):
-                if _canonical_pair(current, next_hop) not in edges:
+                if (current, next_hop) not in edges:
                     raise ValueError(
                         "reachable Route uses a non-operational Connection"
                     )
@@ -2195,6 +2309,9 @@ def _validate_route_outcomes(
             assert terminal is not None
             grouped = unresolved_ground if ground_target else unresolved_zone
             grouped.setdefault(terminal, set()).add(demand.source)
+    if unresolved_ground or unresolved_zone:
+        context = _prepare_routing_core_context(physical_world, tuple(
+            (v.connection_id.endpoint_a, v.connection_id.endpoint_b) for v in connections))
     for terminal, sources in unresolved_ground.items():
         choices = _required_ground_next_hops(
             context, terminal, frozenset(sources)

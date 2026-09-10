@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from copy import copy
 from hashlib import sha256
 import inspect
 import json
@@ -19,6 +20,8 @@ from skyseed_v2.backend.bpf.runner import BpfRunner
 from skyseed_v2.backend.bpf.compiled_realization import (
     BpfCompiledActivationBoundary,
     BpfCompiledRealization,
+    _IntentReference,
+    _OrderingConstraint,
 )
 from skyseed_v2.backend.bpf.runner import _resolve_nominal_boundaries
 from skyseed_v2.backend.bpf._runner.runtime_realization import (
@@ -318,6 +321,68 @@ def test_lineage_break_is_rejected_before_seal(
 def test_duplicate_formal_boundary_is_rejected(realizations) -> None:
     with pytest.raises(ValueError, match="duplicate"):
         _resolve_nominal_boundaries((realizations[0], realizations[0]))
+
+
+def _normalization_fixture(original, constraints):
+    """Isolate normalization from the Compiler's already-folded constraints."""
+    value = copy(original)
+    times = tuple(original.start_timestamp + i * original.observation_interval
+                  for i in range(3))
+    for name, data in {
+        "end_timestamp": times[-1],
+        "compiled_activation_boundaries": tuple(
+            BpfCompiledActivationBoundary(time, f"normalization-{i}")
+            for i, time in enumerate(times)
+        ),
+        "resource_realizations": tuple(
+            replace(intent, nominal_time=times[0 if i < 2 else 1])
+            for i, intent in enumerate((
+                *original.resource_realizations[:2], original.resource_realizations[0]
+            ))
+        ),
+        "parameter_realizations": (), "forwarding_realizations": (),
+        "zone_edge_realizations": (),
+        "constraints": tuple(
+            _OrderingConstraint(_IntentReference("resource", a),
+                                _IntentReference("resource", b), reason)
+            for a, b, reason in constraints
+        ),
+    }.items():
+        object.__setattr__(value, name, data)
+    assert len(value.resource_realizations) == 3
+    return value
+
+
+def test_normalization_preserves_duplicate_and_cross_boundary_counts(realizations):
+    value = _normalization_fixture(realizations[0], (
+        (0, 1, "local"), (0, 1, "duplicate-local"),
+        (1, 2, "future"), (1, 2, "duplicate-future"),
+    ))
+    first, second, empty = _resolve_nominal_boundaries(
+        (value,), realization_index_offset=7
+    )
+    assert [op.index for op in first.operations] == [0, 1]
+    assert [op.index for op in second.operations] == [2]
+    assert empty.operations == ()
+    assert first.constraint_edges == (((7, "resource", 0), (7, "resource", 1), "local"),)
+    assert first.constraint_reasons == (("local", 1),)
+    assert [b.inspected_constraint_count for b in (first, second, empty)] == [4, 4, 4]
+    assert [b.source_constraint_count for b in (first, second, empty)] == [4, 4, 4]
+    assert [b.applied_constraint_count for b in (first, second, empty)] == [1, 0, 0]
+    assert [b.outgoing_constraint_count for b in (first, second, empty)] == [2, 0, 0]
+    assert [b.later_constraint_count for b in (first, second, empty)] == [0, 4, 4]
+    assert all(b.source_realization_indexes == (7,) for b in (first, second, empty))
+
+
+@pytest.mark.parametrize("constraints,message", (
+    (((0, 99, "missing"),), "unknown operation"),
+    (((2, 0, "reverse"),), "depends on later compiled work"),
+    (((0, 1, "forward"), (1, 0, "cycle")), "contain a cycle"),
+))
+def test_normalization_rejects_invalid_dependency_graph(realizations, constraints, message):
+    value = _normalization_fixture(realizations[0], constraints)
+    with pytest.raises(ValueError, match=message):
+        _resolve_nominal_boundaries((value,))
 
 
 def test_representative_artifact_preserves_complete_boundary_semantics(

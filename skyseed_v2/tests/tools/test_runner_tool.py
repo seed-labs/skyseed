@@ -212,6 +212,24 @@ def _outcome(
     }
 
 
+def test_reclamation_summary_counts_compacted_ids_and_preserves_history() -> None:
+    snapshot = _snapshot()
+    snapshot["events"] += (
+        _event("generation_reclaim", 16.3, reclaimed_generations=(1, 2), work_units=4, deleted_entries=2),
+        _event("generation_reclaim", 16.4,
+               reclaimed_generations={"item_count": 80, "detail": "omitted-from-inline-evidence"},
+               work_units=240, deleted_entries=160),
+        _event("batch_plan_reclaimed", 16.5, released_boundaries=60),
+    )
+    data = collect_runner_data(snapshot, _outcome())
+    assert data["delivery"]["reclamation"] == {
+        "completed_generations": 82, "work_units": 244,
+        "deleted_map_entries": 162, "released_plan_boundaries": 60,
+    }
+    assert "80" in json.dumps(data["timeline"])
+    assert snapshot["events"][-2]["reclaimed_generations"]["item_count"] == 80
+
+
 def test_projection_curates_complete_trace_without_runner_side_indexes() -> None:
     data = collect_runner_data(_snapshot(), _outcome())
 

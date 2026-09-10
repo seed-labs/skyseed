@@ -15,6 +15,74 @@ from typing import Any
 from .node_id import NodeId
 
 
+class _OrderedEvidenceWriter:
+    """Bound finite serialization work and reuse invocation-owned streams.
+
+    Callers supply immutable arguments to their own serializers. This helper
+    owns only one I/O worker and file handles, never semantic state or seals.
+    """
+
+    def __init__(self, maximum_pending: int = 4):
+        from collections import deque
+        from concurrent.futures import ThreadPoolExecutor
+        if isinstance(maximum_pending, bool) or not isinstance(maximum_pending, int) or maximum_pending < 1:
+            raise ValueError("maximum_pending must be a positive integer")
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='skyseed-evidence')
+        self._pending = deque()
+        self._streams = {}
+        self._limit = maximum_pending
+        self._closed = False
+        self._failure = None
+        self.peak_pending = 0
+        self.wait_seconds = 0.0
+
+    def submit(self, serialize, *args):
+        from time import perf_counter
+        if self._closed:
+            raise RuntimeError('evidence writer is closed')
+        if self._failure is not None:
+            raise self._failure
+        started = perf_counter()
+        while self._pending and (self._pending[0].done() or len(self._pending) >= self._limit):
+            self._result(self._pending.popleft())
+        self.wait_seconds += perf_counter() - started
+        self._pending.append(self._executor.submit(serialize, *args))
+        self.peak_pending = max(self.peak_pending, len(self._pending))
+
+    def append(self, path, record):
+        # Called exclusively by the owned worker.
+        stream = self._streams.get(path)
+        if stream is None:
+            stream = self._streams[path] = _open_jsonl(path, 'at')
+        payload = json.dumps(record, sort_keys=True, separators=(',', ':')) + '\n'
+        stream.write(payload)
+        return len(payload)  # ensure_ascii=True: encoded JSON byte count, before compression.
+
+    def _result(self, future):
+        try:
+            return future.result()
+        except BaseException as error:
+            self._failure = error
+            raise
+
+    def finish(self):
+        if self._closed:
+            if self._failure is not None:
+                raise self._failure
+            return
+        self._closed = True
+        try:
+            if self._failure is not None:
+                raise self._failure
+            while self._pending:
+                self._result(self._pending.popleft())
+        finally:
+            self._executor.shutdown(wait=True)
+            for stream in self._streams.values():
+                stream.close()
+            self._streams.clear()
+
+
 def _reset_jsonl(path: Path, header: Mapping[str, object]) -> Path:
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)

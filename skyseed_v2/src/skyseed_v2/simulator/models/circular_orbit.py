@@ -40,13 +40,41 @@ class CircularOrbitPositionModel:
     GCRS Cartesian point to the formal ITRS/ECEF Position. No velocity or
     inertial-frame value crosses the public Position boundary.
 
-    Layer: built-in stateless Simulator physical Model. Users explicitly create
+    Layer: built-in Simulator physical Model with private static-element reuse. Users explicitly create
     it, one ``PhysicalWorld`` owns it, and ``PhysicalWorld.frame_at()`` invokes it. It is
     not a default, ephemeris owner, velocity source, time cursor or fallback
     and is public from ``skyseed_v2.simulator``.
     """
 
-    __slots__ = ()
+    __slots__ = ("_prepared",)
+
+    def __init__(self) -> None:
+        self._prepared = None
+
+    def semantic_fingerprint_material(self) -> dict[str, object]:
+        """Describe the fixed algorithm independently of derived static caches."""
+        return {}
+
+    def _prepare(self, world):
+        cached = self._prepared
+        if cached is not None and cached[0] is world:
+            return cached[1:]
+        elements, ground = [], {}
+        for system in world.autonomous_systems:
+            for shell in system.shells:
+                for orbit in shell.orbits:
+                    radius = _ORBIT_REFERENCE_RADIUS_M + orbit.altitude_km * 1000.0
+                    motion = sqrt(_EARTH_GRAVITATIONAL_PARAMETER_M3_PER_S2 / radius**3)
+                    inclination, raan = radians(orbit.inclination_deg), radians(orbit.right_ascension_deg)
+                    elements.append((radius, motion, orbit.epoch_utc,
+                        cos(raan), sin(raan), cos(inclination), sin(inclination),
+                        tuple((satellite.node_id, radians(satellite.mean_anomaly_deg)) for satellite in orbit.satellites)))
+            for station in system.ground_stations:
+                ground[station.node_id] = geodetic_to_ecef(station.latitude_deg, station.longitude_deg, station.elevation_m)
+        ordered_ids = tuple(sorted((*ground, *(identifier for element in elements for identifier, _ in element[-1])), key=_node_key))
+        prepared = (world, tuple(elements), MappingProxyType(ground), ordered_ids)
+        self._prepared = prepared
+        return prepared[1:]
 
     def compute_positions(
         self,
@@ -56,52 +84,20 @@ class CircularOrbitPositionModel:
         if not isinstance(physical_world, PhysicalWorld):
             raise TypeError("physical_world must be a PhysicalWorld")
         utc = normalize_utc_datetime(timestamp, "timestamp")
-        positions: dict[NodeId, EarthFixedPosition] = {}
-        satellite_ids: list[NodeId] = []
-        inertial_points: list[tuple[float, float, float]] = []
-        for autonomous_system in physical_world.autonomous_systems:
-            for shell in autonomous_system.shells:
-                for orbit in shell.orbits:
-                    radius_m = (
-                        _ORBIT_REFERENCE_RADIUS_M + orbit.altitude_km * 1_000.0
-                    )
-                    mean_motion_rad_s = sqrt(
-                        _EARTH_GRAVITATIONAL_PARAMETER_M3_PER_S2
-                        / radius_m**3
-                    )
-                    elapsed_seconds = (utc - orbit.epoch_utc).total_seconds()
-                    inclination = radians(orbit.inclination_deg)
-                    right_ascension = radians(orbit.right_ascension_deg)
-                    for satellite in orbit.satellites:
-                        phase = (
-                            radians(satellite.mean_anomaly_deg)
-                            + mean_motion_rad_s * elapsed_seconds
-                        ) % (2.0 * pi)
-                        orbital_x = radius_m * cos(phase)
-                        orbital_y = radius_m * sin(phase)
-                        inertial_x = (
-                            cos(right_ascension) * orbital_x
-                            - sin(right_ascension)
-                            * cos(inclination)
-                            * orbital_y
-                        )
-                        inertial_y = (
-                            sin(right_ascension) * orbital_x
-                            + cos(right_ascension)
-                            * cos(inclination)
-                            * orbital_y
-                        )
-                        inertial_z = sin(inclination) * orbital_y
-                        satellite_ids.append(satellite.node_id)
-                        inertial_points.append(
-                            (inertial_x, inertial_y, inertial_z)
-                        )
-            for ground_station in autonomous_system.ground_stations:
-                positions[ground_station.node_id] = geodetic_to_ecef(
-                    ground_station.latitude_deg,
-                    ground_station.longitude_deg,
-                    ground_station.elevation_m,
-                )
+        elements, ground_positions, ordered_ids = self._prepare(physical_world)
+        positions = dict(ground_positions)
+        satellite_ids, inertial_points = [], []
+        for radius, motion, epoch, cos_raan, sin_raan, cos_inc, sin_inc, satellites in elements:
+            elapsed = (utc-epoch).total_seconds()
+            for identifier, initial_phase in satellites:
+                phase = (initial_phase + motion * elapsed) % (2.0 * pi)
+                orbital_x, orbital_y = radius * cos(phase), radius * sin(phase)
+                inertial_points.append((
+                    cos_raan * orbital_x - sin_raan * cos_inc * orbital_y,
+                    sin_raan * orbital_x + cos_raan * cos_inc * orbital_y,
+                    sin_inc * orbital_y,
+                ))
+                satellite_ids.append(identifier)
         satellite_positions = _gcrs_cartesian_batch_to_ecef(
             tuple(inertial_points), utc
         )
@@ -109,7 +105,7 @@ class CircularOrbitPositionModel:
             zip(satellite_ids, satellite_positions, strict=True)
         )
         return MappingProxyType(
-            dict(sorted(positions.items(), key=lambda item: _node_key(item[0])))
+            {identifier: positions[identifier] for identifier in ordered_ids}
         )
 
 

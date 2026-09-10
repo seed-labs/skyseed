@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from math import atan2, degrees, hypot
 from pathlib import Path
 import subprocess
 import tempfile
@@ -251,7 +252,16 @@ globe.dispatchEvent(new WheelEvent('wheel',{deltaY:-120,clientX:100,clientY:100,
         "const time=document.getElementById('time');time.value='0';time.dispatchEvent(new Event('input',{bubbles:true}));document.getElementById('reset-view').click();document.querySelector('[data-layer=\"physical-link\"]').click();",
     )
     time.sleep(0.5)
-    _click_first_canvas_point(base, session, "map-canvas")
+    first_chunk = json.loads((page.parent / "data/frame-000.js").read_text(encoding="utf-8").split("=", 1)[1].rstrip(";\n"))
+    candidates = first_chunk["candidates"]
+    pairs = candidates["ground_station"] or candidates["inter_satellite"]
+    if not pairs:
+        raise AssertionError("relation reselection fixture requires a physical link candidate")
+    endpoint = pairs[0][1]
+    _, x, y, z = next(position for position in first_chunk["positions"] if position[0] == endpoint)
+    _click_geographic_canvas_point(base, session, "map-canvas",
+                                  latitude_deg=degrees(atan2(z, hypot(x, y))),
+                                  longitude_deg=degrees(atan2(y, x)))
     reselected = _execute(
         base,
         session,
@@ -499,6 +509,14 @@ def _s3_review(
             planner_root / item["chunk"]
         ).read_text(encoding="utf-8")
     )
+    parameter_text = (planner_root / planner_data["frame_index"][parameter_frame_index]["chunk"]).read_text(encoding="utf-8")
+    parameter_frame = json.loads(parameter_text.split("=", 1)[1].rstrip(";\n"))
+    changed_connection = parameter_frame["transition"]["parameter_changes"][0]["connection"]
+    # Relative-threshold policy need not update the first displayed Satellite.
+    # Select an endpoint of an actual retained change through the visible map.
+    parameter_node = changed_connection[2]
+    _, x, y, z = next(position for position in parameter_frame["positions"] if position[0] == parameter_node)
+    parameter_latitude, parameter_longitude = degrees(atan2(z, hypot(x, y))), degrees(atan2(y, x))
     zone_id = str(first_frame["selected"]["zone_service"][0][0])
     zone_record = next(
         value
@@ -611,6 +629,9 @@ const slider=document.getElementById('planner-time');slider.value={parameter_fra
 """,
     )
     time.sleep(0.8)
+    _execute(base, session, "document.getElementById('clear-focus').click();document.getElementById('reset-view').click();document.querySelector('[data-stage=\"parameter\"]').click();return true;")
+    _click_geographic_canvas_point(base, session, "planned-map",
+                                  latitude_deg=parameter_latitude, longitude_deg=parameter_longitude)
     later_semantics = _execute(
         base,
         session,
@@ -692,7 +713,7 @@ return {realizations:document.getElementById('realization').options.length,plans
         raise AssertionError(f"S3 PhysicalWorld scale regression: {physical_world}")
     if planner_inventory != planner_inventory | {
         "transitions": 121,
-        "plans": 30,
+        "plans": 4,
         "frames": 121,
         "stages": 9,
     }:
@@ -730,8 +751,8 @@ return {realizations:document.getElementById('realization').options.length,plans
             f"{planner_stages=} {planner_semantics=} {route=}"
         )
     if compiler != compiler | {
-        "realizations": 30,
-        "plans": 30,
+        "realizations": 4,
+        "plans": 4,
         "activationBoundaries": 121,
         "charts": 4,
         "tableRows": 0,

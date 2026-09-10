@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from heapq import nsmallest
+
 from bisect import bisect_right
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -29,6 +31,7 @@ from skyseed_v2.simulator import (
     OperationalConnectionId,
     OperationalConnectionKind,
     Plan,
+    PhysicalWorld,
     PlannedOperationalState,
     ReachableRouteOutcome,
     RouteDemand,
@@ -45,10 +48,11 @@ _ARTIFACT_TYPE = "traffic-probe-plan"
 _FORMAT_VERSION = 1
 _DIRECTION_GROUND_TO_ZONE = "ground-station-to-zone"
 _DIRECTION_ZONE_TO_GROUND = "zone-to-ground-station"
+_SAMPLING_SEED = 20260909
 _PERSISTENT = "persistent"
 _ROTATING_BACKGROUND = "rotating-background"
 _ACTIVATION_WINDOW = "activation-window"
-_MAX_PERSISTENT_CONTROLS = 6
+_MAX_PERSISTENT_CONTROLS = 2
 _CANDIDATE_BUCKET_CAPACITY = 2
 _BOUNDARY_CATEGORY_QUOTA = 4
 _BOUNDARY_FACT_INSPECTION_LIMIT = 128
@@ -124,6 +128,7 @@ class _TrafficProbeEpisode:
     state_intervals: tuple[_ProbeStateInterval, ...]
     estimated_echo_requests: int
     estimated_telemetry_events: int
+    coverage_cases: tuple[tuple[str, str], ...] = ()
 
     def artifact(self) -> dict[str, object]:
         return {
@@ -140,6 +145,7 @@ class _TrafficProbeEpisode:
             "state_intervals": [value.artifact() for value in self.state_intervals],
             "estimated_echo_requests": self.estimated_echo_requests,
             "estimated_telemetry_events": self.estimated_telemetry_events,
+            "coverage_cases": [{"shell_id": shell, "case": case} for shell, case in self.coverage_cases],
         }
 
 
@@ -161,6 +167,9 @@ class TrafficProbePlan:
     revision_id: str
     candidate_pair_count: int
     planning_duration_seconds: float
+    shell_metadata: tuple[tuple[str, str], ...] = ()
+    global_budget: tuple[int, int, int] = (20, 8, 3600)
+    shell_eligibility: tuple[tuple[str, str, str, int], ...] = ()
 
     def artifact(self) -> dict[str, object]:
         persistent = sum(value.mode == _PERSISTENT for value in self.episodes)
@@ -225,11 +234,17 @@ class TrafficProbePlan:
                 "selection_reason_counts": reason_counts,
                 "estimated_echo_requests": estimated_echo,
                 "estimated_telemetry_events": estimated_telemetry,
-                "maximum_concurrent_episode_bound": len(self.episodes),
+                "maximum_concurrent_episode_bound": _peak_concurrency(self.episodes),
                 "maximum_request_rate_per_second": sum(
                     1.0 / value.interval_seconds for value in self.episodes
                 ),
             },
+            "shell_metadata": [{"node_id": node, "shell_id": shell} for node, shell in self.shell_metadata],
+            "shell_coverage": _shell_coverage(self),
+            "shell_eligibility": self.shell_eligibility,
+            "sampling": {"seed": _SAMPLING_SEED, "method": "seeded hash sampling by Shell, direction, stable/transition case and time; two long controls reserved first"},
+            "global_budget": {"maximum_episodes": self.global_budget[0], "maximum_concurrent_probes": self.global_budget[1], "maximum_echo_requests": self.global_budget[2]},
+            "qualification_policy": {"maximum_transition_disruption_seconds": 2.0},
             "probe_identities": [
                 value.artifact() for value in self.probe_identities
             ],
@@ -307,6 +322,10 @@ class TrafficProbePlan:
             _non_negative_number(
                 planning.get("duration_seconds"), "planning duration"
             ),
+            tuple((str(r["node_id"]), str(r["shell_id"])) for r in value.get("shell_metadata", ())),
+            tuple(int(value.get("global_budget", {}).get(k, d)) for k, d in zip(
+                ("maximum_episodes", "maximum_concurrent_probes", "maximum_echo_requests"), (20, 8, 3600))),
+            tuple(tuple(r) for r in value.get("shell_eligibility", ())),
         )
 
 
@@ -367,6 +386,9 @@ class TrafficProbePlanBuilder:
         maximum_activation_window_probes: int = 8,
         persistent_interval_seconds: float = 1.0,
         activation_interval_seconds: float = 0.5,
+        physical_world: PhysicalWorld | None = None,
+        maximum_concurrent_probes: int = 8,
+        maximum_echo_requests: int = 3600,
     ) -> None:
         for label, value in (
             ("maximum_persistent_probes", maximum_persistent_probes),
@@ -382,6 +404,14 @@ class TrafficProbePlanBuilder:
                 raise ValueError(f"{label} must be positive")
         if maximum_persistent_probes + maximum_activation_window_probes <= 0:
             raise ValueError("Traffic probe selection requires a positive bound")
+        if physical_world is not None and not isinstance(physical_world, PhysicalWorld):
+            raise TypeError("physical_world must be a PhysicalWorld")
+        for label, limit in (("maximum_concurrent_probes", maximum_concurrent_probes), ("maximum_echo_requests", maximum_echo_requests)):
+            _positive_int(limit, label)
+        self._node_shells = {} if physical_world is None else {
+            satellite.node_id: shell.shell_id for autonomous in physical_world.autonomous_systems
+            for shell in autonomous.shells for orbit in shell.orbits for satellite in orbit.satellites}
+        self._global_budget = (maximum_persistent_probes + maximum_activation_window_probes, maximum_concurrent_probes, maximum_echo_requests)
         self._maximum_persistent = maximum_persistent_probes
         self._maximum_windowed = maximum_activation_window_probes
         self._persistent_interval = float(persistent_interval_seconds)
@@ -406,11 +436,14 @@ class TrafficProbePlanBuilder:
         if coverage_end <= coverage_start:
             raise ValueError("Traffic probe planning requires a positive time range")
         prefixes = _zone_ipv4(values)
-        seeds = _candidate_pairs(plan_values, values, nominal_boundaries)
+        seeds = _candidate_pairs(plan_values, values, nominal_boundaries, node_shells=self._node_shells,
+                                 persistent_interval=self._persistent_interval)
         episode_requests = _select_episode_requests(
             seeds,
             maximum_background=self._maximum_persistent,
             maximum_events=self._maximum_windowed,
+            global_budget=self._global_budget,
+            intervals=(self._persistent_interval, self._activation_interval),
             nominal_boundaries=nominal_boundaries,
             coverage_start=coverage_start,
             coverage_end=coverage_end,
@@ -463,11 +496,7 @@ class TrafficProbePlanBuilder:
                         else self._persistent_interval
                     ),
                     episode_anchor=anchor,
-                    affected_times=(
-                        tuple(sorted(affected_by_key[seed.key]))
-                        if mode == _PERSISTENT
-                        else (anchor,)
-                    ),
+                    affected_times=tuple(sorted(t for t in affected_by_key[seed.key] if start <= t < end)),
                 )
             )
         if not episodes:
@@ -488,6 +517,7 @@ class TrafficProbePlanBuilder:
             ),
             len(seeds),
             monotonic() - started,
+            tuple(sorted((n.value, shell) for n, shell in self._node_shells.items())), self._global_budget, _shell_eligibility(seeds),
         )
 
 
@@ -508,13 +538,20 @@ class IncrementalTrafficProbePlanBuilder:
         maximum_activation_window_probes: int = 8,
         persistent_interval_seconds: float = 1.0,
         activation_interval_seconds: float = 0.5,
+        physical_world: PhysicalWorld | None = None,
+        maximum_concurrent_probes: int = 8,
+        maximum_echo_requests: int = 3600,
     ) -> None:
         validated = TrafficProbePlanBuilder(
             maximum_persistent_probes=maximum_persistent_probes,
             maximum_activation_window_probes=maximum_activation_window_probes,
             persistent_interval_seconds=persistent_interval_seconds,
             activation_interval_seconds=activation_interval_seconds,
+            physical_world=physical_world, maximum_concurrent_probes=maximum_concurrent_probes,
+            maximum_echo_requests=maximum_echo_requests,
         )
+        self._node_shells = validated._node_shells
+        self._global_budget = validated._global_budget
         self._maximum_persistent = validated._maximum_persistent
         self._maximum_windowed = validated._maximum_windowed
         self._persistent_interval = validated._persistent_interval
@@ -697,12 +734,15 @@ class IncrementalTrafficProbePlanBuilder:
         zone_ids = self._physical_projection.zone_ids
         prefixes = _zone_ipv4_from(self._zone_prefixes, zone_ids)
         seeds = _candidate_pairs_from_deltas(
-            deltas, self._zone_prefixes, nominal_boundaries
+            deltas, self._zone_prefixes, nominal_boundaries, node_shells=self._node_shells,
+            persistent_interval=self._persistent_interval
         )
         episode_requests = _select_episode_requests(
             seeds,
             maximum_background=self._maximum_persistent,
             maximum_events=self._maximum_windowed,
+            global_budget=self._global_budget,
+            intervals=(self._persistent_interval, self._activation_interval),
             nominal_boundaries=nominal_boundaries,
             coverage_start=coverage_start,
             coverage_end=coverage_end,
@@ -759,11 +799,7 @@ class IncrementalTrafficProbePlanBuilder:
                         else self._persistent_interval
                     ),
                     episode_anchor=anchor,
-                    affected_times=(
-                        tuple(sorted(affected_by_key[seed.key]))
-                        if mode == _PERSISTENT
-                        else (anchor,)
-                    ),
+                    affected_times=tuple(sorted(t for t in affected_by_key[seed.key] if start <= t < end)),
                 )
             )
         if not episodes:
@@ -788,6 +824,7 @@ class IncrementalTrafficProbePlanBuilder:
             ),
             len(seeds),
             self._work_seconds + monotonic() - started,
+            tuple(sorted((n.value, shell) for n, shell in self._node_shells.items())), self._global_budget, _shell_eligibility(seeds),
         )
 
     def snapshot(self) -> dict[str, int | bool]:
@@ -1245,6 +1282,7 @@ def _candidate_pairs(
     plans: tuple[Plan, ...],
     values: tuple[BpfCompiledRealization, ...],
     nominal_boundaries: tuple[datetime, ...],
+    *, node_shells=None, persistent_interval=1.0,
 ) -> tuple[_PairSeed, ...]:
     return _candidate_pairs_from_scan(
         lambda visitor: _scan_boundaries(
@@ -1253,7 +1291,7 @@ def _candidate_pairs(
             visitor,
             validate_end_state=True,
         ),
-        nominal_boundaries,
+        nominal_boundaries, node_shells=node_shells, persistent_interval=persistent_interval,
     )
 
 
@@ -1261,12 +1299,13 @@ def _candidate_pairs_from_deltas(
     deltas: tuple[_TrafficBoundaryDelta, ...],
     zone_prefixes: tuple[tuple[str, str], ...],
     nominal_boundaries: tuple[datetime, ...],
+    *, node_shells=None, persistent_interval=1.0,
 ) -> tuple[_PairSeed, ...]:
     return _candidate_pairs_from_scan(
         lambda visitor: _scan_boundary_deltas(
             deltas, zone_prefixes, visitor
         ),
-        nominal_boundaries,
+        nominal_boundaries, node_shells=node_shells, persistent_interval=persistent_interval,
     )
 
 
@@ -1275,8 +1314,15 @@ def _candidate_pairs_from_scan(
         [Callable[[_BoundaryProjection], None]], tuple[datetime, ...]
     ],
     nominal_boundaries: tuple[datetime, ...],
+    *, node_shells=None, persistent_interval=1.0,
 ) -> tuple[_PairSeed, ...]:
     reservoir = _StratifiedCandidateReservoir()
+    eligible_scopes = {}
+    initial_pairs = set()
+    changed_pairs = set()
+    eligible_by_scope = defaultdict(set)
+    eligible_grounds_by_zone = defaultdict(set)
+    node_shells = {} if node_shells is None else node_shells
     ground_stations_by_zone: dict[str, set[NodeId]] = defaultdict(set)
     ground_targets_by_satellite: dict[NodeId, set[NodeId]] = defaultdict(set)
     zones_by_satellite: dict[NodeId, set[str]] = defaultdict(set)
@@ -1324,6 +1370,60 @@ def _candidate_pairs_from_scan(
                 zones_by_satellite[prior[1]].discard(zone_id)
             if current is not None:
                 zones_by_satellite[current[1]].add(zone_id)
+
+        if node_shells:
+            # Route/Zone deltas identify the affected endpoint pairs. Eligibility
+            # uses authoritative paths; compiled path verification is deferred
+            # to reconstruction of the bounded selected workload.
+            affected = set()
+            for demand in projection.route_outcomes_changed:
+                if demand.source.entity_kind == "ground-station" and isinstance(demand.target, ZoneRouteDemandTarget):
+                    affected.add((demand.source, demand.target.zone_id))
+                elif isinstance(demand.target, GroundStationRouteDemandTarget):
+                    affected.update((demand.target.ground_station_id, zone)
+                                    for zone in zones_by_satellite.get(demand.source, ()))
+            for zone in projection.changed_zones:
+                grounds = set(ground_stations_by_zone.get(zone, ()))
+                for edge in (projection.prior_zone_edges.get(zone), projection.zone_edges.get(zone)):
+                    if edge is not None:
+                        grounds.update(ground_targets_by_satellite.get(edge[1], ()))
+                grounds.update(eligible_grounds_by_zone.get(zone, ()))
+                affected.update((ground, zone) for ground in grounds)
+            if index == 0:
+                initial_pairs.update(affected)
+            else:
+                changed_pairs.update(affected)
+            for ground, zone in sorted(affected, key=lambda p: (p[0].value, p[1])):
+                key = ground, zone
+                for scope in eligible_scopes.pop(key, ()):
+                    eligible_by_scope[scope].discard(key)
+                eligible_grounds_by_zone[zone].discard(ground)
+                edge = projection.zone_edges.get(zone)
+                if edge is None:
+                    continue
+                forward = projection.route_outcomes.get(RouteDemand(ground, ZoneRouteDemandTarget(zone)))
+                reverse = projection.route_outcomes.get(RouteDemand(edge[1], GroundStationRouteDemandTarget(ground)))
+                if not isinstance(forward, ReachableRouteOutcome) or not isinstance(reverse, ReachableRouteOutcome):
+                    continue
+                scopes = set()
+                for direction, outcome in ((_DIRECTION_GROUND_TO_ZONE, forward), (_DIRECTION_ZONE_TO_GROUND, reverse)):
+                    for shell in {node_shells[n] for n in outcome.path if n in node_shells}:
+                        scope = shell, direction
+                        scopes.add(scope)
+                        eligible_by_scope[scope].add(key)
+                        if index > 0:
+                            reservoir.add(direction, ground, zone, f"shell-coverage:{shell}:transition", projection.nominal_time, stratum)
+                eligible_scopes[key] = scopes
+                eligible_grounds_by_zone[zone].add(ground)
+            if index in sample_indexes:
+                for (shell, direction), pairs in sorted(eligible_by_scope.items()):
+                    # Only a bounded sample enters the time reservoir. No path
+                    # resolutions occur at unchanged boundaries.
+                    sampled = nsmallest(_CANDIDATE_BUCKET_CAPACITY, pairs,
+                        key=lambda p: sha256(f"{_SAMPLING_SEED}|{p[0].value}|{p[1]}|{stratum}".encode()).hexdigest())
+                    for ground, zone in sampled:
+                        if (ground, zone) not in affected or index == 0:
+                            reservoir.add(direction, ground, zone, f"shell-coverage:{shell}:stable", projection.nominal_time, stratum)
 
         def add(
             direction: str,
@@ -1495,7 +1595,83 @@ def _candidate_pairs_from_scan(
     visited = scan(visit)
     if visited != nominal_boundaries:
         raise ValueError("Traffic candidate scan omitted a nominal boundary")
-    return reservoir.values()
+    seeds = list(reservoir.values())
+    by_key = {seed.key: seed for seed in seeds}
+    for case, pairs in (("stable", initial_pairs - changed_pairs), ("changing", initial_pairs & changed_pairs)):
+        for ground, zone in nsmallest(1, pairs & set(eligible_scopes),
+                key=lambda p: sha256(f"{_SAMPLING_SEED}|{p[0].value}|{p[1]}".encode()).hexdigest()):
+            direction = _DIRECTION_GROUND_TO_ZONE if case == "stable" else _DIRECTION_ZONE_TO_GROUND
+            seed = by_key.get((direction, ground.value, zone))
+            if seed is None:
+                seed = _PairSeed(direction, ground, zone, defaultdict(set))
+                seeds.append(seed)
+            seed.reason_times[f"long-{case}-candidate"].add(nominal_boundaries[0])
+            seed.reason_times["persistent-control-candidate"].add(nominal_boundaries[0])
+    if node_shells:
+        _complete_control_coverage(scan, tuple(seeds), nominal_boundaries, node_shells,
+                                   interval_seconds=persistent_interval)
+    return tuple(seeds)
+
+
+def _persistent_controls(seeds, maximum):
+    representatives = tuple(value for case in ("stable", "changing") for value in seeds
+                            if f"long-{case}-candidate" in value.reason_times)
+    fallback = _take_direction_coverage(tuple(value for value in seeds
+        if "persistent-control-candidate" in value.reason_times), maximum=maximum)
+    keys = tuple(dict.fromkeys(value.key for value in (*representatives, *fallback)))[:maximum]
+    by_key = {value.key: value for value in seeds}
+    return tuple(by_key[key] for key in keys)
+
+
+def _complete_control_coverage(scan, seeds, nominal_boundaries, node_shells, *, interval_seconds=1.0):
+    """Recover eligible windows for at most two controls outside the reservoir.
+
+    Representatives are known only after the horizon scan. A second delta scan
+    checks their authoritative forward/return paths, without retaining histories
+    for all eligible pairs or resolving unselected compiled paths.
+    """
+    controls = _persistent_controls(seeds, _MAX_PERSISTENT_CONTROLS)
+    if not controls:
+        return
+    for seed in controls:
+        for reason in tuple(seed.reason_times):
+            if reason.startswith("shell-coverage:"):
+                del seed.reason_times[reason]
+    next_boundary = dict(zip(nominal_boundaries, nominal_boundaries[1:]))
+    prior = {}
+    origin = nominal_boundaries[0]
+    transition_window = timedelta(seconds=max(3.0, 2 * interval_seconds))
+    def first_request(at):
+        return origin + timedelta(seconds=ceil((at-origin).total_seconds() / interval_seconds) * interval_seconds)
+
+    def visit(projection):
+        at = projection.nominal_time
+        end = next_boundary.get(at, at)
+        for seed in controls:
+            edge = projection.zone_edges.get(seed.zone_id)
+            forward = projection.route_outcomes.get(RouteDemand(seed.ground_station, ZoneRouteDemandTarget(seed.zone_id)))
+            reverse = None if edge is None else projection.route_outcomes.get(
+                RouteDemand(edge[1], GroundStationRouteDemandTarget(seed.ground_station)))
+            reachable = isinstance(forward, ReachableRouteOutcome) and isinstance(reverse, ReachableRouteOutcome)
+            state = (forward, reverse, edge)
+            changed = (seed.key in prior and prior[seed.key] != state
+                       or seed.ground_station in projection.changed_access_ground_stations)
+            prior[seed.key] = state
+            if not reachable or end <= at:
+                continue
+            outcome = forward if seed.direction == _DIRECTION_GROUND_TO_ZONE else reverse
+            shells = {node_shells[n] for n in outcome.path if n in node_shells}
+            for shell in shells:
+                if changed and at > origin and first_request(at) < min(end, at + transition_window):
+                    seed.reason_times.setdefault(f"shell-coverage:{shell}:transition", set()).add(at)
+                # A reachable interval can support stable observations after its
+                # short transition window; B0 itself is never transition credit.
+                stable_at = first_request(at + transition_window if changed else at)
+                if stable_at < end:
+                    seed.reason_times.setdefault(f"shell-coverage:{shell}:stable", set()).add(stable_at)
+
+    if scan(visit) != nominal_boundaries:
+        raise ValueError("Traffic control eligibility scan omitted a nominal boundary")
 
 
 def _select_episode_requests(
@@ -1503,6 +1679,8 @@ def _select_episode_requests(
     *,
     maximum_background: int,
     maximum_events: int,
+    global_budget: tuple[int, int, int] = (20, 8, 3600),
+    intervals: tuple[float, float] = (1.0, 0.5),
     nominal_boundaries: tuple[datetime, ...],
     coverage_start: datetime,
     coverage_end: datetime,
@@ -1510,14 +1688,7 @@ def _select_episode_requests(
     """Apply cheap direction/time quotas before selected-path reconstruction."""
 
     control_limit = min(maximum_background, _MAX_PERSISTENT_CONTROLS)
-    controls = _take_direction_coverage(
-        tuple(
-            value
-            for value in seeds
-            if "persistent-control-candidate" in value.reason_times
-        ),
-        maximum=control_limit,
-    )
+    controls = _persistent_controls(seeds, control_limit)
     result = [
         (
             value,
@@ -1568,7 +1739,7 @@ def _select_episode_requests(
         (value.direction, timestamp, reason, value)
         for value in seeds
         for reason, timestamps in value.reason_times.items()
-        if reason not in background_labels
+        if reason not in background_labels and not reason.startswith("shell-coverage:")
         for timestamp in timestamps
     )
     for _direction, timestamp, _label, seed in _take_stratified_observations(
@@ -1594,15 +1765,111 @@ def _select_episode_requests(
                 )
             )
 
-    unique: dict[tuple[tuple[str, str, str], str, datetime], _EpisodeRequest] = {}
-    for value in result:
-        unique[(value[0].key, value[1], value[2])] = value
-    return tuple(
-        sorted(
-            unique.values(),
-            key=lambda value: (value[3], value[1], value[0].key),
-        )
-    )
+    return _budgeted_requests(seeds, result, coverage_start, coverage_end, global_budget, intervals)
+
+
+def _budgeted_requests(seeds, diversity, start, end, budget, intervals):
+    maximum, concurrent, echoes = budget
+    selected = []
+    used = set()
+    def identity(request):
+        return request[0].key, request[1], request[2]
+    def fits(request):
+        if identity(request) in used or len(selected) >= maximum:
+            return False
+        proposals = [*selected, request]
+        events = sorted((at, delta) for r in proposals for at, delta in ((r[3], 1), (r[4], -1)))
+        current = peak = 0
+        for _, delta in events:
+            current += delta
+            peak = max(peak, current)
+        count = sum(ceil((r[4]-r[3]).total_seconds() / intervals[r[1] == _ACTIVATION_WINDOW]) for r in proposals)
+        return peak <= concurrent and count <= echoes
+    # Reserve the two long controls before short-flow stratified coverage.
+    for request in (r for r in diversity if r[1] == _PERSISTENT):
+        if fits(request):
+            selected.append(request)
+            used.add(identity(request))
+    candidates = {}
+    for seed in seeds:
+        for reason, times in seed.reason_times.items():
+            if not reason.startswith("shell-coverage:"):
+                continue
+            shell, case = reason.removeprefix("shell-coverage:").rsplit(":", 1)
+            for anchor in sorted(times):
+                if anchor >= end:
+                    continue
+                begin, finish = _bounded_episode_window(anchor, coverage_start=start, coverage_end=end,
+                                                        before_seconds=1 if case == "stable" else 2,
+                                                        after_seconds=4 if case == "stable" else 3)
+                request = (seed, _ROTATING_BACKGROUND if case == "stable" else _ACTIVATION_WINDOW, anchor, begin, finish)
+                key = identity(request)
+                candidates.setdefault(key, (request, set()))[1].add((shell, seed.direction, case))
+    needed = {goal for _, goals in candidates.values() for goal in goals}
+    # A long control earns only the same eligible-window credit as a short
+    # episode. Its duration alone does not establish stable/transition coverage.
+    for request in selected:
+        seed, _, _, begin, finish = request
+        for reason, times in seed.reason_times.items():
+            if reason.startswith("shell-coverage:") and any(begin <= t < finish for t in times):
+                shell, case = reason.removeprefix("shell-coverage:").rsplit(":", 1)
+                needed.discard((shell, seed.direction, case))
+    for case in ("stable", "transition"):
+        while any(goal[2] == case for goal in needed):
+            choices = [(request, goals & needed) for request, goals in candidates.values()
+                       if any(goal[2] == case for goal in goals & needed) and fits(request)]
+            if not choices:
+                break
+            request, covered = min(choices, key=lambda item: (
+                -len(item[1]),
+                sum(abs((item[0][2] - r[2]).total_seconds()) < 30 for r in selected),
+                sha256(f"{_SAMPLING_SEED}|{identity(item[0])!r}".encode()).hexdigest()))
+            selected.append(request); used.add(identity(request)); needed.difference_update(covered)
+    for request in diversity:
+        if fits(request):
+            selected.append(request); used.add(identity(request))
+    return tuple(sorted(selected, key=lambda r: (r[3], r[1], r[0].key)))
+
+
+def _peak_concurrency(episodes):
+    current = peak = 0
+    for _, delta in sorted((at, delta) for e in episodes for at, delta in ((e.start_time, 1), (e.end_time, -1))):
+        current += delta
+        peak = max(peak, current)
+    return peak
+
+
+def _shell_eligibility(seeds):
+    counts = defaultdict(int)
+    for seed in seeds:
+        for reason, times in seed.reason_times.items():
+            if reason.startswith("shell-coverage:"):
+                shell, case = reason.removeprefix("shell-coverage:").rsplit(":", 1)
+                counts[(shell, seed.direction, case)] += len(times)
+    return tuple((*key, count) for key, count in sorted(counts.items()))
+
+
+def _shell_coverage(plan):
+    membership = dict(plan.shell_metadata)
+    identities = {i.probe_id: i for i in plan.probe_identities}
+    eligibility = {(s, d, c): count for s, d, c, count in plan.shell_eligibility}
+    result = []
+    for shell in sorted(set(membership.values())):
+        episodes = []
+        for e in plan.episodes:
+            intervals = [i for i in e.state_intervals if i.expected_reachable and any(membership.get(n) == shell for n in i.path_node_ids)]
+            if intervals:
+                episodes.append({"episode_id": e.episode_id, "direction": identities[e.probe_id].direction,
+                                 "mode": e.mode, "reachable_interval_count": len(intervals),
+                                 "cases": sorted({case for s, case in e.coverage_cases if s == shell})})
+        goals = [{"direction": d, "case": c, "eligible_candidate_observations": eligibility.get((shell, d, c), 0),
+                  "selected": any(e['direction'] == d and c in e['cases'] for e in episodes)}
+                 for d in (_DIRECTION_GROUND_TO_ZONE, _DIRECTION_ZONE_TO_GROUND) for c in ("stable", "transition")]
+        eligible = any(g['eligible_candidate_observations'] for g in goals)
+        result.append({"shell_id": shell, "eligible": eligible, "episodes": episodes, "goals": goals,
+                       "status": "selected" if eligible and all(g['selected'] or not g['eligible_candidate_observations'] for g in goals) else "budget-or-window-gap" if eligible else "no-eligible-candidate",
+                       "reason": None if eligible else "No explicit bidirectionally reachable GS/Zone planned path through this typed Shell in the scanned horizon."})
+    return result
 
 
 def _take_direction_coverage(
@@ -1936,6 +2203,7 @@ def _append_state_interval(
     prior = intervals[-1]
     if (
         prior.end_time == current.start_time
+        and not current.boundary_reasons
         and prior.expected_reachable == current.expected_reachable
         and prior.unreachable_reason == current.unreachable_reason
         and prior.service_satellite_id == current.service_satellite_id
@@ -2103,6 +2371,9 @@ def _make_episode(
         selected_intervals,
         echo_requests,
         estimated_events,
+        tuple(sorted(tuple(reason.removeprefix("shell-coverage:").rsplit(":", 1))
+                     for reason, times in seed.reason_times.items() if reason.startswith("shell-coverage:")
+                     and (episode_anchor in times or (mode == _PERSISTENT and any(start <= t < end for t in times))))),
     )
 
 
@@ -2169,6 +2440,7 @@ def _episode_from_artifact(
         intervals,
         _non_negative_int(item.get("estimated_echo_requests"), "estimated echo requests"),
         _non_negative_int(item.get("estimated_telemetry_events"), "estimated telemetry events"),
+        tuple((str(r["shell_id"]), str(r["case"])) for r in item.get("coverage_cases", ())),
     )
 
 
