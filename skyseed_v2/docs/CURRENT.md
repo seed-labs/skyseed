@@ -1,6 +1,28 @@
 # Current implementation state
 
-## Offline preparation closeout (2026-09-14, pending independent review)
+## Accepted closeout and material cleanup (2026-09-14)
+
+Work independently accepted implementation checkpoint `573877076be046f8ef3248aaebc3b35742a554e1`.
+The review checked source identities and all 61 matched decoding records and ran
+102 focused tests (one existing fixture skip). This does not extend the recorded
+offline evidence to a new full-scale live qualification. The user then authorized
+Work to clean completed validation/presentation material and make a local commit.
+
+The [retention manifest](provenance/work-artifact-cleanup-20260914.json) records
+removed material, duplicate artifact identities and before/after hashes of retained
+evidence. The final 42-page image PPT, its compact provenance, the paper discussion,
+the latest complete lifecycle output and normal Example outputs remain. Historical
+failed runtime records, frozen sources, measurements and offline comparison records
+remain; obsolete generated histories/views, duplicate artifacts, container build
+contexts, presentation revisions and authoring caches were removed. The old campaign
+is now an evidence subset, not a runnable or complete Tool output. These retention
+facts supersede earlier statements that every historical material remained intact.
+
+This round is complete. The deferred Skyseed 1.0 work starts with Example
+simplification/synchronization in a subsequent discussion. No implementation,
+experiment, push or 1.0 work was performed as part of this cleanup.
+
+## Offline preparation closeout (2026-09-14, independently accepted)
 
 Three later private changes follow the completed full-scale lifecycle below:
 
@@ -102,7 +124,7 @@ compatibility checks, fixed runtime admission, kernel-result checks, version reu
 and safe reclamation remain. This scenario sets lead fraction 1.0 and capacity
 factor 2; READY still requires complete preparation before the fixed deadline.
 
-The interrupted campaign remains intact at
+The interrupted campaign's retained evidence is at
 `/home/lionheart/workspace/skyseed-local/experiments/shared-gs-scopes-20260911T040523Z/`.
 Its A run failed at the 300-second READY deadline. Recovery on 2026-09-13 directly
 verified all 4765 recorded containers as stopped and project-owned, then removed

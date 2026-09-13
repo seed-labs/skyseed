@@ -950,8 +950,11 @@ cover full-state equivalence, interleaved consumption, partial re-entry, resourc
 ownership, dependencies/hooks, kernel results and existing Traffic evidence.
 Live evidence and exact status are tracked in [CURRENT](../CURRENT.md) and
 `/home/lionheart/workspace/skyseed-local/experiments/shell-lifecycle-20260913/`.
-The original campaign, paper candidates, presentations and normal outputs remain
-untouched. The single live lifecycle qualification completed on 2026-09-13/14:
+The original campaign, paper candidates, presentations and normal outputs were
+untouched by that implementation. The later user-authorized
+[material cleanup](work-artifact-cleanup-20260914.json) retains unique evidence and
+final outputs while removing superseded generated material. The single live
+lifecycle qualification completed on 2026-09-13/14:
 startup script 646.859 seconds, Preparation/B0 337.129 seconds, successor total
 239.537 seconds with 60.458 seconds READY margin, and all 121 boundaries through
 600 seconds. Full Runner cleanup took 51.358 seconds; generated deployment

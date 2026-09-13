@@ -20,3 +20,6 @@ Retained material:
   distinguishing checkpoint-specific implementation facts, historical evidence,
   supplied Work observations, inferred rationale and evidence gaps; its
   [Chinese explanation](../human-readable/optimization-decisions.md) is the human entry.
+- [completed-work material retention manifest](work-artifact-cleanup-20260914.json),
+  recording the final presentation, retained validation evidence, duplicate artifact
+  identities and the user-authorized 2026-09-14 cleanup.
