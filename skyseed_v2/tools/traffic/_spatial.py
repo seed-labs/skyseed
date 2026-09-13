@@ -111,7 +111,7 @@ def _flow_index(data, rows):
         if key in flows:
             raise ValueError('duplicate authoritative Traffic episode/probe')
         flows[key] = {name: episode.get(name) for name in
-                      ('episode_id', 'probe_id', 'direction', 'zone_id',
+                      ('episode_id', 'probe_id', 'direction', 'zone_id', 'network_scope',
                        'ground_station_id', 'sent', 'received', 'loss')}
         flows[key].update(key=key, transactions=[], segments=[])
     for row in rows:
@@ -128,11 +128,12 @@ def _flow_index(data, rows):
         if row['segment_index'] is not None and row['segment_index'] not in flow['segments']:
             flow['segments'].append(row['segment_index'])
         row['flow'] = key
+        row['network_scope'] = flow.get('network_scope', '')
     for flow in flows.values():
         flow['segments'].sort()
         flow['transactions'].sort(key=lambda i: (rows[i]['evidence_time'] is None,
                                                 rows[i]['evidence_time'] or '', i))
-        flow['label'] = ('Zone ' + str(flow['zone_id']) + ' ↔ ' + str(flow.get('ground_station_id'))
+        flow['label'] = ((str(flow.get('network_scope') or 'unscoped') + ' · Zone ') + str(flow['zone_id']) + ' ↔ ' + str(flow.get('ground_station_id'))
                          + ' · ' + str(flow.get('direction')) + ' · ' if flow.get('zone_id') else '') + (
                          flow.get('episode_id') or 'Unassociated transaction ' + str(flow['transactions'][0]))
     return list(flows.values())

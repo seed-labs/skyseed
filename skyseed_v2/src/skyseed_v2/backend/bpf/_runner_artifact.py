@@ -51,11 +51,11 @@ from ._runner.runtime_realization import (
 
 
 _ARTIFACT_TYPE = "skyseed-v2-runner-runtime-artifact"
-_FORMAT_VERSION = 3
-_ENCODING = "typed-packed-runtime-tables-v3"
+_FORMAT_VERSION = 4
+_ENCODING = "typed-packed-runtime-tables-v4"
 _BINARY_NAME = "runner-runtime.bin"
 _MANIFEST_NAME = "manifest.json"
-_MAGIC = b"SKYRUN3\0"
+_MAGIC = b"SKYRUN4\0"
 _HEADER = struct.Struct("<8sHHIQQ32s")
 _INDEX = struct.Struct("<QQII32s")
 _MAX_BOUNDARIES = 10_000_000
@@ -142,7 +142,7 @@ def _route_key(intent: _ForwardingIntent) -> tuple[str, str, str]:
     if isinstance(target, GroundStationRouteDemandTarget):
         target_key = ("ground-station", target.ground_station_id.value)
     elif isinstance(target, ZoneRouteDemandTarget):
-        target_key = ("zone", target.zone_id)
+        target_key = ("zone", target.service_key)
     else:  # pragma: no cover - RouteKey owns this validation
         raise TypeError("compiled forwarding has an unknown route target")
     return intent.route_key.source.value, *target_key
@@ -163,7 +163,7 @@ def _stable_operation_key(operation: _BoundaryOperation) -> tuple[object, ...]:
         semantic = (*_route_key(intent), intent.operation.value)
     elif isinstance(intent, _ZoneEdgeIntent):
         semantic = (
-            intent.zone_id,
+            intent.service_key,
             intent.phase.value,
             intent.operation.value,
         )
@@ -674,6 +674,7 @@ class _RunnerArtifactWriter:
             "physical_world": {
                 "nodes": [_node_to_data(value) for value in self._projection.node_ids],
                 "zones": list(self._projection.zone_ids),
+                "network_scopes": list(self._projection.network_scopes),
                 "fingerprint": self._lineage[0]["physical_world_fingerprint"],
             },
             "zone_prefixes": [list(value) for value in self._zone_prefixes],
@@ -713,6 +714,9 @@ class _RunnerArtifactWriter:
             )
 
 
+_DECODE_REUSE_LIMIT = 16_384
+
+
 class _DecodedIdentities:
     """Immutable value reuse owned by one open finite artifact."""
 
@@ -720,6 +724,183 @@ class _DecodedIdentities:
         self.nodes = {(node.asn, node.entity_kind, node.entity_id): node for node in nodes}
         self.connections = {}
         self.timestamps = {}
+        self.texts = {}
+        self.targets = {}
+
+
+class _PackedBoundaryReader:
+    """Decode v4 operations directly; only small metadata uses generic trees."""
+
+    def __init__(self, data: bytes, identities: _DecodedIdentities):
+        self.data = data
+        self.cursor = 0
+        self.identities = identities
+
+    def header(self, tag: int, size: int) -> int:
+        start = self.cursor
+        if start + size > len(self.data):
+            raise ValueError("Runner artifact packed value is truncated")
+        if self.data[start] != tag:
+            raise ValueError("Runner artifact packed field type differs")
+        self.cursor = start + size
+        return start
+
+    def integer(self) -> int:
+        return struct.unpack_from('<q', self.data, self.header(105, 9) + 1)[0]
+
+    def text(self) -> str:
+        start = self.header(115, 5)
+        length = struct.unpack_from('<I', self.data, start + 1)[0]
+        end = self.cursor + length
+        if end > len(self.data):
+            raise ValueError("Runner artifact packed value is truncated")
+        raw = self.data[self.cursor:end]
+        self.cursor = end
+        texts = self.identities.texts
+        value = texts.get(raw)
+        if value is None:
+            try:
+                value = raw.decode('utf-8')
+            except UnicodeDecodeError as error:
+                raise ValueError("Runner artifact string is not UTF-8") from error
+            if len(raw) <= 256 and len(texts) < _DECODE_REUSE_LIMIT:
+                texts[raw] = value
+        return value
+
+    def count(self, tag=108, expected=None) -> int:
+        start = self.header(tag, 5)
+        count = struct.unpack_from('<I', self.data, start + 1)[0]
+        if count > _MAX_CONTAINER_ITEMS:
+            raise ValueError("Runner artifact packed container is too large")
+        if expected is not None and count != expected:
+            raise ValueError("Runner artifact packed sequence schema differs")
+        return count
+
+    def absent(self) -> bool:
+        if self.cursor < len(self.data) and self.data[self.cursor] == 110:
+            self.cursor += 1
+            return True
+        return False
+
+    def node(self) -> NodeId:
+        self.count(expected=3)
+        key = (self.integer(), self.text(), self.text())
+        nodes = self.identities.nodes
+        value = nodes.get(key)
+        if value is None:
+            value = nodes[key] = NodeId(*key)
+        return value
+
+    def connection(self) -> OperationalConnectionId:
+        self.count(expected=3)
+        key = (OperationalConnectionKind(self.text()), self.node(), self.node())
+        connections = self.identities.connections
+        value = connections.get(key)
+        if value is None:
+            value = connections[key] = OperationalConnectionId(*key)
+        return value
+
+    def target(self):
+        self.count(expected=3)
+        kind = self.text()
+        if kind == 'ground-station':
+            identity = self.node()
+        elif kind == 'zone':
+            identity = self.text()
+        else:
+            raise ValueError("Runner artifact forwarding target kind differs")
+        scope = self.text()
+        key = (kind, identity, scope)
+        targets = self.identities.targets
+        value = targets.get(key)
+        if value is None:
+            value = (GroundStationRouteDemandTarget(identity, scope) if kind == 'ground-station'
+                     else ZoneRouteDemandTarget(identity, scope))
+            if len(targets) < _DECODE_REUSE_LIMIT:
+                targets[key] = value
+        return value
+
+    def forwarding_key(self) -> _ForwardingKey:
+        self.count(expected=2)
+        return _ForwardingKey(self.node(), self.target())
+
+    def binding(self) -> _ForwardingBinding | None:
+        if self.absent():
+            return None
+        self.count(expected=4)
+        key, hop, connection = self.forwarding_key(), self.node(), self.connection()
+        prefix = None if self.absent() else self.text()
+        return _ForwardingBinding(key, hop, connection, prefix)
+
+    def intent(self):
+        count = self.count()
+        kind = self.text()
+        timestamp = _timestamp(self.text(), self.identities)
+        if kind == 'resource' and count == 4:
+            operation, connection = _ResourceOperation(self.text()), self.connection()
+            return _ResourceIntent(timestamp, operation, connection, (
+                _AttachmentDemand(connection, connection.endpoint_a, connection.endpoint_b),
+                _AttachmentDemand(connection, connection.endpoint_b, connection.endpoint_a)))
+        if kind == 'qdisc' and count == 9:
+            return _QdiscIntent(timestamp, self.connection(), self.node(), self.node(),
+                                self.integer(), self.integer(), self.integer(), self.text())
+        if kind == 'forwarding' and count == 6:
+            return _ForwardingIntent(timestamp, _MutationOperation(self.text()),
+                                     self.forwarding_key(), self.binding(), self.binding())
+        if kind == 'zone-edge' and count == 9:
+            return _ZoneEdgeIntent(timestamp, _MutationOperation(self.text()), _ZoneEdgePhase(self.text()),
+                self.text(), self.text(), None if self.absent() else self.node(),
+                None if self.absent() else self.node(), self.text())
+        raise ValueError("Runner artifact intent schema differs")
+
+    def operations(self) -> tuple[_BoundaryOperation, ...]:
+        operations = []
+        for _ in range(self.count()):
+            self.count(expected=4)
+            operations.append(_BoundaryOperation(self.integer(), self.text(), self.integer(), self.intent()))
+        return tuple(operations)
+
+    def value(self, depth=0):
+        if depth > _MAX_DEPTH:
+            raise ValueError("Runner artifact packed value is too deeply nested")
+        if self.cursor == len(self.data):
+            raise ValueError("Runner artifact packed value is truncated")
+        tag = self.data[self.cursor]
+        if tag in (110, 102, 116):
+            self.cursor += 1
+            return None if tag == 110 else tag == 116
+        if tag == 105:
+            return self.integer()
+        if tag == 115:
+            return self.text()
+        if tag == 108:
+            return [self.value(depth + 1) for _ in range(self.count())]
+        if tag == 100:
+            result = {}; prior = None
+            for _ in range(self.count(100)):
+                key = self.text()
+                if prior is not None and key <= prior:
+                    raise ValueError("Runner artifact dictionary keys are not canonical")
+                result[key] = self.value(depth + 1); prior = key
+            return result
+        raise ValueError("Runner artifact packed value has an unknown type tag")
+
+    def boundary(self, projection):
+        record = {}; operations = None; prior = None
+        for _ in range(self.count(100)):
+            key = self.text()
+            if prior is not None and key <= prior:
+                raise ValueError("Runner artifact dictionary keys are not canonical")
+            if key == 'operations':
+                operations = self.operations()
+            else:
+                record[key] = self.value(1)
+            prior = key
+        if self.cursor != len(self.data):
+            raise ValueError("Runner artifact packed value has trailing bytes")
+        if operations is None:
+            raise ValueError("Runner artifact boundary omitted operations")
+        return _boundary_from_fields(record, operations, projection, self.identities)
 
 
 class _RunnerArtifact:
@@ -807,11 +988,7 @@ class _RunnerArtifact:
         packed = self._mmap[offset:offset + length]
         if sha256(packed).digest() != digest:
             raise ValueError("Runner artifact binary record hash differs")
-        value = _decode_boundary_data(
-            _unpack(packed),
-            physical_world_projection=self.physical_world_projection,
-            identities=self._identities,
-        )
+        value = _PackedBoundaryReader(packed, self._identities).boundary(self.physical_world_projection)
         if len(value.operations) != expected_operations:
             raise ValueError("Runner artifact operation count differs")
         return value
@@ -840,6 +1017,8 @@ class _RunnerArtifact:
         self._identities.nodes.clear()
         self._identities.connections.clear()
         self._identities.timestamps.clear()
+        self._identities.texts.clear()
+        self._identities.targets.clear()
 
     def _validate_binary(self) -> tuple[tuple[int, int, int, bytes], ...]:
         size = len(self._mmap)
@@ -960,11 +1139,12 @@ def _read_runner_artifact_manifest_snapshot(manifest_path: Path) -> dict[str, An
               or lineage[0]["input_state_fingerprint"] != delivery["prior_state_fingerprint"]):
             raise ValueError("continued artifact predecessor metadata differs")
     physical = manifest["physical_world"]
-    if not isinstance(physical, dict) or set(physical) != {"nodes", "zones", "fingerprint"}:
+    if not isinstance(physical, dict) or set(physical) != {"nodes", "zones", "fingerprint", "network_scopes"}:
         raise ValueError("Runner artifact PhysicalWorld metadata differs")
     projection = _PhysicalWorldProjection(
         tuple(_node_from_data(value) for value in physical["nodes"]),
         tuple(str(value) for value in physical["zones"]),
+        tuple(physical["network_scopes"]),
     )
     logical_ports = {}
     allocated = set()
@@ -982,9 +1162,12 @@ def _read_runner_artifact_manifest_snapshot(manifest_path: Path) -> dict[str, An
             raise ValueError("Runner artifact logical port identity is invalid")
         logical_ports[connection] = ports
         allocated.update(ports)
-    zone_prefixes = tuple((str(value[0]), str(value[1])) for value in manifest["zone_prefixes"] if isinstance(value, list) and len(value) == 2)
+    zone_prefixes = tuple((tuple(value[0]), str(value[1])) for value in manifest["zone_prefixes"] if isinstance(value, list) and len(value) == 2 and isinstance(value[0], list) and len(value[0]) == 2)
     if len(zone_prefixes) != len(manifest["zone_prefixes"]):
         raise ValueError("Runner artifact Zone prefix metadata differs")
+    from .compiler import _allocate_zone_prefixes
+    if zone_prefixes != tuple(sorted(_allocate_zone_prefixes(projection.service_keys).items())):
+        raise ValueError("Runner artifact scoped Zone destinations differ")
     try:
         capacity_demand = _validate_runtime_capacity_demand(
             manifest["runtime_capacity_demand"],
@@ -1035,6 +1218,10 @@ def _decode_boundary_data(
 ):
     record = _dict(value, "boundary")
     operations = tuple(_BoundaryOperation(int(item[0]), str(item[1]), int(item[2]), _intent_from_data(item[3], identities)) for item in _list(record["operations"], "operations"))
+    return _boundary_from_fields(record, operations, physical_world_projection, identities)
+
+
+def _boundary_from_fields(record, operations, physical_world_projection, identities):
     return _NominalBoundary(
         nominal_time=_timestamp(record["time"], identities), operations=operations,
         physical_world_projection=physical_world_projection,
@@ -1064,7 +1251,7 @@ def _intent_to_data(intent: object) -> list[object]:
     if isinstance(intent, _ForwardingIntent):
         return ["forwarding", intent.nominal_time.isoformat(), intent.operation.value, _forwarding_key_to_data(intent.route_key), None if intent.previous is None else _binding_to_data(intent.previous), None if intent.current is None else _binding_to_data(intent.current)]
     if isinstance(intent, _ZoneEdgeIntent):
-        return ["zone-edge", intent.nominal_time.isoformat(), intent.operation.value, intent.phase.value, intent.zone_id, intent.packet_prefix, None if intent.previous_service_satellite_id is None else _node_to_data(intent.previous_service_satellite_id), None if intent.service_satellite_id is None else _node_to_data(intent.service_satellite_id)]
+        return ["zone-edge", intent.nominal_time.isoformat(), intent.operation.value, intent.phase.value, intent.zone_id, intent.packet_prefix, None if intent.previous_service_satellite_id is None else _node_to_data(intent.previous_service_satellite_id), None if intent.service_satellite_id is None else _node_to_data(intent.service_satellite_id), intent.network_scope]
     raise TypeError("unknown normalized Runner intent")
 
 
@@ -1079,8 +1266,8 @@ def _intent_from_data(value: object, identities: _DecodedIdentities | None = Non
         return _QdiscIntent(timestamp, _connection_from_data(item[2], identities), _node_from_data(item[3], identities), _node_from_data(item[4], identities), int(item[5]), int(item[6]), int(item[7]), str(item[8]))
     if kind == "forwarding" and len(item) == 6:
         return _ForwardingIntent(timestamp, _MutationOperation(item[2]), _forwarding_key_from_data(item[3], identities), None if item[4] is None else _binding_from_data(item[4], identities), None if item[5] is None else _binding_from_data(item[5], identities))
-    if kind == "zone-edge" and len(item) == 8:
-        return _ZoneEdgeIntent(timestamp, _MutationOperation(item[2]), _ZoneEdgePhase(item[3]), str(item[4]), str(item[5]), None if item[6] is None else _node_from_data(item[6], identities), None if item[7] is None else _node_from_data(item[7], identities))
+    if kind == "zone-edge" and len(item) == 9:
+        return _ZoneEdgeIntent(timestamp, _MutationOperation(item[2]), _ZoneEdgePhase(item[3]), str(item[4]), str(item[5]), None if item[6] is None else _node_from_data(item[6], identities), None if item[7] is None else _node_from_data(item[7], identities), item[8])
     raise ValueError("Runner artifact intent schema differs")
 
 
@@ -1118,20 +1305,20 @@ def _connection_from_data(value: object, identities: _DecodedIdentities | None =
 
 def _target_to_data(value: object) -> list[object]:
     if isinstance(value, GroundStationRouteDemandTarget):
-        return ["ground-station", _node_to_data(value.ground_station_id)]
+        return ["ground-station", _node_to_data(value.ground_station_id), value.network_scope]
     if isinstance(value, ZoneRouteDemandTarget):
-        return ["zone", value.zone_id]
+        return ["zone", value.zone_id, value.network_scope]
     raise TypeError("unknown forwarding target")
 
 
 def _target_from_data(value: object, identities: _DecodedIdentities | None = None) -> object:
     item = _list(value, "target")
-    if len(item) != 2:
+    if len(item) != 3:
         raise ValueError("Runner artifact target schema differs")
     if item[0] == "ground-station":
-        return GroundStationRouteDemandTarget(_node_from_data(item[1], identities))
+        return GroundStationRouteDemandTarget(_node_from_data(item[1], identities), item[2])
     if item[0] == "zone":
-        return ZoneRouteDemandTarget(str(item[1]))
+        return ZoneRouteDemandTarget(str(item[1]), item[2])
     raise ValueError("Runner artifact forwarding target kind differs")
 
 

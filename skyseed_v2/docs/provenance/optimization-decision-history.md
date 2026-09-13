@@ -5,10 +5,10 @@ Non-authoritative decision history; current contracts live in accepted-design.md
 本记录保存已采用机制、可追溯源码和现有证据的边界，不建立新的架构权威、
 优化方案、配置接口或运行组件。人类入口是 [中文机制说明](../human-readable/optimization-decisions.md)；
 当前合同以 [accepted design](../accepted-design.md) 为准，阶段状态只见
-[CURRENT](../CURRENT.md)。本记录没有重新运行生成、部署或性能测量。
+[CURRENT](../CURRENT.md)。各轮新增测量及其范围在对应条目单独标明。
 
 2026-09-10 累计 Producer、多 Shell、Runner 和 Tools 里程碑已经用户与 Work 接受。
-本次关闭只处理保留位置、文档及 Git 提交，不重跑实验。下面的阶段性“当时 pending”
+当轮关闭只处理保留位置、文档及 Git 提交，不重跑实验。下面的阶段性“当时 pending”
 描述是决策时点背景；当前接受状态以 CURRENT 为准。外部历史实验 raw bundles、
 失败运行、完整旧 Tool portals、临时诊断及重复 source snapshots 已删除，选定的
 测量/核验摘要已汇入正常五 Shell output 的 qualification 目录。下面提及的原始
@@ -923,3 +923,145 @@ disconnected Shell components. This is deferred Model coordination work. Per-She
 serving/routing contexts over shared GS entities and Zone geometry are only a recorded
 alternative; they are not implemented and must not duplicate shared physical GS
 capacity. No algorithm, Model, topology or architecture change is part of closure.
+
+
+## Whole-Shell deployment and incremental preparation (2026-09-13)
+
+Approved scope: whole metadata-derived groups under the existing Compose owner;
+one fixed startup concurrency of 8 for this scenario; one native Docker CLI
+removal queue per reverse group; configuration/image/container reconciliation on
+explicit deployment retry. This replaces the historical count-based strategy
+above. It introduces no Runner, clock, routing or backend owner. Docker CLI
+29.6.2's `parallelOperation` has a native limit of 50:
+[versioned source](https://raw.githubusercontent.com/docker/cli/v29.6.2/cli/command/container/utils.go).
+It must not be conflated with Compose stop/down concurrency.
+
+The preparation representation now carries reference-counted destination deltas
+through derived node routes, decodes and consumes a boundary before requesting
+the next, and shares static interface identity and unchanged node route projections
+across telemetry generations. READY still requires the complete admitted delivery;
+Main's phased compatibility, immutable requests, B0 and fixed origin remain.
+Capacity factor stays 2; the five-Shell Example changes lead fraction to 1.0 so the
+first successor starts preparation at Main origin. The prior 232.446-second
+construction/prewrite measurement excluded about 75 seconds of decode work.
+
+The combined change has no claimed per-mechanism speedup. Initial focused checks
+cover full-state equivalence, interleaved consumption, partial re-entry, resource
+ownership, dependencies/hooks, kernel results and existing Traffic evidence.
+Live evidence and exact status are tracked in [CURRENT](../CURRENT.md) and
+`/home/lionheart/workspace/skyseed-local/experiments/shell-lifecycle-20260913/`.
+The original campaign, paper candidates, presentations and normal outputs remain
+untouched. The single live lifecycle qualification completed on 2026-09-13/14:
+startup script 646.859 seconds, Preparation/B0 337.129 seconds, successor total
+239.537 seconds with 60.458 seconds READY margin, and all 121 boundaries through
+600 seconds. Full Runner cleanup took 51.358 seconds; generated deployment
+cleanup took 306.662 seconds. An external verifier's unprivileged pin-root stat
+failed; the original FAILED/UNPROVEN records remain. A read-only follow-up verified
+the exact pin root absent, with all owned resources confirmed absent 392.405
+seconds from the original cleanup start. Neither removal nor live execution was
+repeated.
+
+Generation/startup/run totals including their verification and required Tools were
+2220.532/663.686/1479.475 seconds, below their overall ceilings. Traffic remains
+WARN / coverage NOT PROVEN because S5's Zone-to-GS transition case has no observed
+request. Telemetry is complete with no losses, but two replay observations remain
+unclassified. Raw executor loss is 12/1345; no infrastructure or persistent-flow
+failure was reported. This is lifecycle completion, not full Traffic coverage or
+independent acceptance. Exact comparisons, measurements, test logs and the
+verifier limitation are in the external `REPORT.md` and [CURRENT](../CURRENT.md).
+
+<a id="offline-preparation-closeout"></a>
+## Retained IPv4 inventory and direct v4 decode (2026-09-14)
+
+These adopted private preparation mechanisms follow the full-scale run above.
+Their evidence is offline/read-only; that earlier run did not execute these later
+changes. Evidence root:
+`/home/lionheart/workspace/skyseed-local/experiments/offline-closeout-20260914/`.
+Successful/interrupted run bundles and normal outputs are preserved unchanged.
+
+**Owner and mechanism.** The existing BPF
+[`_RouteSocket`](../../src/skyseed_v2/backend/bpf/_runner/kernel_netlink.py)
+now performs the initialization IPv4 inventory via `RTM_GETADDR` and all-table
+`RTM_GETROUTE` dumps. The existing namespace owner retains/closes the socket;
+`_audit_node_addresses` still verifies the namespace incarnation before inventory,
+rejects address/route collisions and propagates failures into initialization cleanup.
+`IFA_LOCAL` takes precedence over the peer `IFA_ADDRESS`; default routes are
+excluded, local/broadcast and other tables remain. Multipart reads wait for DONE,
+not merely a successful ACK, and reject interrupted/truncated/error results. These
+protocol distinctions follow the [Linux Netlink documentation](https://docs.kernel.org/userspace-api/netlink/intro.html)
+and [IPv4 address UAPI](https://raw.githubusercontent.com/torvalds/linux/master/include/uapi/linux/if_addr.h).
+No CLI fallback or concurrency change was added.
+
+The single allowed read-only current-namespace comparison found identical multisets
+of three local address/prefix facts and nine non-default route networks. Netlink
+took 0.000618 seconds and the two `ip -j` commands took 0.266398 seconds; the
+namespace inode stayed 4026531833. Raw facts and timing are in
+`netlink-readonly-comparison.json`, `ip-addresses.json` and `ip-routes.json`.
+Removing two subprocess launches per node explains the intended work reduction,
+but neither that sample nor the historical 72.060-second initialization audit
+measures the new full-scale audit cost.
+
+**Decoder diagnosis and choice.** The original
+[`_runner_artifact.py`](../../src/skyseed_v2/backend/bpf/_runner_artifact.py)
+is frozen externally as `baseline_runner_artifact.py`. Representative boundaries
+0/30/60 and a boundary-30 profile identified the recursive generic operations tree
+as the largest decode component: boundary 30 spent 0.007530 seconds on slice/hash,
+0.812603 on generic unpack and 0.293924 on typed reconstruction. The adopted
+`_PackedBoundaryReader` reads the same v4 tags with a checked byte cursor and
+directly constructs typed operations. It keeps generic decoding only for metadata,
+validates canonical keys/lengths/tags/UTF-8 and uses the existing validated intent
+constructors. File/index/record hashes and exact operation order are preserved.
+There is no writer, delivery API, format, READY or clock change.
+
+Short text (at most 256 bytes) and scoped target caches each stop growing at 16384
+entries. Node/connection/time reuse stays local to one finite artifact; all caches
+clear on close. The matched successor used 8376 texts and 3494 targets, plus the
+existing 4763 node/13120 connection/61 timestamp identities. No decoded history,
+lazy intent wrappers or new dependency is retained. This accepts bounded reuse
+memory for less repeated conversion, within the existing artifact lifecycle.
+
+**One matched comparison.** `matched_decode.py` runs separate before/after processes
+on the identical existing `runner-artifact-001/manifest.json` and 481043017-byte
+binary (61 boundaries, 732789 operations). The manifest SHA-256 is
+`dedaa0e65e8643938dd42f9f5e359614f2464c7c1e33b4e68dc2075ddbae1cd9`.
+Decoder source hashes are recorded in `before.json` and `after.json`. Both use
+Conda `skyseed_dev`, `CONDA_PREFIX=/home/lionheart/miniconda3/envs/skyseed_dev`,
+Python `/home/lionheart/miniconda3/envs/skyseed_dev/bin/python` 3.12.13 and pip 26.1.2.
+Identical CPU-only predecessor setup consumes the first delivery and retains its
+terminal state/build, taking 79.064/77.203 seconds outside the measured successor.
+No kernel executor or resource mutation is used.
+
+| Successor scope | Before | After |
+|---|---:|---:|
+| Loading/validation | 13.374 s | 12.992 s |
+| Complete boundary decode | 99.138 s | 42.706 s |
+| Actual route derivation and activation-request construction | 33.650 s | 34.572 s |
+| Separate semantic/derived proof work | 57.080 s | 50.362 s |
+| Peak process RSS (`ru_maxrss`) | 829607936 bytes | 788738048 bytes |
+
+Each decoded boundary re-encodes to its sealed record digest; all 61 before/after
+derived activation, generation-node and connection digests match. Only current
+boundary scratch and terminal predecessor state are retained, not two decoded
+batches. All identity caches were verified empty after close. Peak RSS includes
+setup, mapped file pages, construction and proof scratch; it is not incremental
+decoder allocation or deployment-wide container memory. Decoding decreases 56.9%;
+construction increases 0.922 seconds (2.7%), while their combined cost decreases
+41.8%. Eager reconstruction and this downstream measurement support an actual work
+reduction rather than deferred conversion. This single comparison excludes kernel
+prewrite, telemetry assembly and Main/channel contention, so it establishes neither
+a new live READY margin nor full-scale preparation time/memory.
+
+The accompanying cross-group namespace retry correction reconciles actual owner
+IDs and transitive dependents before recreation, retaining real stop hooks/grace,
+identity/deadline checks and failure evidence. It is a correctness fix under the
+Compose deployment owner, not another optimization item or active Runner recovery.
+S5's missing transition observation is accepted sparse coverage; the original WARN
+and unexplained losses remain. This closes the authorized round without another
+live qualification, tuning campaign, host change or dependency installation.
+
+Final affected regression suite: 428 passed, one existing single-realization
+fixture skip in 52.90 seconds, including functional replay using the already
+installed VS Code Node executable. Canonical environment, import dependencies,
+full documentation and whitespace checks pass; exact scope and logs are recorded
+in [CURRENT](../CURRENT.md) and the separate offline evidence root. Earlier focused
+tests overlap this suite and are not summed into an inflated total.

@@ -75,7 +75,7 @@ presented as the proposal/feasibility/identity/capacity correctness gate it is,
 not as a second selection Model. Stable Zone–GS pairs are the default route interface.
 The private `pair_index` derives each pair once from recorded typed GS→Zone
 Route demands. It does not infer associations from display names. Each current
-frame's global Zone assignment identifies the serving satellite and its Shell;
+frame's scoped Zone assignment identifies the serving satellite;
 the return direction resolves that satellite's actual recorded GS-target demand.
 Forward and return outcomes remain independent, including asymmetric paths,
 unreachable reasons, absent/withdrawn demands and unserved Zones. Selection keeps
@@ -115,11 +115,15 @@ observed traffic outside the repository. Network and Traffic remain explicitly
 separate; no internal deltas, runtime timing, host resource traces or bulk hop
 telemetry enter this temporary delivery. Chinese READMEs describe all fields.
 
-Zone service is globally unique across the world: one Zone has at most one current
-serving satellite, not one per Shell. In the current example, ISLs stay within
-Shells and GSs cannot be transit nodes. Geographic three-GS associations and
-independent GS allocation do not guarantee those GSs have operational access to
-the Zone's serving Shell. Stable logical pairs therefore differ from the underlying
-GS→Zone and changing serving-satellite→GS demands. Coordinated Zone/GS selection
-and cross-Shell communication research are deferred; this Tool correction changes
-neither allocation nor routing or topology.
+Zone service identity is `(network_scope, zone_id)`. The empty scope retains
+unscoped behavior. The five-Shell example explicitly supplies satellite scope
+membership to the GS, Zone and Route Models: every shared GS reserves two
+preparing-or-operational slots per Shell (ten total), every geographic Zone has
+one explicit assignment per Shell, and the geographic three-GS association is
+applied separately in each scope. The scoped Route Model excludes other-scope
+satellites and GS transit. No cross-Shell communication Model is implemented.
+One Compiler/Runner owns shared interfaces, forwarding and cleanup. Distinct
+scoped Zone IPv4 destinations prevent shared-GS forwarding collisions. Physical
+feasibility, satellite capacities and preparation/handover rules still apply;
+association does not promise an operational path. Isolation is configured in
+Models, not imposed as a permanent PhysicalWorld rule.

@@ -14,7 +14,7 @@ from typing import Any, Iterator, Mapping
 
 
 _DOMAIN_HISTORY_ARTIFACT_TYPE = "skyseed-v2-domain-history"
-_DOMAIN_HISTORY_FORMAT_VERSION = 2
+_DOMAIN_HISTORY_FORMAT_VERSION = 3
 _DOMAIN_HISTORY_MANIFEST_NAME = "domain-history-manifest.json"
 _DOMAIN_HISTORY_STREAM_NAMES = {
     "physical_frames": "physical-frames.jsonl",
@@ -297,7 +297,7 @@ def _validate_domain_history_manifest_data(
     if (
         data["artifact_type"] != _DOMAIN_HISTORY_ARTIFACT_TYPE
         or type(data["format_version"]) is not int
-        or data["format_version"] not in {1, _DOMAIN_HISTORY_FORMAT_VERSION}
+        or data["format_version"] != _DOMAIN_HISTORY_FORMAT_VERSION
         or data["terminal"] is not True
     ):
         raise ValueError("domain-history manifest is incompatible")
@@ -339,7 +339,7 @@ def _validate_domain_history_manifest_data(
     if counts["prehistory_frames"] != counts["expected_prehistory_frames"]:
         raise ValueError("domain-history prehistory coverage is incomplete")
     physical_only = through == "physical-world"
-    if physical_only and (data["format_version"] != 2 or any(counts[name] != 0 for name in ("plans", "transitions", "realizations", "prehistory_frames"))):
+    if physical_only and (data["format_version"] != _DOMAIN_HISTORY_FORMAT_VERSION or any(counts[name] != 0 for name in ("plans", "transitions", "realizations", "prehistory_frames"))):
         raise ValueError("physical-only history contains semantic progression")
     if not physical_only and (counts["plans"] <= 0 or counts["transitions"] != counts["formal_frames"]):
         raise ValueError("domain-history Plan coverage is incomplete")

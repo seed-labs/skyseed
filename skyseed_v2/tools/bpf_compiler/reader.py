@@ -45,9 +45,9 @@ def read_bpf_compiler_history(path: Path) -> dict[str, Any]:
     }
     compact_header = {
         "record_type": "compiled_realization_history_header",
-        "format_version": 2,
+        "format_version": 3,
         "semantic_payload_owner": "sealed Runner artifact",
-        "projection": "compact-exact-compiler-inspection-v1",
+        "projection": "compact-exact-compiler-inspection-v2",
     }
     if header not in (legacy_header, compact_header):
         raise ValueError("Compiler evidence header is invalid")
@@ -58,7 +58,7 @@ def read_bpf_compiler_history(path: Path) -> dict[str, Any]:
     world_fingerprint = None
     for index, row in enumerate(realizations):
         _validate_history_record(
-            row, index, compact=header["format_version"] == 2
+            row, index, compact=header["format_version"] == 3
         )
         if index == 0:
             if (
@@ -213,8 +213,8 @@ def _validate_compact_history_record(row: dict[str, Any]) -> None:
     prefixes = row["zone_prefixes"]
     if not isinstance(prefixes, list) or any(
         not isinstance(value, dict)
-        or set(value) != {"zone_id", "packet_prefix"}
-        or not all(isinstance(item, str) and item for item in value.values())
+        or set(value) != {"zone_id", "network_scope", "packet_prefix"}
+        or not all(isinstance(item, str) and (key == "network_scope" or item) for key, item in value.items())
         for value in prefixes
     ):
         raise ValueError("Compiler compact Zone prefixes are malformed")
@@ -226,7 +226,7 @@ def read_compact_bpf_compiler_evidence(
     """Read the complete compact Compiler history without runtime payload access."""
 
     history = read_bpf_compiler_history(compiler_history_path)
-    if history["header"]["format_version"] != 2:
+    if history["header"]["format_version"] != 3:
         raise ValueError(
             "legacy Compiler history cannot be projected from the Runner artifact; "
             "regenerate the bounded experiment"
@@ -411,13 +411,14 @@ def _read_realization(
             "zone_edges": tuple(
                 {
                     "zone_id": value.zone_id,
+                "network_scope": value.network_scope,
                     "packet_prefix": value.packet_prefix,
                     "service_satellite_id": _node(value.service_satellite_id),
                 }
                 for value in realization.intended_zone_edges
             ),
             "zone_prefixes": tuple(
-                {"zone_id": zone_id, "packet_prefix": packet_prefix}
+                {"zone_id": zone_id[1], "network_scope": zone_id[0], "packet_prefix": packet_prefix}
                 for zone_id, packet_prefix in realization.zone_prefixes
             ),
         },
@@ -470,6 +471,7 @@ def _zone_edge_intent(value: object) -> dict[str, object]:
         "operation": value.operation.value,
         "phase": value.phase.value,
         "zone_id": value.zone_id,
+                "network_scope": value.network_scope,
         "packet_prefix": value.packet_prefix,
         "previous_service_satellite_id": (
             None
@@ -515,9 +517,10 @@ def _route_target(value: object) -> dict[str, object]:
     if hasattr(value, "ground_station_id"):
         return {
             "kind": "ground-station",
+            "network_scope": value.network_scope,
             "ground_station_id": _node(value.ground_station_id),
         }
-    return {"kind": "zone", "zone_id": value.zone_id}
+    return {"kind": "zone", "zone_id": value.zone_id, "network_scope": value.network_scope}
 
 
 def _connection(value: object) -> dict[str, object]:

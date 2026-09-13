@@ -367,7 +367,9 @@ def _read_compiler(
         if not isinstance(raw, list):
             raise TypeError("Compiler inspection realizations must be a list")
         format_version = artifact.get("format_version")
-        if format_version in {3, 4}:
+        if format_version in {3, 4, 5}:
+            if format_version == 5 and any(not isinstance(v.get("network_scope"), str) for r in raw for v in r["zone_prefixes"]):
+                raise ValueError("scoped Compiler inspection requires network_scope")
             realizations = tuple(
                 {
                     "realization_index": value["realization_index"],
@@ -413,7 +415,7 @@ def _read_compiler(
             source_kind = "full-compiler-inspection"
         else:
             raise ValueError(
-                "Compiler inspection format_version must be one of 2, 3, or 4"
+                "Compiler inspection format_version must be one of 2, 3, 4, or 5"
             )
     plans = planning["plans"]
     if len(realizations) != len(plans):

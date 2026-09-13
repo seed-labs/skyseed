@@ -237,7 +237,7 @@ def _compile_bpf(
         )
 
     world_fingerprint = physical_world.semantic_fingerprint()
-    projection = (_physical_world_projection(physical_world) if previous_realization is None
+    projection = (_physical_world_projection(physical_world, network_scopes=tuple(sorted({v.network_scope for v in plan.transitions[0].zone_service_transitions})) or ("",)) if previous_realization is None
                   else previous_realization._physical_world_projection)
     _validate_lineage(
         plan,
@@ -354,9 +354,9 @@ def _lower_plan(
 
     stage_scope = {} if scope is None else scope
     indexing_started = perf_counter()
-    zone_prefixes = _allocate_zone_prefixes(projection.zone_ids)
+    zone_prefixes = _allocate_zone_prefixes(projection.service_keys)
     node_ids = frozenset(projection.node_ids)
-    zone_ids = frozenset(projection.zone_ids)
+    zone_ids = frozenset(projection.service_keys)
     state = _initial_state(
         previous,
         previous_state,
@@ -706,7 +706,7 @@ def _initial_state(
     for key, binding in forwarding.items():
         forwarding_keys_by_connection[binding.connection_id].add(key)
     zone_edges = {
-        value.zone_id: value for value in previous.intended_zone_edges
+        value.service_key: value for value in previous.intended_zone_edges
     }
     state = _MutableState(
         resources,
@@ -742,13 +742,13 @@ def _initialize_route_owners(
     zone_prefixes: Mapping[str, str],
 ) -> None:
     node_ids = frozenset(projection.node_ids)
-    zone_ids = frozenset(projection.zone_ids)
+    zone_ids = frozenset(projection.service_keys)
     connections = {
         value.connection_id: value
         for value in semantic_state.operational_connections
     }
     zone_assignments = {
-        value.zone_id: value.satellite_id
+        value.service_key: value.satellite_id
         for value in semantic_state.zone_service_assignments
     }
     for outcome in semantic_state.route_outcomes:
@@ -886,9 +886,9 @@ def _lower_transition(
             raise ValueError("parameter update has no directional backend change")
 
     for change in transition.zone_service_transitions:
-        if change.zone_id not in zone_prefixes:
+        if change.service_key not in zone_prefixes:
             raise ValueError("Plan references a Zone foreign to PhysicalWorld")
-        previous_edge = state.zone_edges.get(change.zone_id)
+        previous_edge = state.zone_edges.get(change.service_key)
         previous_satellite = (
             None
             if previous_edge is None
@@ -900,7 +900,7 @@ def _lower_transition(
             if previous_edge is None:
                 continue
             operation = _MutationOperation.REMOVE
-            state.zone_edges.pop(change.zone_id)
+            state.zone_edges.pop(change.service_key)
         else:
             if change.current_satellite_id not in node_ids:
                 raise ValueError("Zone service Satellite is foreign to PhysicalWorld")
@@ -909,10 +909,11 @@ def _lower_transition(
                 if previous_edge is None
                 else _MutationOperation.CHANGE
             )
-            state.zone_edges[change.zone_id] = _ZoneEdgeState(
+            state.zone_edges[change.service_key] = _ZoneEdgeState(
                 change.zone_id,
-                zone_prefixes[change.zone_id],
+                zone_prefixes[change.service_key],
                 change.current_satellite_id,
+                change.network_scope,
             )
         if change.current_satellite_id is not None:
             readiness_index = len(zone_edge_intents)
@@ -922,9 +923,10 @@ def _lower_transition(
                     operation,
                     _ZoneEdgePhase.READINESS,
                     change.zone_id,
-                    zone_prefixes[change.zone_id],
+                    zone_prefixes[change.service_key],
                     previous_satellite,
                     change.current_satellite_id,
+                    change.network_scope,
                 )
             )
             readiness_kind = (
@@ -933,7 +935,7 @@ def _lower_transition(
                 else SemanticEventKind.ZONE_SERVICE_CHANGE
             )
             reference = event_index.by_zone.get(
-                (readiness_kind, change.zone_id)
+                (readiness_kind, change.service_key)
             )
             if reference is None:
                 raise ValueError(
@@ -950,13 +952,14 @@ def _lower_transition(
                     operation,
                     _ZoneEdgePhase.RETIREMENT,
                     change.zone_id,
-                    zone_prefixes[change.zone_id],
+                    zone_prefixes[change.service_key],
                     previous_satellite,
                     change.current_satellite_id,
+                    change.network_scope,
                 )
             )
             reference = event_index.by_zone.get(
-                (SemanticEventKind.ZONE_SERVICE_UNASSIGN, change.zone_id)
+                (SemanticEventKind.ZONE_SERVICE_UNASSIGN, change.service_key)
             )
             if reference is None:
                 raise ValueError(
@@ -1033,7 +1036,7 @@ def _lower_route_outcomes(
     }
     touched: dict[_ForwardingKey, set[RouteDemand]] = defaultdict(set)
     zone_assignments = {
-        value.zone_id: value.satellite_id
+        value.service_key: value.satellite_id
         for value in next_semantic_state.zone_service_assignments
     }
     for change in transition.route_outcome_transitions:
@@ -1127,7 +1130,7 @@ def _bindings_for_outcome(
         frozenset(projection.node_ids) if node_ids is None else node_ids
     )
     exact_zone_ids = (
-        frozenset(projection.zone_ids) if zone_ids is None else zone_ids
+        frozenset(projection.service_keys) if zone_ids is None else zone_ids
     )
     if isinstance(outcome, (ReachableRouteOutcome, UnreachableRouteOutcome)):
         _validate_route_demand_for_projection(
@@ -1156,17 +1159,17 @@ def _bindings_for_outcome(
     elif isinstance(target, ZoneRouteDemandTarget):
         assignments = (
             {
-                value.zone_id: value.satellite_id
+                value.service_key: value.satellite_id
                 for value in semantic_state.zone_service_assignments
             }
             if zone_assignments is None
             else zone_assignments
         )
-        if target.zone_id not in zone_prefixes:
+        if target.service_key not in zone_prefixes:
             raise ValueError("planned Route targets a foreign Zone")
-        if assignments.get(target.zone_id) != path[-1]:
+        if assignments.get(target.service_key) != path[-1]:
             raise ValueError("planned Zone Route does not end at its service Satellite")
-        packet_prefix = zone_prefixes[target.zone_id]
+        packet_prefix = zone_prefixes[target.service_key]
     else:  # pragma: no cover - RouteDemand validates its target
         raise TypeError("unsupported Route demand target")
     result: dict[_ForwardingKey, _ForwardingBinding] = {}
@@ -1395,12 +1398,12 @@ def _compile_constraints(
     for index, intent in enumerate(forwarding_intents):
         target = intent.route_key.target
         if isinstance(target, ZoneRouteDemandTarget):
-            forwarding_by_zone_time[(target.zone_id, intent.nominal_time)].append(
+            forwarding_by_zone_time[(target.service_key, intent.nominal_time)].append(
                 index
             )
     for zone_index, zone in enumerate(zone_edge_intents):
         for forwarding_index in forwarding_by_zone_time.get(
-            (zone.zone_id, zone.nominal_time), ()
+            (zone.service_key, zone.nominal_time), ()
         ):
             zone_reference = _IntentReference("zone-edge", zone_index)
             forwarding_reference = _IntentReference(
@@ -1455,9 +1458,9 @@ def _validate_backend_state(
     zone_prefixes: Mapping[str, str],
 ) -> None:
     assignment_zone_ids = {
-        value.zone_id for value in semantic_state.zone_service_assignments
+        value.service_key for value in semantic_state.zone_service_assignments
     }
-    if assignment_zone_ids != set(projection.zone_ids):
+    if assignment_zone_ids != set(projection.service_keys):
         raise ValueError(
             "planned state must explicitly assign every PhysicalWorld Zone"
         )
@@ -1483,10 +1486,11 @@ def _validate_backend_state(
     if state.qdisc_keys_by_connection != dict(expected_qdisc_keys):
         raise ValueError("compiled qdisc Connection index differs")
     expected_zone_edges = {
-        value.zone_id: _ZoneEdgeState(
+        value.service_key: _ZoneEdgeState(
             value.zone_id,
-            zone_prefixes[value.zone_id],
+            zone_prefixes[value.service_key],
             value.satellite_id,
+            value.network_scope,
         )
         for value in semantic_state.zone_service_assignments
         if value.satellite_id is not None
@@ -1515,7 +1519,7 @@ def _validate_zone_assignments_for_projection(
     zone_ids: frozenset[str],
 ) -> None:
     assignments = semantic_state.zone_service_assignments
-    if {value.zone_id for value in assignments} != zone_ids:
+    if {value.service_key for value in assignments} != zone_ids:
         raise ValueError(
             "planned state must explicitly assign every PhysicalWorld Zone"
         )
@@ -1542,7 +1546,7 @@ def _validate_route_demand_for_projection(
                 "planned Route targets a foreign PhysicalWorld GroundStation"
             )
     elif isinstance(target, ZoneRouteDemandTarget):
-        if target.zone_id not in zone_ids:
+        if target.service_key not in zone_ids:
             raise ValueError("planned Route targets a foreign Zone")
     else:  # pragma: no cover - RouteDemand validates the public union
         raise TypeError("unsupported Route demand target")
@@ -1559,13 +1563,13 @@ def _validate_unreachable_reason(
     if isinstance(target, ZoneRouteDemandTarget):
         assignments = (
             {
-                value.zone_id: value.satellite_id
+                value.service_key: value.satellite_id
                 for value in semantic_state.zone_service_assignments
             }
             if zone_assignments is None
             else zone_assignments
         )
-        if assignments[target.zone_id] is None:
+        if assignments[target.service_key] is None:
             expected = RouteUnreachableReason.ZONE_UNSERVED
     if outcome.reason is not expected:
         raise ValueError(
@@ -1600,6 +1604,7 @@ def _freeze_state(
 
 def _physical_world_projection(
     physical_world: PhysicalWorld,
+    *, network_scopes: tuple[str, ...] = ("",),
 ) -> _PhysicalWorldProjection:
     nodes = []
     for autonomous_system in physical_world.autonomous_systems:
@@ -1617,7 +1622,7 @@ def _physical_world_projection(
     except RuntimeError:
         zones = ()
     zone_ids = tuple(sorted(zone.zone_id for zone in zones))
-    return _PhysicalWorldProjection(ordered_nodes, zone_ids)
+    return _PhysicalWorldProjection(ordered_nodes, zone_ids, network_scopes)
 
 
 def _allocate_zone_prefixes(zone_ids: Sequence[str]) -> dict[str, str]:
@@ -1730,7 +1735,7 @@ def _index_transition_events(
         if reference.route_demand is not None:
             by_route_demand[reference.route_demand].append(reference)
         if reference.zone_id is not None:
-            zone_key = reference.kind, reference.zone_id
+            zone_key = reference.kind, reference.service_key
             if zone_key in by_zone:
                 raise ValueError("canonical Zone event is ambiguous")
             by_zone[zone_key] = reference
@@ -1792,9 +1797,9 @@ def _qdisc_key_sort(
 
 def _route_target_sort(target: object) -> tuple[object, ...]:
     if isinstance(target, GroundStationRouteDemandTarget):
-        return "ground-station", _node_key(target.ground_station_id)
+        return "ground-station", target.network_scope, _node_key(target.ground_station_id)
     if isinstance(target, ZoneRouteDemandTarget):
-        return "zone", target.zone_id
+        return "zone", target.service_key
     raise TypeError("unsupported Route demand target")
 
 

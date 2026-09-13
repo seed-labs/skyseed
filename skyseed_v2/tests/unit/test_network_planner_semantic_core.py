@@ -614,10 +614,10 @@ def test_public_plan_transition_replay_fingerprints_and_codecs_are_one_truth():
     assert state == _oracle_apply(None, transition)
     assert state.timestamp == EPOCH
     assert plan_transition_fingerprint(transition) == (
-        "79aa4f659a358329b86f0b845f1b4c766efa3707e841a10501deae5f28453301"
+        "6bd40616a64de4f3aaa1304b0428fc57c7994c045961d9e53106606bc185ca63"
     )
     assert planned_operational_state_fingerprint(state) == (
-        "cff2d0a0440c85339e02745b1eacc31f844645d8686d174779d4442fef53f73e"
+        "d73485badf2b704909f69cb6faa4bfd29176bbad361cf9b7ef0b8dbfb9a23542"
     )
     assert plan_transition_from_data(plan_transition_to_data(transition)) == transition
     assert (
@@ -657,7 +657,7 @@ def test_plan_has_exact_final_fields_self_contained_lineage_and_no_overlap():
     )
     detached_first = plan_to_data(first)
     assert first.plan_id == (
-        "52d3ccc7dae5bf6d06272531260fc50eb96ddc15818e1ee49a458024c1a09f99"
+        "1d8d285e9bfeafabdbbf63584b5bbaf0871bc21d7e0cacb47e9956df3a959ed7"
     )
     assert plan_from_data(detached_first) == first
     second_transition = PlanTransition(EPOCH + timedelta(seconds=5))
@@ -1242,7 +1242,7 @@ def test_evidence_carries_exact_candidates_lifecycle_remaining_and_gs_selection(
         timedelta(0)
     )
     detached = published_planning_evidence_to_data(evidence)
-    assert detached["schema"] == "skyseed-v2-published-planning-evidence-v3"
+    assert detached["schema"] == "skyseed-v2-published-planning-evidence-v4"
     assert set(detached["frames"][0]) == {
         "timestamp",
         "inter_satellite_candidate_summary",

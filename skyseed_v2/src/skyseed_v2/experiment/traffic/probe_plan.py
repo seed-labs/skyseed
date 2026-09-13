@@ -45,7 +45,7 @@ from skyseed_v2.simulator import (
 
 
 _ARTIFACT_TYPE = "traffic-probe-plan"
-_FORMAT_VERSION = 1
+_FORMAT_VERSION = 2
 _DIRECTION_GROUND_TO_ZONE = "ground-station-to-zone"
 _DIRECTION_ZONE_TO_GROUND = "zone-to-ground-station"
 _SAMPLING_SEED = 20260909
@@ -92,6 +92,7 @@ class _TrafficProbeIdentity:
     selection_reasons: tuple[str, ...]
     path_stability: str
     path_length_class: str
+    network_scope: str = ""
 
     def artifact(self) -> dict[str, object]:
         return {
@@ -109,6 +110,7 @@ class _TrafficProbeIdentity:
             ),
             "ground_station_id": self.ground_station_id,
             "zone_id": self.zone_id,
+            "network_scope": self.network_scope,
             "zone_ipv4": self.zone_ipv4,
             "selection_reasons": list(self.selection_reasons),
             "path_stability": self.path_stability,
@@ -361,12 +363,12 @@ class _TrafficBoundaryDelta:
 class _PairSeed:
     direction: str
     ground_station: NodeId
-    zone_id: str
+    service_key: tuple[str, str]
     reason_times: dict[str, set[datetime]]
 
     @property
-    def key(self) -> tuple[str, str, str]:
-        return self.direction, self.ground_station.value, self.zone_id
+    def key(self) -> tuple[str, str, tuple[str, str]]:
+        return self.direction, self.ground_station.value, self.service_key
 
 
 _EpisodeRequest = tuple[_PairSeed, str, datetime, datetime, datetime]
@@ -476,7 +478,7 @@ class TrafficProbePlanBuilder:
             key: _make_identity(
                 selected_seeds[key],
                 intervals_by_key[key],
-                zone_ipv4=prefixes[selected_seeds[key].zone_id],
+                zone_ipv4=prefixes[selected_seeds[key].service_key],
             )
             for key in sorted(viable_keys)
         }
@@ -731,7 +733,7 @@ class IncrementalTrafficProbePlanBuilder:
         coverage_end = self._coverage_end
         if coverage_end <= coverage_start:
             raise ValueError("Traffic probe planning requires a positive time range")
-        zone_ids = self._physical_projection.zone_ids
+        zone_ids = self._physical_projection.service_keys
         prefixes = _zone_ipv4_from(self._zone_prefixes, zone_ids)
         seeds = _candidate_pairs_from_deltas(
             deltas, self._zone_prefixes, nominal_boundaries, node_shells=self._node_shells,
@@ -779,7 +781,7 @@ class IncrementalTrafficProbePlanBuilder:
             key: _make_identity(
                 selected_seeds[key],
                 intervals_by_key[key],
-                zone_ipv4=prefixes[selected_seeds[key].zone_id],
+                zone_ipv4=prefixes[selected_seeds[key].service_key],
             )
             for key in sorted(viable_keys)
         }
@@ -975,7 +977,7 @@ def _scan_boundaries(
                 {}
                 if semantic_state is None
                 else {
-                    value.zone_id: value.satellite_id
+                    value.service_key: value.satellite_id
                     for value in semantic_state.zone_service_assignments
                 }
             )
@@ -1014,7 +1016,7 @@ def _scan_boundaries(
                 value.demand: value for value in semantic_state.route_outcomes
             }
             assignments = {
-                value.zone_id: value.satellite_id
+                value.service_key: value.satellite_id
                 for value in semantic_state.zone_service_assignments
             }
             zone_edges = {
@@ -1052,7 +1054,7 @@ def _scan_boundaries(
                         for value in transition.route_outcome_transitions
                     ],
                     changed_access,
-                    [value.zone_id for value in transition.zone_service_transitions],
+                    [value.service_key for value in transition.zone_service_transitions],
                     prior_zone_edges,
                 )
             )
@@ -1105,12 +1107,12 @@ def _scan_boundary_deltas(
             else:
                 route_outcomes[transition.demand] = transition.current
         for transition in delta.zone_transitions:
-            prior = assignments.get(transition.zone_id)
+            prior = assignments.get(transition.service_key)
             if prior != transition.previous_satellite_id:
                 raise ValueError(
                     "Traffic compact Zone predecessor is stale"
                 )
-            assignments[transition.zone_id] = transition.current_satellite_id
+            assignments[transition.service_key] = transition.current_satellite_id
         for connection_id in delta.established_connection_ids:
             if connection_id in resources:
                 raise ValueError("Traffic compact resource is duplicated")
@@ -1151,7 +1153,7 @@ def _scan_boundary_deltas(
                 resources,
                 [value.demand for value in delta.route_transitions],
                 list(delta.changed_access_ground_stations),
-                [value.zone_id for value in delta.zone_transitions],
+                [value.service_key for value in delta.zone_transitions],
                 prior_zone_edges,
             )
         )
@@ -1164,7 +1166,7 @@ def _scan_boundary_deltas(
 def _zone_ipv4(values: tuple[BpfCompiledRealization, ...]) -> dict[str, str]:
     return _zone_ipv4_from(
         values[-1].zone_prefixes,
-        values[0]._physical_world_projection.zone_ids,
+        values[0]._physical_world_projection.service_keys,
     )
 
 
@@ -1218,7 +1220,7 @@ class _StratifiedCandidateReservoir:
                 existing[0].reason_times[label].update(times)
             return
         priority = sha256(
-            "|".join((*seed.key, reason, str(time_stratum))).encode("utf-8")
+            json.dumps((*seed.key, reason, str(time_stratum)), separators=(",", ":")).encode("utf-8")
         ).hexdigest()
         if len(bucket) < self._capacity:
             bucket[seed.key] = seed, priority
@@ -1239,7 +1241,7 @@ class _StratifiedCandidateReservoir:
                     current = _PairSeed(
                         seed.direction,
                         seed.ground_station,
-                        seed.zone_id,
+                        seed.service_key,
                         defaultdict(set),
                     )
                     merged[seed.key] = current
@@ -1351,9 +1353,9 @@ def _candidate_pairs_from_scan(
                 target, ZoneRouteDemandTarget
             ):
                 update = (
-                    ground_stations_by_zone[target.zone_id].add
+                    ground_stations_by_zone[target.service_key].add
                     if present
-                    else ground_stations_by_zone[target.zone_id].discard
+                    else ground_stations_by_zone[target.service_key].discard
                 )
                 update(demand.source)
             elif isinstance(target, GroundStationRouteDemandTarget):
@@ -1378,7 +1380,7 @@ def _candidate_pairs_from_scan(
             affected = set()
             for demand in projection.route_outcomes_changed:
                 if demand.source.entity_kind == "ground-station" and isinstance(demand.target, ZoneRouteDemandTarget):
-                    affected.add((demand.source, demand.target.zone_id))
+                    affected.add((demand.source, demand.target.service_key))
                 elif isinstance(demand.target, GroundStationRouteDemandTarget):
                     affected.update((demand.target.ground_station_id, zone)
                                     for zone in zones_by_satellite.get(demand.source, ()))
@@ -1401,8 +1403,8 @@ def _candidate_pairs_from_scan(
                 edge = projection.zone_edges.get(zone)
                 if edge is None:
                     continue
-                forward = projection.route_outcomes.get(RouteDemand(ground, ZoneRouteDemandTarget(zone)))
-                reverse = projection.route_outcomes.get(RouteDemand(edge[1], GroundStationRouteDemandTarget(ground)))
+                forward = projection.route_outcomes.get(RouteDemand(ground, ZoneRouteDemandTarget(zone[1], zone[0])))
+                reverse = projection.route_outcomes.get(RouteDemand(edge[1], GroundStationRouteDemandTarget(ground, zone[0])))
                 if not isinstance(forward, ReachableRouteOutcome) or not isinstance(reverse, ReachableRouteOutcome):
                     continue
                 scopes = set()
@@ -1516,7 +1518,7 @@ def _candidate_pairs_from_scan(
                 add(
                     _DIRECTION_GROUND_TO_ZONE,
                     demand.source,
-                    target.zone_id,
+                    target.service_key,
                     "forwarding-next-hop-change",
                     "forwarding",
                 )
@@ -1648,10 +1650,10 @@ def _complete_control_coverage(scan, seeds, nominal_boundaries, node_shells, *, 
         at = projection.nominal_time
         end = next_boundary.get(at, at)
         for seed in controls:
-            edge = projection.zone_edges.get(seed.zone_id)
-            forward = projection.route_outcomes.get(RouteDemand(seed.ground_station, ZoneRouteDemandTarget(seed.zone_id)))
+            edge = projection.zone_edges.get(seed.service_key)
+            forward = projection.route_outcomes.get(RouteDemand(seed.ground_station, ZoneRouteDemandTarget(seed.service_key[1], seed.service_key[0])))
             reverse = None if edge is None else projection.route_outcomes.get(
-                RouteDemand(edge[1], GroundStationRouteDemandTarget(seed.ground_station)))
+                RouteDemand(edge[1], GroundStationRouteDemandTarget(seed.ground_station, seed.service_key[0])))
             reachable = isinstance(forward, ReachableRouteOutcome) and isinstance(reverse, ReachableRouteOutcome)
             state = (forward, reverse, edge)
             changed = (seed.key in prior and prior[seed.key] != state
@@ -2080,7 +2082,7 @@ def _reconstruct_selected_paths_from_scan(
                 else _DIRECTION_GROUND_TO_ZONE
             ),
             seed.ground_station,
-            seed.zone_id,
+            seed.service_key,
             defaultdict(set),
         )
         for seed in seeds
@@ -2228,10 +2230,10 @@ def _resolve_path(
     seed: _PairSeed,
     projection: _BoundaryProjection,
 ) -> tuple[bool, tuple[NodeId, ...], NodeId | None, str | None]:
-    edge = projection.zone_edges.get(seed.zone_id)
+    edge = projection.zone_edges.get(seed.service_key)
     if seed.direction == _DIRECTION_GROUND_TO_ZONE:
         source = seed.ground_station
-        target = ZoneRouteDemandTarget(seed.zone_id)
+        target = ZoneRouteDemandTarget(seed.service_key[1], seed.service_key[0])
         service = None if edge is None else edge[1]
         terminal = service
     else:
@@ -2239,7 +2241,7 @@ def _resolve_path(
             return False, (), None, "zone-unserved"
         service = edge[1]
         source = service
-        target = GroundStationRouteDemandTarget(seed.ground_station)
+        target = GroundStationRouteDemandTarget(seed.ground_station, seed.service_key[0])
         terminal = seed.ground_station
     demand = RouteDemand(source, target)
     outcome = projection.route_outcomes.get(demand)
@@ -2308,7 +2310,7 @@ def _make_identity(
             (
                 seed.direction,
                 seed.ground_station.value,
-                seed.zone_id,
+                *seed.service_key,
             )
         ).encode("utf-8")
     ).hexdigest()[:12]
@@ -2316,11 +2318,12 @@ def _make_identity(
         f"traffic-probe-{digest}",
         seed.direction,
         seed.ground_station.value,
-        seed.zone_id,
+        seed.service_key[1],
         zone_ipv4,
         tuple(sorted(reasons)),
         "stable" if stable else "changing",
         path_length_class,
+        seed.service_key[0],
     )
 
 
@@ -2396,6 +2399,7 @@ def _identity_from_artifact(value: object) -> _TrafficProbeIdentity:
         ),
         _one_of(item.get("path_stability"), {"stable", "changing"}, "path stability"),
         _one_of(item.get("path_length_class"), {"short", "median", "long"}, "path class"),
+        item["network_scope"],
     )
 
 

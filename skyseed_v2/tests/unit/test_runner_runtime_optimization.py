@@ -675,6 +675,41 @@ def test_all_finite_semantics_are_prepared_without_future_veth(monkeypatch):
         runtime.prepare_all((), logical_ports={})
 
 
+def test_incremental_preparation_matches_full_state_oracle_and_consumes_one_boundary(monkeypatch):
+    original_derive = _TcBpfRuntimeRealization._derive_boundary_plan
+    original_prepare = _TcBpfRuntimeRealization.prepare_all
+    state = _empty_state()
+    milestones = []
+    def derive(self, boundary, **kwargs):
+        nonlocal state
+        state = runtime_module._materialize_boundary(state, boundary)
+        draft = original_derive(self, boundary, **kwargs)
+        routes = runtime_module._routes_for_state(state, self._node_ids, self._node_addresses)
+        interfaces = runtime_module._interfaces_for_state(state, self._node_ids)
+        assert {node.node_id: node.routes for node in draft.generation_nodes} == routes
+        assert {node.node_id: node.active_interfaces for node in draft.generation_nodes} == interfaces
+        return draft
+    def prepare(self, boundaries, **kwargs):
+        def stream():
+            for index, boundary in enumerate(boundaries):
+                assert sum(stage == 'boundary-prepared' for stage, _ in milestones) == index
+                yield boundary
+        return original_prepare(self, stream(), **kwargs,
+                                progress=lambda stage, **fields: milestones.append((stage, fields)))
+    monkeypatch.setattr(_TcBpfRuntimeRealization, '_derive_boundary_plan', derive)
+    monkeypatch.setattr(_TcBpfRuntimeRealization, 'prepare_all', prepare)
+    runtime, plans, kernel = _finite_runtime(monkeypatch, telemetry_enabled=True)
+    assert milestones[-1][0] == 'delivery-prepared'
+    assert sum(stage == 'boundary-decoded' for stage, _ in milestones) == len(plans)
+    assert runtime._preparation_timings['boundary_decode_seconds'] >= 0
+    for plan in plans:
+        for identity in plan.telemetry_identities:
+            assert identity['generation'] == plan.generation
+            assert identity['boundary_timestamp'] == plan.nominal_time.isoformat()
+            with pytest.raises(TypeError):
+                identity['route_destinations'] = ()
+
+
 def test_formal_main_never_derives_audits_preflights_or_reclaims(monkeypatch):
     from copy import deepcopy
     runtime, plans, kernel = _finite_runtime(monkeypatch)

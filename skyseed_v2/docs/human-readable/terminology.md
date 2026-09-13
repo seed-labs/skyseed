@@ -58,3 +58,10 @@ These create no public domain owner or independent network lifecycle; current-bo
 
 The former 20/50-second publication windows and fixed integer target persistence
 are superseded policies retained only in explicitly historical records.
+
+## Network scope
+
+`network_scope` is a Model-configured network identity. In the five-Shell example
+it is S1–S5. `(network_scope, zone_id)` distinguishes independent service for one
+geographic Zone. It does not duplicate a GS or own lifecycle. The empty scope
+preserves unscoped examples; see the [planning contracts](../../src/skyseed_v2/simulator/planning/README.md).

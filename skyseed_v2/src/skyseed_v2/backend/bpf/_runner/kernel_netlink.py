@@ -6,7 +6,7 @@ Every mutation requests an ACK; no command-line networking tools are involved.
 from __future__ import annotations
 
 import errno
-from ipaddress import IPv4Address
+from ipaddress import IPv4Address, IPv4Network
 import os
 import socket
 import struct
@@ -39,6 +39,19 @@ def _ifinfo(index: int = 0, flags: int = 0, change: int = 0) -> bytes:
     return struct.pack("=BBHiII", socket.AF_UNSPEC, 0, 0, index, flags, change)
 
 
+def _inventory_attributes(body: bytes, offset: int) -> dict[int, bytes]:
+    attrs = {}
+    while offset < len(body):
+        if len(body) - offset < 4:
+            raise RuntimeError("truncated IPv4 inventory attribute")
+        length, key = struct.unpack_from("=HH", body, offset)
+        if length < 4 or offset + length > len(body):
+            raise RuntimeError("invalid IPv4 inventory attribute")
+        attrs[key & 0x3FFF] = body[offset + 4:offset + length]
+        offset += (length + 3) & ~3
+    return attrs
+
+
 class _RouteSocket:
     """One synchronous socket, created once inside a retained net namespace."""
 
@@ -59,6 +72,8 @@ class _RouteSocket:
         records = []
         while True:
             packet, _ancillary, message_flags, sender = self._socket.recvmsg(1 << 20)
+            if not packet:
+                raise RuntimeError("rtnetlink result ended before completion")
             if message_flags & socket.MSG_TRUNC:
                 raise RuntimeError("truncated rtnetlink result")
             if sender[0] != 0:
@@ -72,16 +87,54 @@ class _RouteSocket:
                     raise RuntimeError("invalid rtnetlink response framing")
                 body = packet[offset + 16:offset + length]
                 offset += (length + 3) & ~3
-                if response_kind == 2:  # NLMSG_ERROR includes successful ACKs.
+                if response_flags & 0x10:
+                    raise RuntimeError("interrupted rtnetlink dump")
+                if response_kind in (2, 3):  # NLMSG_ERROR / NLMSG_DONE
+                    if len(body) < 4:
+                        raise RuntimeError("truncated rtnetlink status")
                     code = struct.unpack_from("=i", body)[0]
                     if code:
                         raise OSError(-code, os.strerror(-code))
+                    if response_kind == 2 and flags & 0x300 == 0x300:
+                        # A successful ACK is not the end of a multipart dump.
+                        continue
                     return records
-                if response_kind == 3:  # NLMSG_DONE
-                    if response_flags & 0x10:
-                        raise RuntimeError("interrupted rtnetlink dump")
-                    return records
+                if response_kind == 4:
+                    raise RuntimeError("rtnetlink inventory overrun")
+                if response_kind == 1:  # NLMSG_NOOP
+                    continue
                 records.append((response_kind, body))
+
+    def ipv4_address_facts(self) -> tuple[tuple[IPv4Address, int], ...]:
+        facts = []
+        payload = struct.pack("=BBBBI", socket.AF_INET, 0, 0, 0, 0)
+        for kind, body in self.request(22, payload, flags=0x300):  # RTM_GETADDR
+            if kind != 20 or len(body) < 8 or body[0] != socket.AF_INET or body[1] > 32:
+                raise RuntimeError("invalid IPv4 address inventory record")
+            attrs = _inventory_attributes(body, 8)
+            # IFA_ADDRESS is the peer on point-to-point interfaces. IFA_LOCAL
+            # is the local address, as exposed by ip -j address's local field.
+            address = attrs.get(2, attrs.get(1))
+            if address is None or len(address) != 4:
+                raise RuntimeError("IPv4 address inventory omitted a local address")
+            facts.append((IPv4Address(address), body[1]))
+        return tuple(facts)
+
+    def ipv4_route_networks(self) -> tuple[IPv4Network, ...]:
+        networks = []
+        # RT_TABLE_UNSPEC and an unfiltered dump include all routing tables.
+        payload = struct.pack("=BBBBBBBBI", socket.AF_INET, 0, 0, 0, 0, 0, 0, 0, 0)
+        for kind, body in self.request(26, payload, flags=0x300):  # RTM_GETROUTE
+            if kind != 24 or len(body) < 12 or body[0] != socket.AF_INET or body[1] > 32:
+                raise RuntimeError("invalid IPv4 route inventory record")
+            attrs = _inventory_attributes(body, 12)
+            if body[1] == 0:
+                continue
+            address = attrs.get(1)  # RTA_DST, including local/broadcast routes
+            if address is None or len(address) != 4:
+                raise RuntimeError("IPv4 route inventory omitted a destination")
+            networks.append(IPv4Network((int.from_bytes(address, 'big'), body[1]), strict=False))
+        return tuple(networks)
 
     def link_index(self, name: str) -> int:
         records = self.request(18, _ifinfo() + _text(3, name))

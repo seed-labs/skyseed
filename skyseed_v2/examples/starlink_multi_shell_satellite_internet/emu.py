@@ -14,6 +14,14 @@ def write_inputs(output: Path, settings: dict) -> Path:
     inputs.mkdir(parents=True, exist_ok=True)
     for name in ("shells.yaml", "ground_stations.yaml", "zones.yaml"):
         shutil.copyfile(SHARED_INPUTS / name, inputs / name)
+    ground_path = inputs / "ground_stations.yaml"
+    ground = safe_load(ground_path.read_text())
+    capacity = settings["ground_station_total_capacity"]
+    if capacity != len(settings["shells"]) * settings["ground_station_slots_per_shell"]:
+        raise ValueError("total GS capacity must equal reserved Shell allocations")
+    for station in ground["ground_stations"]:
+        station["max_simultaneous_satellite_accesses"] = capacity
+    ground_path.write_text(safe_dump(ground, sort_keys=False))
     shells = safe_load((inputs / "shells.yaml").read_text())["shells"]
     selected = settings["shells"]
     if selected != ["S1", "S2", "S3", "S4", "S5"]:

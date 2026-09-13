@@ -3,10 +3,11 @@
 This standalone Example assembles the five shared Starlink Shell definitions
 into one Emu: 4,408 satellites, 355 shared GroundStations and 732 Zones.
 Each satellite explicitly has four ISL ports. The existing Model enumerates
-ISLs within each Shell; GroundStation capacity is shared across all Shells.
+ISLs within each Shell. Each shared GroundStation has ten total slots,
+reserved as two preparing-or-operational connections for each Shell, with no borrowing.
 
 `settings.yaml` exposes the five Shells, five-second sampling, 600-second
-session, 300-second delivery coverage, lead fraction 0.75 and capacity factor 2.
+session, 300-second delivery coverage, lead fraction 1.0 and capacity factor 2.
 `emu.py` writes the existing static input schema and creates the Emulator;
 `simu.py` assembles the same Starlink Models and durations in seconds.
 `main.py` runs the existing Producer, Compiler packaging and every generation
@@ -24,30 +25,23 @@ bash examples/starlink_multi_shell_satellite_internet/output/run.sh
 bash examples/starlink_multi_shell_satellite_internet/output/cleanup.sh
 ```
 
-Generated startup admits shared GS/auxiliaries, then S1–S5. Defaults remain at
-most 64 services / eight concurrent requests at every resident count. Configure
-these independently with `SKYSEED_DEPLOY_BATCH_SIZE` and `SKYSEED_DEPLOY_PARALLEL`.
-`SKYSEED_DEPLOY_RESIDENT_STEP` is the cleanup-only count threshold; it does not
-reduce startup concurrency. Shell groups are not equal resource units.
-Lightweight checkpoints are written to `runtime/deployment-measurements.jsonl`.
-Exploratory memory predictions and pressure pause/resume/abort gates are retired.
-Normal system-call, ownership and successor-readiness checks remain. Late Main
-boundaries execute sequentially against the fixed origin and record actual lag.
+Generated startup submits shared GS/auxiliaries, then whole S1–S5 groups with
+`SKYSEED_DEPLOY_PARALLEL=8` throughout. It prepares one Compose input per group and
+preserves real dependencies. Failure records the partial group and retains confirmed
+successful groups; explicit deployment retry reconciles configuration, image and
+container identities before completing only missing or unsuccessful work.
 
 Generation completes both sealed artifacts, continuous domain/Traffic evidence,
 the Tool portal at `output/inspection/index.html`, and deployment controls.
-`launch.sh` combines start and run; cleanup remains independent.
-After Runner/Traffic evidence and executor cleanup complete, generated cleanup
-force-removes explicitly marked disposable network container IDs in reverse
-dependency order. Explicit stop settings/hooks preserve graceful shutdown.
-`SKYSEED_CLEANUP_BATCH_SIZE` defaults to 16 actual IDs per command, halved to eight
-at/above 2000 remaining. Failure stops later batches; retries inventory remaining
-owned resources before network removal. Records remain in
-`runtime/teardown-measurements.jsonl`; there are no inter-batch sleeps or pressure
-gates. The cleanup defaults have isolated smoke/command validation only. The saved
-five-Shell run used startup 64/eight throughout and **manually accelerated
-teardown**, so it does not qualify uninterrupted default cleanup. See the
-[Compose policy](../../src/skyseed_v2/compose/README.md).
+`launch.sh` combines start and run; cleanup remains independent. After Traffic and
+the unified Runner finish cleanup, deployment cleanup removes S5, S4, S3, S2, S1,
+shared/GS and finally owned project networks. Each whole group uses one native
+Docker CLI removal queue (50 operations in CLI 29.6.2); explicit graceful settings,
+hooks and real dependencies remain effective. The 60-minute startup and 30-minute
+cleanup budgets each cover all groups together. No resident-count curve, arbitrary
+service chopping or artificial inter-group waits apply. Group progress is appended
+to `runtime/deployment-measurements.jsonl` and `runtime/teardown-measurements.jsonl`.
+See the [Compose policy](../../src/skyseed_v2/compose/README.md).
 
 Traffic selection uses typed Shell membership and actual bilateral planned paths
 within one default budget of 20 episodes, eight concurrent generators and 3,600
@@ -67,9 +61,10 @@ manufacture contact endings. Compiler state and logical ports continue.
 
 Preparation loads only the first delivery and activates B0 once. Runner
 registers the sealed successor, then Maintenance begins loading at nominal
-75 seconds (`300 − 0.75 × 300`), leaving 225 seconds before activation.
-This is a bounded qualification choice with margin, not an optimum or a
-claim about satellite calibration. Fixed reservations derive from the first
+0 seconds (`300 − 1.0 × 300`), giving the first successor a full 300-second
+preparation window. Every delivery is decoded and constructed incrementally, with
+complete preparation and prewrite required before READY. This is a scenario
+configuration, not a measured optimum or a promise of meeting the deadline. Fixed reservations derive from the first
 batch with the configured factor; per-node entry envelopes use first-batch
 peaks of the same typed entity kind so forwarding work may move between peers.
 This reserves more memory than each node's own initial demand. A successor
@@ -85,16 +80,21 @@ historical artifacts remain available after runtime reclamation. The generated
 controls cover two deliveries; `BpfRunner.append_batch` can register one next
 sealed delivery at a time in a longer fixed-node session.
 
-The user and Work have accepted this milestone. The [normal Tool portal](output/inspection/index.html)
+The user and Work accepted the earlier milestone represented by the normal output;
+the current round remains pending independent review. The [normal Tool portal](output/inspection/index.html)
 retains the successful runtime with later offline Tool refreshes. Original timing,
 manual teardown and compact historical comparison records are consolidated under
 [output/qualification](output/qualification/README.md); obsolete external raw
-archives and aggregate portals were removed. Traffic remains WARN, and subsequent
-cleanup defaults have no new full-scale qualification. See [CURRENT](../../docs/CURRENT.md)
+archives and aggregate portals were removed. That output remains historical.
+The 2026-09-13/14 external whole-Shell qualification completed all 600 seconds,
+crossed the seam with 60.458 seconds READY margin, and confirmed complete Runner
+and deployment cleanup. Traffic remains WARN with an S5 Zone-to-GS transition
+coverage gap. The original final verifier permission error and its read-only
+resolution are preserved in the new evidence. See [CURRENT](../../docs/CURRENT.md)
 for exact source identities, retained output scope and deferred work.
 
-The default GS capability assumption is four, with explicit per-station 2/4/8
-values respected. It is an engineering assumption, not verified Starlink hardware
+This example writes an explicit GS capacity of ten into its own copied input.
+The single-Shell example retains its default four and explicit device limits. It is an engineering assumption, not verified Starlink hardware
 or a universal optimum. The satellite-side limit remains two. Allocation orders
 GS coverage, distinct satellites, total connections, continuity, then quality.
 ISL uses cyclic same-plane neighbors and K1 with bounded current cross-plane
@@ -114,17 +114,20 @@ python -m tools.planner.export --generated output --output /home/lionheart/works
 This produces Chinese documentation, complete formal planned-network JSON/GeoJSON
 and compact observed traffic, without Runner timing or bulk per-hop records.
 
-Zone service is globally unique across the world: one Zone has at most one current
-serving satellite, not one per Shell. In the current example, ISLs stay within
-Shells and GSs cannot be transit nodes. Geographic three-GS associations and
-independent GS allocation do not guarantee those GSs have operational access to
-the Zone's serving Shell. Stable logical pairs therefore differ from the underlying
-GS→Zone and changing serving-satellite→GS demands. Coordinated Zone/GS selection
-and cross-Shell communication research are deferred; this Tool correction changes
-neither allocation nor routing or topology.
+Zone service identity is `(network_scope, zone_id)`. The empty scope retains
+unscoped behavior. The five-Shell example explicitly supplies satellite scope
+membership to the GS, Zone and Route Models: every shared GS reserves two
+preparing-or-operational slots per Shell (ten total), every geographic Zone has
+one explicit assignment per Shell, and the geographic three-GS association is
+applied separately in each scope. The scoped Route Model excludes other-scope
+satellites and GS transit. No cross-Shell communication Model is implemented.
+One Compiler/Runner owns shared interfaces, forwarding and cleanup. Distinct
+scoped Zone IPv4 destinations prevent shared-GS forwarding collisions. Physical
+feasibility, satellite capacities and preparation/handover rules still apply;
+association does not promise an operational path. Isolation is configured in
+Models, not imposed as a permanent PhysicalWorld rule.
 
-Global unique Zone service and shared GS admission can select incompatible,
-disconnected Shell components. Resolving this is future Model coordination work.
-Per-Shell serving/routing contexts over shared GS entities and Zone geometry are
-only a recorded alternative, not an adopted design; shared GS physical capacity
-must not be duplicated. This closeout changes no routing or Model policy.
+The generated controlled startup checks/builds unique images using an image-only
+Compose projection, then submits full services in whole deployment groups. This
+keeps image preparation compatible with Compose's document parser limits without
+changing host protections or the canonical full service definitions.

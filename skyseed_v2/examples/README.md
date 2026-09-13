@@ -4,7 +4,7 @@
 |---|---|---|
 | `complete_static_emulator` | smallest public construction and Plan-to-Compiler teaching chain | `python -m examples.complete_static_emulator.main` |
 | `mini_satellite_internet` | bounded generated runtime with common producer, sealed Runner artifact, Runner and Traffic integration | `python -m examples.mini_satellite_internet.main` |
-| `starlink_multi_shell_satellite_internet` | S1–S5 shared network, five-second samples and two sealed deliveries in one session | `python -m examples.starlink_multi_shell_satellite_internet.main` |
+| `starlink_multi_shell_satellite_internet` | independently planned S1–S5 with 355 shared GS containers, five-second samples and two sealed deliveries in one session | `python -m examples.starlink_multi_shell_satellite_internet.main` |
 | `starlink_gen1_satellite_internet` | S3-default physical, Planner and Compiler generation; explicit S1/cadence qualification | `python -m examples.starlink_gen1_satellite_internet.main --through compiler` |
 
 All maintained examples construct the same domain chain:
@@ -64,6 +64,12 @@ an explicit alternate root. Generation replaces only that owned output root
 when override is enabled. For any deployed example, run the generated
 `cleanup.sh` before regenerating an output whose Compose project still exists.
 
+The multi-Shell example has 4,408 satellites and 355 GS containers. Each GS
+reserves two preparing-or-operational slots per Shell, ten total without
+borrowing. One geographic layout of 732 Zones supports 3,660 scoped service
+assignments and distinct IPv4 destinations. The Models configure independent
+allocation and routes; one Compiler/Runner owns all shared resources.
+
 `starlink_gen1_satellite_internet` preserves the full canonical scenario: 720
 Satellites, 355 GroundStations, 732 Zones, 121 five-second formal timestamps,
 K1 candidate scope and 2+2 selection target (the earlier comparison matrix used K3). The current S3 reference uses
@@ -87,6 +93,8 @@ computed by the chain and are not inputs to domain semantics.
 
 `reference/` is labelled offline provenance material and is not imported by a
 maintained runtime entry.
+
+The retained normal outputs below predate the scoped five-Shell configuration.
 
 The latest [five-Shell Tool portal](starlink_multi_shell_satellite_internet/output/inspection/index.html)
 contains stable Zone–GS pair selection, Shell → Orbit focus and continuous Traffic

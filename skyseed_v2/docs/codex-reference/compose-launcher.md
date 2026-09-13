@@ -42,21 +42,25 @@ Generated controls remain separate from the optional public
 `ComposeProjectLauncher`, whose default is `--parallel 16`. Starlink Compiler
 controls now call private deployment support in this same module: shared
 services first, then generated Shell identities in order. The shared private
-policy keeps startup defaults at 64 services / eight concurrent requests at every
-resident count, with explicit environment configurability; batch size and request
-concurrency are distinct. The resident threshold affects cleanup only. Dependencies are checked before
-admission; a derived batch file contains only admitted services and `--no-deps`
-prevents implicit later-Shell startup. The original Compose file is preserved; namespace dependencies in a batch use
-verified immutable container IDs.
-Expected one-shot helpers may complete successfully. Mini and static teaching
-controls retain their existing deployment paths.
+policy submits whole metadata-defined groups with fixed configurable concurrency 8.
+Actual dependencies order groups; internal dependencies remain in each Compose input.
+Earlier group namespace dependencies use confirmed immutable container IDs. A failed
+group stops admission and records partial state while preserving successful groups;
+explicit retry reconciles service configuration digests, image IDs and ownership.
+It checks actual retained namespace container IDs and propagates invalidation
+through all project groups before replacing an owner. Affected consumers are
+removed in reverse dependency order and recreated in normal startup order;
+ordinary unrelated healthy services remain. This is deployment re-entry only.
+One remaining 60-minute startup budget spans all groups. See the
+[Compose owner](../../src/skyseed_v2/compose/README.md) for generated-control details.
 
-Deployment records lightweight `/proc` checkpoints at batch/group boundaries in
+Deployment records lightweight `/proc` checkpoints at group boundaries in
 `runtime/deployment-measurements.jsonl`. Per-service memory extrapolation,
 predicted free-memory gates, pressure pause/resume and automatic pressure abort
-have been retired. Batches, dependency order, identity checks, bounded query
-retries, ordinary command errors and scoped cleanup remain. There is no outer
-runtime-lag or arbitrary total-wall-time kill policy. Main's fixed origin,
+have been retired. Whole groups, dependency ordering, identity checks, ordinary command errors
+and scoped cleanup remain. Timed-out queries stop admission without overlapping
+retries. Approved overall stage ceilings remain in effect; telemetry does not
+control execution. Main's fixed origin,
 sequential late-boundary execution and successor READY deadline are unchanged.
 
 During generation, the private build-plan writer in the
@@ -110,9 +114,7 @@ Update `compose/launcher.py`, `skyseed_v2.compose` exports, Compose class
 details and local README, launcher/integration tests, examples, public-import
 mapping, and wheel checks together.
 
-Generated disposable-network cleanup, shutdown overrides, immutable-ID hooks and
-the four environment controls are specified in the
-[Compose owner README](../../src/skyseed_v2/compose/README.md). Cleanup speeds up
-from eight to 16 actual IDs as remaining residency falls below 2000. Full-scale
-qualification of these new settings is pending; old deployment/teardown timings
-retain their original settings and manual-acceleration disposition.
+Generated cleanup removes whole groups in reverse dependency order, then owned
+networks, using one Docker CLI native bounded queue at a time and one 30-minute
+budget. Graceful signals, timeouts and hooks retain their existing semantics.
+The resident-count policy and arbitrary service-count chopping are retired.

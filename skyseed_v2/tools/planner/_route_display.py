@@ -10,8 +10,8 @@ function plannerRouteRelevant(demand, focus, assignments, routes, index) {
  if(!focus)return true;
  if(focus.kind==='node')return demand.source===focus.index || demand.target.node===focus.index;
  if(demand.target.kind==='zone')return demand.target.zone_id===focus.id;
- const serving=assignments.find(v=>v[0]===focus.id)?.[1];
- return serving!=null && demand.source===serving && routes.some(v=>v.source===demand.target.node && v.target.zone_id===focus.id && plannerRouteState(v.activity,index)!=null);
+ const scope=demand.network_scope||demand.target.network_scope||'', serving=assignments.find(v=>v[0]===focus.id&&(v[2]||'')===scope)?.[1];
+ return serving!=null && demand.source===serving && routes.some(v=>v.source===demand.target.node && v.target.zone_id===focus.id && (v.network_scope||v.target.network_scope||'')===scope && plannerRouteState(v.activity,index)!=null);
 }
 let routePage=0, routeQuery='', entityQuery='', entityPage=0, routeHistory=false;
 function showRawRoutes(root){
@@ -30,9 +30,9 @@ function showRawRoutes(root){
  document.getElementById('route-scope').textContent=focus?`Relevant endpoint demands for ${focus.kind==='node'?node(focus.index).node_id:'Zone '+focus.id+' and its recorded serving-satellite / GS associations'}`:'All recorded demands; choose an entity to narrow the list.';
  const query=document.getElementById('route-demand-query'),history=document.getElementById('route-history');query.value=routeQuery;history.checked=routeHistory;
  function demandResults(){
-  const serving=focus?.kind==='zone'?frame.zone_assignments.find(v=>v[0]===focus.id)?.[1]:null;
+  const serving=focus?.kind==='zone'?frame.zone_assignments.filter(v=>v[0]===focus.id).map(v=>v[1]):[];
   const associated=new Set(focus?.kind==='zone'?DATA.route_index.filter(v=>v.target.zone_id===focus.id&&plannerRouteState(v.activity,index)!=null).map(v=>v.source):[]);
-  const relevant=DATA.route_index.filter(v=>focus?.kind==='zone'?(v.target.kind==='zone'?v.target.zone_id===focus.id:serving!=null&&v.source===serving&&associated.has(v.target.node)):plannerRouteRelevant(v,focus,frame.zone_assignments,DATA.route_index,index));
+  const relevant=DATA.route_index.filter(v=>focus?.kind==='zone'?(v.target.kind==='zone'?v.target.zone_id===focus.id:serving.includes(v.source)&&associated.has(v.target.node)):plannerRouteRelevant(v,focus,frame.zone_assignments,DATA.route_index,index));
   const active=relevant.filter(v=>plannerRouteState(v.activity,index)!=null);
   const result=(routeHistory?relevant:active).filter(v=>v.label.toLowerCase().includes(routeQuery.toLowerCase()));
   const pages=Math.max(1,Math.ceil(result.length/25));routePage=Math.min(routePage,pages-1);
@@ -49,13 +49,14 @@ function showRawRoutes(root){
 
 _PAIR_SCRIPT = r'''
 function plannerPairRefs(pair, assignments, routes, reverse) {
- const serving=(assignments instanceof Map?assignments.get(pair.zone_id):assignments.find(v=>v[0]===pair.zone_id)?.[1])??null;
- return {serving, forward:routes[pair.forward], reverse:serving==null?null:reverse.get(serving+':'+pair.ground_station)||null};
+ const scope=pair.network_scope||'', serving=(assignments instanceof Map?assignments.get(JSON.stringify([scope,pair.zone_id])):assignments.find(v=>v[0]===pair.zone_id&&(v[2]||'')===scope)?.[1])??null;
+ return {serving, forward:routes[pair.forward], reverse:serving==null?null:reverse.get(JSON.stringify([scope,serving,pair.ground_station]))||null};
 }
 function plannerReverseIndex(routes,nodes) {
- const out=new Map();for(const r of routes)if(nodes[r.source]?.kind==='satellite'&&r.target.kind==='ground-station')out.set(r.source+':'+r.target.node,r);return out;
+ const out=new Map();for(const r of routes)if(nodes[r.source]?.kind==='satellite'&&r.target.kind==='ground-station')out.set(JSON.stringify([r.network_scope||'',r.source,r.target.node]),r);return out;
 }
-function plannerPairVisible(pair,refs,nodeVisible,includeUnserved) {
+function plannerPairVisible(pair,refs,nodeVisible,includeUnserved,shellVisible=()=>true) {
+ if(pair.network_scope)return shellVisible(pair.network_scope)&&(refs.serving!=null||includeUnserved);
  return refs.serving==null?includeUnserved:nodeVisible(refs.serving);
 }
 function plannerAccessExplanation(refs,pair,frame,nodes) {
@@ -89,19 +90,19 @@ function ensurePairRoutes(){
  }next(0);
 }
 function showCurrentRoutes(){
- special.innerHTML='<h3>Stable Zone–GS pairs</h3><p>One global serving satellite per Zone across all Shells. Pairs come from recorded typed GS → Zone demands (the example associates three geographic GSs per Zone). Both directions resolve independently; Zone → GS uses the current serving satellite. Shell / Orbit filters follow that satellite, so a pair may move between Shells. Cyan: GS → Zone; dashed orange: Zone → GS.</p><input id="pair-query" placeholder="Find Zone or GroundStation"><label><input id="pair-unserved" type="checkbox"> Include unserved pairs</label><div id="pair-list"></div><div id="pair-outcome"></div><details id="pair-raw"><summary>Raw demands, historical changes and detailed evidence</summary><div id="pair-raw-content"></div></details>';
+ special.innerHTML='<h3>Stable Zone–GS pairs</h3><p>Each network scope has its own serving assignment for the same geographic Zone. Pairs come from recorded typed GS → Zone demands (the example associates three geographic GSs per Zone). Both directions resolve independently; Zone → GS uses the current serving satellite. Scoped pairs keep their recorded scope under Shell selection; missing service remains explicit. Unscoped pairs follow their current serving satellite. Cyan: GS → Zone; dashed orange: Zone → GS.</p><input id="pair-query" placeholder="Find Zone or GroundStation"><label><input id="pair-unserved" type="checkbox"> Include unserved pairs</label><div id="pair-list"></div><div id="pair-outcome"></div><details id="pair-raw"><summary>Raw demands, historical changes and detailed evidence</summary><div id="pair-raw-content"></div></details>';
  const query=document.getElementById('pair-query'),unserved=document.getElementById('pair-unserved');query.value=pairQuery;unserved.checked=pairIncludeUnserved;
- const assignments=new Map(frame.zone_assignments),refsFor=p=>plannerPairRefs(p,assignments,DATA.route_index,pairReverse);
+ const assignments=new Map(frame.zone_assignments.map(v=>[JSON.stringify([v[2]||'',v[0]]),v[1]])),refsFor=p=>plannerPairRefs(p,assignments,DATA.route_index,pairReverse);
  function servingText(refs){return refs.serving==null?'UNSERVED':node(refs.serving).node_id+' · Shell '+(node(refs.serving).shell_id??'unrecorded')}
  function status(ref){return ref?(plannerRouteState(ref.activity,index)||'absent / withdrawn'):'no recorded demand'}
- function results(){const all=DATA.pair_index||[],rows=all.filter(p=>(p.zone_id+' '+node(p.ground_station).node_id).toLowerCase().includes(pairQuery.toLowerCase())&&plannerPairVisible(p,refsFor(p),i=>visibility.nodeVisible(i),pairIncludeUnserved));const pages=Math.max(1,Math.ceil(rows.length/20));pairPage=Math.min(pairPage,pages-1);const out=document.getElementById('pair-list');out.replaceChildren();const count=document.createElement('p');count.textContent=`${rows.length} matching / ${all.length} stable pairs · page ${pairPage+1}/${pages}`;out.append(count);
-  for(const pair of rows.slice(pairPage*20,(pairPage+1)*20)){const refs=refsFor(pair),b=document.createElement('button');b.className='item';b.dataset.pairKey=pair.key;b.setAttribute('aria-pressed',String(pairFocus?.key===pair.key));b.textContent=`Zone ${pair.zone_id} ↔ ${node(pair.ground_station).node_id} · ${servingText(refs)} · GS → Zone: ${status(refs.forward)} · Zone → GS: ${refs.serving==null?'UNSERVED':status(refs.reverse)}`;b.onclick=()=>selectPair(pair);out.append(b)}
+ function results(){const all=DATA.pair_index||[],rows=all.filter(p=>((p.network_scope||'')+' '+p.zone_id+' '+node(p.ground_station).node_id).toLowerCase().includes(pairQuery.toLowerCase())&&plannerPairVisible(p,refsFor(p),i=>visibility.nodeVisible(i),pairIncludeUnserved,s=>visibility.shellVisible(s)));const pages=Math.max(1,Math.ceil(rows.length/20));pairPage=Math.min(pairPage,pages-1);const out=document.getElementById('pair-list');out.replaceChildren();const count=document.createElement('p');count.textContent=`${rows.length} matching / ${all.length} stable pairs · page ${pairPage+1}/${pages}`;out.append(count);
+  for(const pair of rows.slice(pairPage*20,(pairPage+1)*20)){const refs=refsFor(pair),b=document.createElement('button');b.className='item';b.dataset.pairKey=pair.key;b.setAttribute('aria-pressed',String(pairFocus?.key===pair.key));b.textContent=`${pair.network_scope||'unscoped'} · Zone ${pair.zone_id} ↔ ${node(pair.ground_station).node_id} · ${servingText(refs)} · GS → Zone: ${status(refs.forward)} · Zone → GS: ${refs.serving==null?'UNSERVED':status(refs.reverse)}`;b.onclick=()=>selectPair(pair);out.append(b)}
   for(const [label,delta]of [['Previous pairs',-1],['Next pairs',1]]){const b=document.createElement('button');b.textContent=label;b.disabled=pairPage+delta<0||pairPage+delta>=pages;b.onclick=()=>{pairPage+=delta;results()};out.append(b)}
  }
  query.oninput=()=>{pairQuery=query.value;pairPage=0;results()};unserved.onchange=()=>{pairIncludeUnserved=unserved.checked;pairPage=0;results()};results();
  const out=document.getElementById('pair-outcome'),refs=currentPairRefs();out.replaceChildren();
  function line(label,text){const p=document.createElement('p'),strong=document.createElement('strong');strong.textContent=label+': ';p.append(strong,document.createTextNode(text));out.append(p)}
- if(refs){line('Selected pair',`Zone ${pairFocus.zone_id} ↔ ${node(pairFocus.ground_station).node_id}`);line('Current service',servingText(refs)+(plannerPairVisible(pairFocus,refs,i=>visibility.nodeVisible(i),pairIncludeUnserved)?'':' · hidden by current filter; selection retained'));
+ if(refs){line('Selected pair',`${pairFocus.network_scope||'unscoped'} · Zone ${pairFocus.zone_id} ↔ ${node(pairFocus.ground_station).node_id}`);line('Current service',servingText(refs)+(plannerPairVisible(pairFocus,refs,i=>visibility.nodeVisible(i),pairIncludeUnserved,s=>visibility.shellVisible(s))?'':' · hidden by current filter; selection retained'));
   for(const [label,ref]of [['GS → Zone',refs.forward],['Zone → GS',refs.reverse]]){const value=pairOutcome(ref);line(label,!ref?(refs.serving==null?'UNSERVED; no current serving-satellite demand':'No recorded directional demand'):!pairRecords.has(ref.key)?pairError||'Loading recorded outcome…':!value?'Absent / withdrawn at this time':value[0]==='reachable'?'REACHABLE · '+value[2].map(i=>(visibility.nodeVisible(i)?'':'[hidden] ')+node(i).node_id).join(' → '):'UNREACHABLE · '+value[1]);
    if(value?.[0]==='unreachable'&&value[1]==='NO_OPERATIONAL_PATH'){const why=plannerAccessExplanation(refs,pairFocus,frame,nodes);if(why)line('Retained evidence',why)}
   }

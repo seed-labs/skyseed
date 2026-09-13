@@ -94,7 +94,7 @@ ranks/selections, and capacity or service context; the browser does not draw
 the global candidate graph. Parameter focus reports previous → current values.
 Route planning defaults to stable Zone–GS pairs. Search the Zone or GS identity,
 select one pair, then move the time cursor or play through boundaries. The same
-pair stays selected while its globally unique serving satellite changes. The
+pair stays selected while its scoped serving satellite changes. The
 current-serving Shell/Orbit filters the list; an unserved-pair toggle keeps gaps
 inspectable. Cyan GS→Zone and dashed-orange Zone→GS paths resolve from their own
 recorded demands, with explicit unreachable/absent states. Expand raw evidence to

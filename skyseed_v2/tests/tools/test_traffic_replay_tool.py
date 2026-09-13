@@ -530,7 +530,7 @@ def test_unknown_compiler_inspection_format_fails_clearly(
     value["format_version"] = 99
     compiler.write_text(json.dumps(value), encoding="utf-8")
 
-    with pytest.raises(ValueError, match="format_version must be one of 2, 3, or 4"):
+    with pytest.raises(ValueError, match="format_version must be one of 2, 3, 4, or 5"):
         collect_traffic_replay_data(
             evidence_set["telemetry"],
             evidence_set["frames"],
@@ -1537,7 +1537,7 @@ def test_latest_canonical_artifact_is_v3_or_explicitly_stale_before_rerun(
     planned = data["planned_evidence"]
     transitions = planned["formal_transitions"]
 
-    assert data["format_version"] == 6
+    assert data["format_version"] == 7
     assert len(transitions) == data["inventory"]["formal_planning_boundaries"]
     assert len(transitions) == 4
     assert set(planned) == {

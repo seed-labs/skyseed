@@ -57,8 +57,8 @@ def test_packed_artifact_opens_without_rich_realization_reconstruction(
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     artifact = _open_runner_artifact(manifest_path)
     try:
-        assert manifest["format_version"] == 3
-        assert manifest["encoding"] == "typed-packed-runtime-tables-v3"
+        assert manifest["format_version"] == 4
+        assert manifest["encoding"] == "typed-packed-runtime-tables-v4"
         assert manifest["terminal"] is True
         assert manifest["semantic_validation"] == "complete-before-seal"
         assert manifest["binary"]["path"] == "runner-runtime.bin"
@@ -539,3 +539,49 @@ def test_decoded_immutable_identity_reuse_is_artifact_local(tmp_path, realizatio
         first.close()
         other.close()
     assert not first._identities.nodes and not first._identities.connections and not first._identities.timestamps
+    assert not first._identities.texts and not first._identities.targets
+
+
+def test_direct_reader_bypasses_generic_operations_tree_and_matches_legacy(realizations, monkeypatch):
+    from skyseed_v2.backend.bpf import _runner_artifact as m
+    boundary = next(iter(m._resolve_nominal_boundaries((realizations[0],))))
+    packed = m._pack(m._boundary_to_data(boundary))
+    legacy = m._decode_boundary_data(m._unpack(packed), physical_world_projection=boundary.physical_world_projection)
+    identities = m._DecodedIdentities(boundary.physical_world_projection.node_ids)
+    monkeypatch.setattr(m, '_unpack', lambda *args: pytest.fail('generic full-tree decode'))
+    actual = m._PackedBoundaryReader(packed, identities).boundary(boundary.physical_world_projection)
+    assert m._boundary_to_data(actual) == m._boundary_to_data(legacy)
+
+
+@pytest.mark.parametrize('corruption', ['truncate','trailing','unknown-tag','wrong-list-count','bad-utf8','too-large','duplicate-key','noncanonical-key'])
+def test_direct_decoder_rejects_corrupt_packed_fields(realizations, corruption):
+    from skyseed_v2.backend.bpf import _runner_artifact as m
+    boundary = next(iter(m._resolve_nominal_boundaries((realizations[0],))))
+    data = m._boundary_to_data(boundary); packed = m._pack(data)
+    if corruption == 'truncate': packed = packed[:-1]
+    elif corruption == 'trailing': packed += b'n'
+    elif corruption == 'unknown-tag': packed = b'x'+packed[1:]
+    elif corruption == 'wrong-list-count':
+        data['operations'][0].append(None); packed=m._pack(data)
+    elif corruption == 'bad-utf8':
+        at=packed.index(b'operations'); packed=packed[:at]+b'\xff'+packed[at+1:]
+    elif corruption == 'too-large': packed=b'd'+struct.pack('<I',m._MAX_CONTAINER_ITEMS+1)
+    else:
+        keys=['time','time'] if corruption=='duplicate-key' else ['time','applied']
+        packed=b'd'+struct.pack('<I',2)+b''.join(m._pack(k)+m._pack(data[k]) for k in keys)
+    with pytest.raises(ValueError):
+        m._PackedBoundaryReader(packed,m._DecodedIdentities()).boundary(boundary.physical_world_projection)
+
+
+def test_direct_reader_bounds_scoped_target_and_text_reuse(monkeypatch):
+    from skyseed_v2.backend.bpf import _runner_artifact as m
+    monkeypatch.setattr(m,'_DECODE_REUSE_LIMIT',2)
+    identities=m._DecodedIdentities()
+    def target(zone,scope):
+        return m._PackedBoundaryReader(m._pack(['zone',zone,scope]),identities).target()
+    a=target('zone-a','S1'); assert target('zone-a','S1') is a
+    b=target('zone-a','S2'); assert a!=b
+    for i in range(10): target('zone-'+str(i),'S3')
+    assert len(identities.targets)==len(identities.texts)==2
+    other=m._DecodedIdentities()
+    assert m._PackedBoundaryReader(m._pack(['zone','zone-a','S1']),other).target() is not a

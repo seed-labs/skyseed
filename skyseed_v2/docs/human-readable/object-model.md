@@ -81,7 +81,7 @@ classDiagram
     PhysicalLinkObservation "1" *-- "0..*" GroundStationAccessCandidate
     PhysicalLinkObservation "1" *-- "0..*" ZoneServiceCandidate
     PlannedOperationalState "1" *-- "0..*" OperationalConnection
-    PlannedOperationalState "1" *-- "0..*" ZoneServiceAssignment
+    PlannedOperationalState "1" *-- "0..*" ZoneServiceAssignment : one per scope and geographic Zone
     PlannedOperationalState "1" *-- "0..*" ReachableRouteOutcome
     PlannedOperationalState "1" *-- "0..*" UnreachableRouteOutcome
 ```
@@ -227,3 +227,6 @@ Batch manifests, node versions, reservations and reader/retirement ledgers are
 private representations, not additional diagram entities or domain owners.
 See [the accepted continuation contract](../accepted-design.md#consecutive-finite-delivery)
 and the owner package member diagrams for the public methods.
+
+Network scope is a configured identity value on existing service/Route contracts.
+It adds no owner or geographic Zone. Shared GS resources remain under one BPF Runner.

@@ -194,3 +194,12 @@ records current Tool source separately from frozen runtime source. The existing
 external export v1 associates executor request cases using episode/segment/sequence;
 observed timestamps remain null for missing or ambiguous evidence. This presentation
 round does not regenerate or modify that export.
+
+## Scoped endpoints
+
+Probe-plan v2 stores `network_scope` beside geographic `zone_id`. Identity hashes,
+request and echo-return Route targets, source migration and destination IPv4
+resolution preserve that scope. Tool projection v7 and flow labels retain it;
+Shell selection uses recorded scope without substituting another Zone service.
+Observed paths and routing discrepancies remain available even when their nodes
+fall outside the selected Shell. No visual acceptance is inferred from data tests.

@@ -112,7 +112,7 @@ def _project_traffic_replay(observation, *, reader_validated=False):
         "telemetry_lost_events": telemetry["telemetry_losses"],
     }
     return {
-        "format_version": 6,
+        "format_version": 7,
         "tool": "traffic-path-replay",
         "authority": source["authority"],
         "overview": {
@@ -367,13 +367,13 @@ def _apply_compact_maps(
 ) -> None:
     missing = object()
     for change in transition["zone_service_transitions"]:
-        previous = zone_assignments.get(change["zone_id"], missing)
+        previous = zone_assignments.get((change["network_scope"], change["zone_id"]), missing)
         if previous is missing:
             if change["previous_satellite_id"] is not None:
                 raise ValueError("Traffic compact Zone previous value differs")
         elif previous != change["previous_satellite_id"]:
             raise ValueError("Traffic compact Zone previous value differs")
-        zone_assignments[change["zone_id"]] = change["current_satellite_id"]
+        zone_assignments[(change["network_scope"], change["zone_id"])] = change["current_satellite_id"]
     for change in transition["route_outcome_transitions"]:
         key = _demand_key(change["demand"])
         previous = route_outcomes.get(key)
@@ -463,8 +463,10 @@ def _project_transaction(
     target = _target_for_address(
         request["destination_ipv4"], nodes_by_address, zone_prefixes
     )
+    source_zone = _zone_for_address(request["source_ipv4"], zone_prefixes)
+    if target is not None and target["kind"] == "ground-station":
+        target["network_scope"] = "" if source_zone is None else source_zone[0]
     if source_id is None:
-        source_zone = _zone_for_address(request["source_ipv4"], zone_prefixes)
         if source_zone is not None:
             satellite_id = zone_assignments.get(source_zone)
             if satellite_id is not None:
@@ -538,7 +540,7 @@ def _target_for_address(
         if len(parts) == 3 and parts[1] == "ground-station":
             return {"kind": "ground-station", "node_id": node["node_id"]}
     zone_id = _zone_for_address(address, zone_prefixes)
-    return None if zone_id is None else {"kind": "zone", "zone_id": zone_id}
+    return None if zone_id is None else {"kind": "zone", "zone_id": zone_id[1], "network_scope": zone_id[0]}
 
 
 def _zone_for_address(address: str, zone_prefixes: dict[str, str]) -> str | None:
@@ -561,6 +563,8 @@ def _route_outcome(
         if _node_id(demand["source"]) != source_id:
             continue
         planned_target = demand["target"]
+        if target.get("network_scope", "") != planned_target.get("network_scope", ""):
+            continue
         if target["kind"] == "zone" and planned_target["kind"] == "zone":
             if target["zone_id"] == planned_target["zone_id"]:
                 return outcome
@@ -593,6 +597,7 @@ def _zone_prefixes(
                 raise ValueError("Compiler Zone prefix has an invalid Zone ID")
             if not isinstance(prefix, str) or not prefix:
                 raise ValueError("Compiler Zone prefix is invalid")
+            zone_id = (value.get("network_scope", ""), zone_id)
             canonical = str(ip_interface(prefix))
             network = str(ip_interface(prefix).network)
             if zone_id in mapping or (
@@ -824,6 +829,7 @@ def _project_probe_qualification(
                 "selection_reasons": identity["selection_reasons"],
                 "ground_station_id": identity["ground_station_id"],
                 "zone_id": identity["zone_id"],
+                "network_scope": identity.get("network_scope", ""),
                 "armed": armed,
                 "active_published_overlap": active_overlap,
                 "execution_disposition": _episode_execution_disposition(records),

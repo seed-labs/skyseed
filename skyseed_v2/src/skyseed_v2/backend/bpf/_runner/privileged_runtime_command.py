@@ -954,25 +954,7 @@ def _json_list(result: subprocess.CompletedProcess[str], *, context: str) -> lis
 def _namespace_ipv4_address_facts(
     node: dict[str, Any],
 ) -> tuple[tuple[IPv4Address, int], ...]:
-    pid = int(node["pid"])
-    address_values = _json_list(
-        _in_netns(pid, ["ip", "-j", "-4", "address", "show"]),
-        context="Runner IPv4 address audit",
-    )
-    address_facts = []
-    for interface in address_values:
-        if not isinstance(interface, dict):
-            raise RuntimeError("Runner IPv4 address audit returned an invalid interface")
-        for address in interface.get("addr_info", ()):
-            if not isinstance(address, dict) or address.get("family") != "inet":
-                continue
-            local = address.get("local")
-            prefix_length = address.get("prefixlen")
-            if not isinstance(local, str) or not isinstance(prefix_length, int):
-                raise RuntimeError("Runner IPv4 address audit returned an invalid prefix")
-            address_facts.append((IPv4Address(local), prefix_length))
-
-    return tuple(address_facts)
+    return _LIVE_NODES[node["key"]]["netlink"].ipv4_address_facts()
 
 
 def _namespace_ipv4_local_addresses(
@@ -997,23 +979,8 @@ def _namespace_ipv4_address_networks(
 def _namespace_ipv4_networks(
     node: dict[str, Any],
 ) -> tuple[tuple[IPv4Network, ...], tuple[IPv4Network, ...]]:
-    pid = int(node["pid"])
     address_networks = _namespace_ipv4_address_networks(node)
-    route_values = _json_list(
-        _in_netns(pid, ["ip", "-j", "-4", "route", "show", "table", "all"]),
-        context="Runner IPv4 route audit",
-    )
-    route_networks = []
-    for route in route_values:
-        if not isinstance(route, dict):
-            raise RuntimeError("Runner IPv4 route audit returned an invalid route")
-        destination = route.get("dst")
-        if destination in (None, "default"):
-            continue
-        if not isinstance(destination, str):
-            raise RuntimeError("Runner IPv4 route audit returned an invalid destination")
-        route_networks.append(ip_network(destination, strict=False))
-    return address_networks, tuple(route_networks)
+    return address_networks, _LIVE_NODES[node["key"]]["netlink"].ipv4_route_networks()
 
 
 def _audit_node_addresses(request: dict[str, Any]) -> dict[str, Any]:

@@ -647,7 +647,7 @@ class _IncrementalRealizationProducer:
             destination / _DOMAIN_HISTORY_STREAM_NAMES["planning"],
             {
                 "record_type": "published_planning_history_header",
-                "format_version": 1,
+                "format_version": 2,
                 "codec": "skyseed-v2-planning-evidence",
             },
         )
@@ -655,9 +655,9 @@ class _IncrementalRealizationProducer:
             destination / _DOMAIN_HISTORY_STREAM_NAMES["compiler"],
             {
                 "record_type": "compiled_realization_history_header",
-                "format_version": 2,
+                "format_version": 3,
                 "semantic_payload_owner": "sealed Runner artifact",
-                "projection": "compact-exact-compiler-inspection-v1",
+                "projection": "compact-exact-compiler-inspection-v2",
             },
         )
 
@@ -1096,7 +1096,7 @@ def _compact_compiler_evidence(
         "boundary_workloads": boundaries,
         "intended_state_timestamp": state.timestamp.isoformat(),
         "zone_prefixes": [
-            {"zone_id": zone_id, "packet_prefix": packet_prefix}
+            {"zone_id": zone_id[1], "network_scope": zone_id[0], "packet_prefix": packet_prefix}
             for zone_id, packet_prefix in realization.zone_prefixes
         ],
     }

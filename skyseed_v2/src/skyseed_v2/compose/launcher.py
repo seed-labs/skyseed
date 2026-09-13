@@ -46,6 +46,7 @@ def _host_startup_sample() -> dict:
         except OSError as error:
             scopes[name] = {'unavailable': str(error)}
     return {'monotonic': monotonic(), 'wall_time': time(), 'memory': memory,
+            'cpu_jiffies': Path('/proc/stat').read_text().splitlines()[0].split()[1:],
             'pressure': pressure, 'pswpin': int(vm['pswpin']),
             'pswpout': int(vm['pswpout']), 'service_cgroups': scopes}
 
@@ -53,12 +54,21 @@ def _host_startup_sample() -> dict:
 class _StartupMeasurements:
     """Lightweight deployment checkpoints, with no admission or abort policy."""
 
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, *, deadline: float | None = None):
         self.path = path
+        self.deadline = deadline
+
+    def remaining(self) -> float:
+        remaining = 3600.0 if self.deadline is None else self.deadline - monotonic()
+        if remaining <= 0:
+            raise TimeoutError('overall deployment stage budget exhausted')
+        return remaining
 
     def record(self, kind: str, **fields) -> None:
         with self.path.open('a', encoding='utf-8') as stream:
             stream.write(dumps({'kind': kind, 'monotonic': monotonic(), **fields}) + '\n')
+            stream.flush()
+            os.fsync(stream.fileno())
 
     def checkpoint(self):
         try:
@@ -70,23 +80,11 @@ class _StartupMeasurements:
             return None
 
 
-def _deployment_bounds(phase: str, resident: int) -> tuple[int, int]:
-    """Bound services per invocation separately from concurrent daemon requests.
-
-    Startup is count-independent; the cleanup threshold is an engineering
-    default, not pressure admission or an optimum. Explicit values are ceilings.
-    """
-    if phase not in {'startup', 'cleanup'}:
-        raise ValueError('unknown deployment policy phase')
-    prefix = 'SKYSEED_DEPLOY' if phase == 'startup' else 'SKYSEED_CLEANUP'
-    batch = int(os.environ.get(prefix + '_BATCH_SIZE', '64' if phase == 'startup' else '16'))
-    parallel = int(os.environ.get(prefix + '_PARALLEL', '8')) if phase == 'startup' else batch
-    threshold = int(os.environ.get('SKYSEED_DEPLOY_RESIDENT_STEP', '2000')) if phase == 'cleanup' else 1
-    if not 1 <= parallel <= batch <= 64 or threshold < 1:
-        raise ValueError('deployment policy requires 1 <= parallel <= batch size <= 64 and positive resident step')
-    if phase == 'cleanup' and resident >= threshold:
-        batch, parallel = max(1, batch // 2), max(1, parallel // 2)
-    return batch, parallel
+def _startup_parallel() -> int:
+    parallel = int(os.environ.get('SKYSEED_DEPLOY_PARALLEL', '8'))
+    if not 1 <= parallel <= 64:
+        raise ValueError('startup concurrency must be between 1 and 64')
+    return parallel
 
 
 def _compose_dependencies(service: dict) -> set[str]:
@@ -158,8 +156,19 @@ def _startup_groups(services: dict) -> list[tuple[str, tuple[str, ...]]]:
             raise ComposeMaterializationError(f'missing generated Shell identity: {name}')
         membership[name] = group
         by_group.setdefault(group, []).append(name)
-    ordered = ['shared', *sorted(set(by_group) - {'shared'})]
-    rank = {group: i for i, group in enumerate(ordered)}
+    dependencies = {name: _compose_dependencies(service) for name, service in services.items()}
+    if any(values - services.keys() for values in dependencies.values()):
+        raise ComposeMaterializationError('unknown generated Compose dependency')
+    group_dependencies = {group: {membership[dep] for name in names for dep in dependencies[name]
+                                 if membership[dep] != group}
+                          for group, names in by_group.items()}
+    ordered = []
+    while len(ordered) < len(by_group):
+        ready = sorted((g for g in by_group if g not in ordered and group_dependencies[g] <= set(ordered)),
+                       key=lambda g: (g != 'shared', g))
+        if not ready:
+            raise ComposeMaterializationError('cyclic deployment group dependencies')
+        ordered.append(ready[0])
     result = []
     completed: set[str] = set()
     for group in ordered:
@@ -168,11 +177,7 @@ def _startup_groups(services: dict) -> list[tuple[str, tuple[str, ...]]]:
         while pending:
             ready = []
             for name in sorted(pending):
-                dependencies = _compose_dependencies(services[name])
-                for dependency in dependencies:
-                    if dependency not in membership or rank[membership[dependency]] > rank[group]:
-                        raise ComposeMaterializationError(f'dependency crosses a later Shell: {name} -> {dependency}')
-                if set(dependencies) <= completed:
+                if dependencies[name] <= completed:
                     ready.append(name)
             if not ready:
                 raise ComposeMaterializationError('cyclic generated Compose dependencies')
@@ -186,9 +191,10 @@ def _startup_groups(services: dict) -> list[tuple[str, tuple[str, ...]]]:
 def _bounded_startup_command(command: Sequence[str], guard: _StartupMeasurements,
                              ) -> None:
     started = monotonic()
+    remaining = guard.remaining()
     process = Popen(command, start_new_session=True)
     try:
-        process.wait()
+        process.wait(timeout=remaining)
         if process.returncode:
             raise ComposeMaterializationError(f'startup command failed: {process.returncode}')
     finally:
@@ -208,40 +214,17 @@ def _startup_names(project: str, services: dict, names: Sequence[str]) -> list[s
     return [services[name].get('container_name', f'{project}-{name}-1') for name in names]
 
 
-def _write_startup_batch(path: Path, compose: dict, names: Sequence[str],
-                         identities: dict[str, str] | None = None) -> None:
-    """Derive only admitted services; preserve original project/network identity."""
-    selected = {name: {key: value for key, value in compose['services'][name].items()
-                       if key != 'depends_on'} for name in names}
-    for service in selected.values():
-        for field in ('network_mode', 'ipc', 'pid'):
-            value = service.get(field, '')
-            if isinstance(value, str) and value.startswith('service:'):
-                target = (identities or {}).get(value.removeprefix('service:'))
-                if not target:
-                    raise ComposeMaterializationError('namespace dependency is not materialized')
-                service[field] = 'container:' + target
-    path.write_text(safe_dump({**compose, 'services': selected}, sort_keys=False))
-
-
 def _inspect_startup_services(project: str, services: dict, names: Sequence[str],
                               *, allow_missing: bool = False,
                               guard: _StartupMeasurements | None = None) -> list[dict]:
     containers = []
-    for offset in range(0, len(names), 8):
-        batch = names[offset:offset + 8]
+    if names:
+        batch = names
         command = ['docker', 'container', 'inspect', '--format', '{{json .}}',
                    *_startup_names(project, services, batch)]
-        # A query failure pauses admission; it is not evidence of host capacity.
-        for attempt in range(3):
-            try:
-                result = run(command, capture_output=True, text=True, timeout=10)
-                break
-            except TimeoutExpired:
-                if guard is None or attempt == 2:
-                    raise
-                guard.record('docker-observation-retry', services=list(batch), attempt=attempt + 1)
-                sleep(2)
+        # One identity inventory; a timeout stops admission without retries.
+        result = run(command, capture_output=True, text=True,
+                     timeout=60 if guard is None else guard.remaining())
         containers.extend(_startup_inspected_objects(result, allow_missing=allow_missing))
     if len(containers) != len(names) and not allow_missing:
         raise ComposeMaterializationError('incomplete bounded container inspection')
@@ -267,147 +250,205 @@ def _startup_inspected_objects(result: CompletedProcess, *, allow_missing: bool)
     return [loads(line) for line in result.stdout.splitlines() if line.strip()]
 
 
-def _controlled_startup_cleanup(project: str, services: dict, admitted: Sequence[str],
-                                guard: _StartupMeasurements, *, compose_path: Path | None = None) -> None:
-    """Stop daemon-owned bounded work, then remove only verified project containers."""
-    def command(arguments):
-        result = run(arguments, capture_output=True, text=True, timeout=120)
-        if result.returncode:
-            raise ComposeMaterializationError(result.stderr)
-        return result.stdout
-    if compose_path is not None:
-        services = _resolved_stop_services(services, compose_path, project, command)
-    pending = set(admitted)
-    waves = []
-    while pending:
-        needed = set().union(*(_compose_dependencies(services[name]) for name in pending))
-        ready = sorted(pending - needed)
-        if not ready:
-            raise ComposeMaterializationError('cyclic startup rollback dependencies')
-        waves.append(ready)
-        pending.difference_update(ready)
-    for wave in waves:
-        for offset in range(0, len(wave), 8):
-            names = wave[offset:offset + 8]
-            try:
-                containers = _inspect_startup_services(project, services, names, allow_missing=True)
-                ids = [c['Id'] for c in containers]
-                if not ids:
-                    continue
-                for container in containers:
-                    name = container['Config']['Labels']['com.docker.compose.service']
-                    service = services[name]
-                    if any(key in service for key in ('pre_stop', 'stop_signal', 'stop_grace_period')):
-                        if container['State'].get('Running'):
-                            for hook in _pre_stop_commands(service, container['Id']):
-                                command(hook)
-                        command(['docker', 'stop', container['Id']])
-                # At most eight daemon removals, including in-flight starts.
-                command(['docker', 'rm', '--force', *ids])
-                result = run(['docker', 'container', 'inspect', '--format', '{{json .}}', *ids],
-                             capture_output=True, text=True, timeout=10)
-                if _startup_inspected_objects(result, allow_missing=True):
-                    raise ComposeMaterializationError('container removal not verified')
-                guard.record('cleanup-containers', container_ids=ids, verified_absent=True)
-            except Exception as error:
-                guard.record('cleanup-failure', names=list(names), error=str(error))
-                # Do not remove a dependency after its dependent failed cleanup.
-                raise ComposeMaterializationError('scoped cleanup incomplete; remaining ownership recorded') from error
+_DEPLOYMENT_CONFIG_LABEL = 'org.skyseed.deployment.config-sha256'
+
+
+def _deployment_service_digest(service: dict, image_id: str) -> str:
+    return sha256(dumps({'service': service, 'image_id': image_id},
+                        sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+
+def _startup_success(container: dict, service: dict) -> bool:
+    state = container['State']
+    if state.get('OOMKilled') or container.get('RestartCount', 0):
+        return False
+    helper = isinstance(service.get('build'), dict) and str(service['build'].get('dockerfile', '')).startswith('dummies/')
+    if helper:
+        return state['Status'] == 'exited' and state['ExitCode'] == 0
+    health = state.get('Health', {}).get('Status')
+    return state['Status'] == 'running' and health in (None, 'healthy')
+
+
+def _write_startup_group(path: Path, compose: dict, names: Sequence[str],
+                         identities: dict[str, dict], digests: dict[str, str]) -> None:
+    """Keep intra-group Compose semantics; satisfy earlier dependencies once."""
+    services = compose['services']
+    selected = {}
+    for name in names:
+        service = dict(services[name])
+        dependencies = service.get('depends_on', {})
+        dependencies = ({key: {'condition': 'service_started'} for key in dependencies}
+                        if isinstance(dependencies, list) else dependencies)
+        retained = {}
+        for dependency, options in dependencies.items():
+            if dependency in names:
+                retained[dependency] = options
+                continue
+            container = identities.get(dependency)
+            if container is None:
+                raise ComposeMaterializationError('earlier group dependency is missing')
+            state = container['State']
+            condition = options.get('condition', 'service_started')
+            valid = ((state['Status'] == 'running' or _startup_success(container, services[dependency])) if condition == 'service_started' else
+                     state.get('Health', {}).get('Status') == 'healthy' if condition == 'service_healthy' else
+                     state['Status'] == 'exited' and state['ExitCode'] == 0 if condition == 'service_completed_successfully' else False)
+            if not valid:
+                raise ComposeMaterializationError(f'unsatisfied group dependency: {name} -> {dependency} ({condition})')
+        if retained:
+            service['depends_on'] = retained
+        else:
+            service.pop('depends_on', None)
+        for field in ('network_mode', 'ipc', 'pid'):
+            value = service.get(field, '')
+            if isinstance(value, str) and value.startswith('service:'):
+                dependency = value.removeprefix('service:')
+                if dependency not in names:
+                    if dependency not in identities:
+                        raise ComposeMaterializationError('namespace dependency is not materialized')
+                    service[field] = 'container:' + identities[dependency]['Id']
+        service['labels'] = {**service.get('labels', {}), _DEPLOYMENT_CONFIG_LABEL: digests[name]}
+        selected[name] = service
+    path.write_text(safe_dump({**compose, 'services': selected}, sort_keys=False))
 
 
 def _controlled_startup(output: Path, project: str) -> None:
-    """Generated startup entry under the existing Compose deployment owner."""
+    """Deploy whole metadata groups; explicit re-entry reconciles confirmed work."""
+    deadline = float(os.environ.get('SKYSEED_DEPLOY_DEADLINE_MONOTONIC', monotonic() + 3600))
     path = output / 'runtime/docker-compose.yml'
     _validate_generated_compose(path, project)
     compose = safe_load(path.read_text())
     services = compose['services']
     groups = _startup_groups(services)
-    batch_size, parallel = _deployment_bounds('startup', 0)
-    guard = _StartupMeasurements(output / 'runtime/deployment-measurements.jsonl')
-    guard.record('configuration', project=project, batch_size=batch_size, parallel=parallel,
-                 groups=[(g, len(n)) for g, n in groups],
-                 compose_sha256=sha256(path.read_bytes()).hexdigest())
+    parallel = _startup_parallel()
+    guard = _StartupMeasurements(output / 'runtime/deployment-measurements.jsonl',
+        deadline=deadline)
+    compose_hash = sha256(path.read_bytes()).hexdigest()
+    guard.record('configuration', project=project, mode='whole-group', parallel=parallel,
+                 groups=[(g, len(n)) for g, n in groups], compose_sha256=compose_hash)
+    refs = tuple(dict.fromkeys(s['image'].replace('${COMPOSE_PROJECT_NAME}', project) for s in services.values()))
+    image_result = run(['docker', 'image', 'inspect', *refs], capture_output=True, text=True, timeout=guard.remaining())
+    if image_result.returncode:
+        raise ComposeMaterializationError(image_result.stderr)
+    images = loads(image_result.stdout)
+    if len(images) != len(refs):
+        raise ComposeMaterializationError('incomplete startup image inventory')
+    image_ids = {ref: image['Id'] for ref, image in zip(refs, images)}
+    digests = {name: _deployment_service_digest(service, image_ids[service['image'].replace('${COMPOSE_PROJECT_NAME}', project)])
+               for name, service in services.items()}
     existing = _inspect_startup_services(project, services, tuple(services), allow_missing=True, guard=guard)
-    identities = {c['Config']['Labels']['com.docker.compose.service']: c['Id'] for c in existing}
-    resident = {c['Id'] for c in existing if c['State']['Running']}
-    admitted: list[str] = []
-    complete: set[str] = set()
-    helpers = {name for name, s in services.items()
-               if isinstance(s.get('build'), dict) and str(s['build'].get('dockerfile', '')).startswith('dummies/')}
+    identities = {c['Config']['Labels']['com.docker.compose.service']: c for c in existing}
+    for name, container in identities.items():
+        if (container['Image'] != image_ids[services[name]['image'].replace('${COMPOSE_PROJECT_NAME}', project)]
+            or container['Config']['Labels'].get(_DEPLOYMENT_CONFIG_LABEL) != digests[name]):
+            raise ComposeMaterializationError(f'existing deployment configuration/image identity differs: {name}')
+    completed = []
+    active_names = ()
+    group = None
     try:
-        for group, names in groups:
+        # Reconcile the whole project before replacing any namespace owner.
+        # HostConfig bindings address actual retained container IDs, not merely
+        # the unchanged semantic service digest. Unverifiable bindings are stale.
+        namespace_fields = {'network_mode': 'NetworkMode', 'ipc': 'IpcMode', 'pid': 'PidMode'}
+        namespace_dependencies = {
+            name: {field: service[field].removeprefix('service:')
+                   for field in namespace_fields
+                   if isinstance(service.get(field), str) and service[field].startswith('service:')}
+            for name, service in services.items()}
+        invalid = set(services) - identities.keys()
+        invalid.update(name for name, container in identities.items()
+                       if not _startup_success(container, services[name]))
+        stale = set()
+        for name, container in identities.items():
+            for field, owner in namespace_dependencies[name].items():
+                if (owner not in identities or container.get('HostConfig', {}).get(namespace_fields[field])
+                        != 'container:' + identities[owner]['Id']):
+                    stale.add(name)
+        invalid.update(stale)
+        while True:
+            dependents = {name for name, dependencies in namespace_dependencies.items()
+                          if any(owner in invalid for owner in dependencies.values())}
+            if dependents <= invalid:
+                break
+            invalid.update(dependents)
+        failed = invalid & identities.keys()
+        if failed:
+            group = 'deployment-reconciliation'
+            active_names = tuple(sorted(failed))
+            guard.record('retry-unsuccessful-containers', group=group,
+                         stale_namespace_bindings=sorted(stale),
+                         containers=[identities[name] for name in active_names])
+            def retry_command(arguments):
+                result = run(arguments, capture_output=True, text=True, timeout=guard.remaining())
+                if result.returncode:
+                    raise ComposeMaterializationError(result.stderr)
+                return result.stdout
+            resolved = _resolved_stop_services(services, path, project, retry_command)
+            while failed:
+                needed = set().union(*(_compose_dependencies(services[name]) for name in failed))
+                wave = sorted(failed - needed)
+                if not wave:
+                    raise ComposeMaterializationError('cyclic unsuccessful startup dependencies')
+                for name in wave:
+                    if not _disposable_network_service(resolved[name]):
+                        identity = identities[name]['Id']
+                        if identities[name]['State'].get('Running'):
+                            for hook in _pre_stop_commands(resolved[name], identity):
+                                retry_command(hook)
+                        retry_command(['docker', 'stop', identity])
+                retry_command(['docker', 'rm', '--force', *(identities[name]['Id'] for name in wave)])
+                for name in wave:
+                    del identities[name]
+                failed.difference_update(wave)
+        for ordinal, (group, names) in enumerate(groups):
+            if not names:
+                continue
+            active_names = names
             begin = monotonic()
-            before = guard.checkpoint()
-            remaining = dict.fromkeys(names)
-            while remaining:
-                batch_size, parallel = _deployment_bounds('startup', len(resident))
-                # Select from unhandled services, not an offset into a filtered wave.
-                batch = tuple(name for name in remaining
-                              if _compose_dependencies(services[name]) <= complete)[:batch_size]
-                if not batch:
-                    raise ComposeMaterializationError('no dependency-ready startup batch')
-                batch_before = guard.checkpoint()
-                started = monotonic()
-                admitted.extend(batch)
-                existing = _inspect_startup_services(project, services, batch, allow_missing=True, guard=guard)
-                reusable = set()
-                for c in existing:
-                    name = c['Config']['Labels']['com.docker.compose.service']
-                    expected_image = services[name]['image'].replace('${COMPOSE_PROJECT_NAME}', project)
-                    if c['Config']['Image'] != expected_image:
-                        raise ComposeMaterializationError(f'existing startup image differs: {name}')
-                    if c['State']['Running'] or (name in helpers and c['State']['Status'] == 'exited' and c['State']['ExitCode'] == 0):
-                        reusable.add(name)
-                pending_batch = tuple(name for name in batch if name not in reusable)
-                batch_path = path.parent / 'skyseed-startup-batch.yml'
-                _write_startup_batch(batch_path, compose, pending_batch, identities)
+            guard.checkpoint()
+            pending = tuple(name for name in names if name not in identities or not _startup_success(identities[name], services[name]))
+            group_path = path.parent / f'skyseed-startup-group-{ordinal:03}.yml'
+            _write_startup_group(group_path, compose, names, identities, digests)
+            guard.record('group-start', group=group, count=len(names), pending=list(pending),
+                         reused=[name for name in names if name not in pending], parallel=parallel,
+                         input_sha256=sha256(group_path.read_bytes()).hexdigest())
+            if pending:
                 command = ['docker', 'compose', '--parallel', str(parallel), '-p', project,
-                           '--project-directory', str(path.parent), '-f', str(batch_path),
-                           'up', '-d', '--no-build', '--no-deps', *pending_batch]
-                if pending_batch:
-                    _bounded_startup_command(command, guard)
-                guard.record('batch-input', services=list(pending_batch), reused=list(sorted(reusable)),
-                             sha256=sha256(batch_path.read_bytes()).hexdigest())
-                deadline = monotonic() + 30
+                           '--project-directory', str(path.parent), '-f', str(group_path),
+                           'up', '-d', '--no-build', '--no-recreate', *pending]
+                _bounded_startup_command(command, guard)
+                # Health/helper completion is a real dependency wait, not batch pacing.
                 while True:
-                    containers = _inspect_startup_services(project, services, batch, guard=guard)
-                    pending = []
-                    for c in containers:
-                        name = c['Config']['Labels']['com.docker.compose.service']
-                        state = c['State']
-                        valid = state['Status'] == 'running' if name not in helpers else (
-                            state['Status'] == 'exited' and state['ExitCode'] == 0)
-                        if state.get('OOMKilled') or c.get('RestartCount', 0):
-                            raise ComposeMaterializationError(f'container OOM/restart: {name}')
-                        if not valid:
-                            pending.append(name)
-                    if not pending:
+                    containers = _inspect_startup_services(project, services, names, guard=guard)
+                    if all(_startup_success(c, services[c['Config']['Labels']['com.docker.compose.service']]) for c in containers):
                         break
-                    if monotonic() >= deadline:
-                        raise ComposeMaterializationError(f'container startup states unresolved: {pending}')
-                    sleep(1)
-                settled = guard.checkpoint()
-                identities.update({c['Config']['Labels']['com.docker.compose.service']: c['Id'] for c in containers})
-                resident.update(c['Id'] for c in containers if c['State']['Running'])
-                complete.update(batch)
-                for name in batch:
-                    del remaining[name]
-                guard.record('batch-complete', group=group, services=list(batch),
-                             started=len(complete), resident=len(resident), batch_size=batch_size, parallel=parallel, completed_helpers=len(complete & helpers), failed=0,
-                             elapsed_seconds=monotonic() - started, before_available= batch_before,
-                             settled_available=settled,
-                             containers=[{'id': c['Id'], 'service': c['Config']['Labels']['com.docker.compose.service'],
-                                          'state': c['State']} for c in containers])
-                settled = guard.checkpoint()
-            guard.record('group-complete', group=group, count=len(names), cumulative_count=len(complete),
-                         elapsed_seconds=monotonic() - begin, before_available=before,
-                         settled_available=settled, host_increment_bytes=None if before is None or settled is None else before - settled)
-        if complete != set(services):
-            raise ComposeMaterializationError('deployment did not cover every expected service')
-        guard.record('deployment-complete', services=len(complete))
+                    if any(c['State'].get('OOMKilled') or c.get('RestartCount', 0)
+                           or c['State'].get('Health', {}).get('Status') == 'unhealthy'
+                           or c['State'].get('Error')
+                           or c['State']['Status'] in ('dead', 'exited') and not _startup_success(
+                               c, services[c['Config']['Labels']['com.docker.compose.service']])
+                           for c in containers):
+                        raise ComposeMaterializationError(f'unsuccessful containers in group: {group}')
+                    sleep(min(1.0, guard.remaining()))
+                identities.update({c['Config']['Labels']['com.docker.compose.service']: c for c in containers})
+            completed.append(group)
+            guard.record('group-complete', group=group, count=len(names), reused=len(names)-len(pending),
+                         elapsed_seconds=monotonic()-begin,
+                         containers=[{'id': identities[name]['Id'], 'service': name, 'state': identities[name]['State']}
+                                     for name in names])
+            guard.checkpoint()
+        guard.record('deployment-complete', services=len(services), completed_groups=completed)
     except BaseException as error:
-        guard.record('admission-stopped', error=str(error), admitted=admitted, completed=len(complete))
-        _controlled_startup_cleanup(project, services, admitted, guard, compose_path=path)
+        partial = None
+        observation_error = None
+        try:
+            # Inventory is read-only; no automatic rollback or second mutation after timeout.
+            partial = _inspect_startup_services(project, services, active_names, allow_missing=True, guard=guard)
+        except BaseException as inspection_error:
+            observation_error = str(inspection_error)
+        guard.record('admission-stopped', error=str(error), failing_group=group,
+                     completed_groups=completed, background_work_unknown=isinstance(error, TimeoutExpired),
+                     partial_state=partial, observation_error=observation_error,
+                     confirmed_groups_preserved=True)
         raise
 
 
@@ -424,6 +465,36 @@ def _prepare_generated_output(output_directory: Path, *, replace: bool) -> Path:
             shutil.rmtree(output)
     output.mkdir(parents=True)
     return output / "runtime"
+
+
+def _prepare_controlled_image_compose(output: Path, project: str) -> Path:
+    """Derive image-only Compose input; service admission keeps the full source.
+
+    Build/config inspection must not parse thousands of runtime services in one
+    Compose invocation. Full service fields are validated by each existing
+    bounded startup invocation, with dependencies owned by _startup_groups.
+    """
+    source = output / "runtime/docker-compose.yml"
+    _validate_generated_compose(source, project)
+    compose = safe_load(source.read_text())
+    services = compose["services"]
+    selected = {}
+    images = set()
+    for name, service in services.items():
+        image = service.get("image")
+        if not isinstance(image, str) or not image:
+            raise ComposeMaterializationError(f"generated service lacks image: {name}")
+        if "build" in service:
+            selected[name] = {key: service[key] for key in
+                              ("build", "image", "platform", "pull_policy") if key in service}
+            images.add(image)
+    for name, service in services.items():
+        if service["image"] not in images:
+            selected[name] = {"image": service["image"]}
+            images.add(service["image"])
+    path = source.parent / "skyseed-image-compose.yml"
+    path.write_text(safe_dump({**compose, "services": selected}, sort_keys=False))
+    return path
 
 
 def _write_compose_project_scripts(
@@ -584,6 +655,22 @@ exit "$startup_status"
                 '_controlled_startup(Path(sys.argv[1]), sys.argv[2])\' '
                 '"$SCRIPT_DIR" "$PROJECT_NAME" || startup_status=$?',
             )
+    controlled_image_setup = ""
+    if controlled_startup:
+        if build_plan_path is None or not python_executable:
+            raise ValueError("controlled startup requires its generated build plan")
+        controlled_image_setup = (
+            f"PYTHON={quote(python_executable)}\n"
+            'export SKYSEED_DEPLOY_DEADLINE_MONOTONIC="$("$PYTHON" -c \'import time; print(time.monotonic() + 3600)\')"\n'
+            'COMPOSE_FILE="$("$PYTHON" -c \'from pathlib import Path; import sys; '
+            'from skyseed_v2.compose.launcher import _prepare_controlled_image_compose; '
+            'print(_prepare_controlled_image_compose(Path(sys.argv[1]), sys.argv[2]))\' '
+            '"$SCRIPT_DIR" "$PROJECT_NAME")"\n'
+        )
+        startup = startup.replace(
+            'existing_containers="$("${COMPOSE[@]}" ps -aq)"',
+            'existing_containers="$(docker ps -aq --filter "label=com.docker.compose.project=$PROJECT_NAME")"',
+        )
     _write_executable(
         output / "start.sh",
         f"""#!/usr/bin/env bash
@@ -596,7 +683,7 @@ fi
 SCRIPT_DIR="$(cd -- "$(dirname -- "${{BASH_SOURCE[0]}}")" && pwd)"
 COMPOSE_FILE="$SCRIPT_DIR/runtime/docker-compose.yml"
 PROJECT_NAME={shell_project_name}
-COMPOSE=(
+{controlled_image_setup}COMPOSE=(
     docker compose
     -p "$PROJECT_NAME"
     -f "$COMPOSE_FILE"
@@ -641,7 +728,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${{BASH_SOURCE[0]}}")" && pwd)"
 COMPOSE_FILE="$SCRIPT_DIR/runtime/docker-compose.yml"
 PROJECT_NAME={shell_project_name}
 # Compose down does not consistently apply COMPOSE_PARALLEL_LIMIT to stops.
-# Explicit resource batches enforce the bound independently of Compose version.
+# One group at a time uses the Docker CLI native bounded removal queue.
 exec {quote(python_executable or sys.executable)} -c 'from pathlib import Path; import sys; from skyseed_v2.compose.launcher import _controlled_teardown; _controlled_teardown(Path(sys.argv[1]), sys.argv[2])' "$SCRIPT_DIR" "$PROJECT_NAME"
 """,
     )
@@ -649,16 +736,17 @@ exec {quote(python_executable or sys.executable)} -c 'from pathlib import Path; 
 
 def _controlled_teardown(output: Path, project: str) -> None:
     """Remove verified project resources with bounded dependency-ordered requests."""
+    deadline = monotonic() + 1800
     path = output / 'runtime/docker-compose.yml'
     _validate_generated_compose(path, project)
     compose = safe_load(path.read_text())
     services = compose.get('services', {})
-    guard = _StartupMeasurements(output / 'runtime/teardown-measurements.jsonl')
+    guard = _StartupMeasurements(output / 'runtime/teardown-measurements.jsonl', deadline=deadline)
 
     def command(arguments: Sequence[str]) -> str:
         started = monotonic()
         try:
-            result = run(arguments, capture_output=True, text=True, timeout=120)
+            result = run(arguments, capture_output=True, text=True, timeout=guard.remaining())
             if result.returncode:
                 raise ComposeMaterializationError(result.stderr or result.stdout)
             return result.stdout
@@ -698,52 +786,50 @@ def _controlled_teardown(output: Path, project: str) -> None:
     dependencies = {name: _compose_dependencies(service) for name, service in services.items()}
     if any(deps - services.keys() for deps in dependencies.values()):
         raise ComposeMaterializationError('unknown generated teardown dependency')
-    waves = []
-    pending = set(services)
-    while pending:
-        needed = set().union(*(dependencies[name] for name in pending))
-        ready = sorted(pending - needed)
-        if not ready:
-            raise ComposeMaterializationError('cyclic generated Compose dependencies')
-        waves.append(ready)
-        pending.difference_update(ready)
-
+    groups = list(reversed(_startup_groups(services)))
     containers = inventory('container')
-    batch_size, parallel = _deployment_bounds('cleanup', len(containers))
-    guard.record('teardown-start', project=project, batch_size=batch_size, parallel=parallel,
+    guard.record('teardown-start', project=project, mode='whole-group', native_rm_parallel=50,
                  containers=len(containers), compose_sha256=sha256(path.read_bytes()).hexdigest())
     by_service: dict[str, list[str]] = {}
     for row in containers:
         by_service.setdefault(row['key'], []).append(row['id'])
-    # Orphans are still project owned, as with compose down --remove-orphans.
-    waves.append(sorted(set(by_service) - services.keys()))
+    orphans = sorted(set(by_service) - services.keys())
+    if orphans:
+        groups.insert(0, ('orphaned-project-services', tuple(orphans)))
     remaining_count = len(containers)
-    for wave in waves:
-        # Same-wave services have no mutual dependencies. Fast and graceful
-        # services are independent within it; no next wave starts on failure.
-        for fast in (False, True):
-            pending = [(identity, name) for name in wave
-                       if _disposable_network_service(services.get(name, {})) == fast
-                       for identity in by_service.get(name, ())]
-            while pending:
-                batch_size, parallel = _deployment_bounds('cleanup', remaining_count)
-                # Docker stop/rm issue a request for each ID; unlike Compose up,
-                # they have no separate concurrency flag. Bound actual IDs too.
-                batch, pending = pending[:min(batch_size, parallel)], pending[min(batch_size, parallel):]
-                ids = [identity for identity, _ in batch]
-                if not fast:
-                    for identity, name in batch:
-                        hooks = _pre_stop_commands(services.get(name, {}), identity)
-                        if hooks:
-                            state = loads(command(['docker', 'inspect', '--format', '{{json .State}}', identity]))
-                            if state.get('Running'):
-                                for hook in hooks:
-                                    command(hook)
-                    command(['docker', 'stop', *ids])
-                command(['docker', 'rm', *(['--force'] if fast else []), *ids])
-                remaining_count -= len(ids)
-                guard.record('teardown-batch', container_ids=ids, fast_disposable=fast,
-                             remaining=remaining_count, batch_size=batch_size, parallel=parallel)
+    for group, names in groups:
+        started = monotonic()
+        pending = set(names) & by_service.keys()
+        guard.record('teardown-group-start', group=group, containers=sum(len(by_service[n]) for n in pending))
+        while pending:
+            # Only real within-group dependencies split a removal, never counts.
+            needed = set().union(*(dependencies.get(name, set()) for name in pending))
+            wave = sorted(pending - needed)
+            if not wave:
+                raise ComposeMaterializationError('cyclic generated teardown dependencies')
+            batch = [(identity, name) for name in wave for identity in by_service[name]]
+            graceful = [(identity, name) for identity, name in batch
+                        if not _disposable_network_service(services.get(name, {}))]
+            for identity, name in graceful:
+                hooks = _pre_stop_commands(services.get(name, {}), identity)
+                if hooks:
+                    state = loads(command(['docker', 'inspect', '--format', '{{json .State}}', identity]))
+                    if state.get('Running'):
+                        for hook in hooks:
+                            command(hook)
+            if graceful:
+                # Docker retains each container's configured signal and grace period.
+                command(['docker', 'stop', *(identity for identity, _ in graceful)])
+            ids = [identity for identity, _ in batch]
+            # CLI 29.6.2 parallelOperation supplies the native limit of 50.
+            # All graceful services have stopped successfully before force removal.
+            command(['docker', 'rm', '--force', *ids])
+            remaining_count -= len(ids)
+            pending.difference_update(wave)
+            guard.record('teardown-group-removal', group=group, container_ids=ids,
+                         remaining=remaining_count, graceful=len(graceful), native_rm_parallel=50)
+        guard.record('teardown-group-complete', group=group, elapsed_seconds=monotonic()-started)
+        guard.checkpoint()
     if inventory('container'):
         raise ComposeMaterializationError('project containers remain after teardown')
     external = {name for name, network in compose.get('networks', {}).items()

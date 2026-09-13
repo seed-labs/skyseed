@@ -198,11 +198,15 @@ Offline refresh provenance is separate from the retained runtime source. Old
 browser/visual gate evidence applies to its original Tool source only; the final
 finishing changes have nonvisual validation and pending user visual review.
 
-Zone service is globally unique across the world: one Zone has at most one current
-serving satellite, not one per Shell. In the current example, ISLs stay within
-Shells and GSs cannot be transit nodes. Geographic three-GS associations and
-independent GS allocation do not guarantee those GSs have operational access to
-the Zone's serving Shell. Stable logical pairs therefore differ from the underlying
-GS→Zone and changing serving-satellite→GS demands. Coordinated Zone/GS selection
-and cross-Shell communication research are deferred; this Tool correction changes
-neither allocation nor routing or topology.
+Zone service identity is `(network_scope, zone_id)`. The empty scope retains
+unscoped behavior. The five-Shell example explicitly supplies satellite scope
+membership to the GS, Zone and Route Models: every shared GS reserves two
+preparing-or-operational slots per Shell (ten total), every geographic Zone has
+one explicit assignment per Shell, and the geographic three-GS association is
+applied separately in each scope. The scoped Route Model excludes other-scope
+satellites and GS transit. No cross-Shell communication Model is implemented.
+One Compiler/Runner owns shared interfaces, forwarding and cleanup. Distinct
+scoped Zone IPv4 destinations prevent shared-GS forwarding collisions. Physical
+feasibility, satellite capacities and preparation/handover rules still apply;
+association does not promise an operational path. Isolation is configured in
+Models, not imposed as a permanent PhysicalWorld rule.

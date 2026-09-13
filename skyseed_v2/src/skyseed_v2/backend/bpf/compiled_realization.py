@@ -151,6 +151,11 @@ class _ZoneEdgeState:
     zone_id: str
     packet_prefix: str
     service_satellite_id: NodeId
+    network_scope: str = ""
+
+    @property
+    def service_key(self) -> tuple[str, str]:
+        return self.network_scope, self.zone_id
 
 
 @dataclass(frozen=True, slots=True)
@@ -162,6 +167,7 @@ class _ZoneEdgeIntent:
     packet_prefix: str
     previous_service_satellite_id: NodeId | None
     service_satellite_id: NodeId | None
+    network_scope: str = ""
 
     def __post_init__(self) -> None:
         previous = self.previous_service_satellite_id
@@ -182,6 +188,10 @@ class _ZoneEdgeIntent:
             )
         if not valid:
             raise ValueError("Zone edge phase differs from its semantic mutation")
+
+    @property
+    def service_key(self) -> tuple[str, str]:
+        return self.network_scope, self.zone_id
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,7 +226,7 @@ class _IntendedState:
     qdiscs: tuple[_QdiscState, ...]
     forwarding: tuple[_ForwardingBinding, ...]
     zone_edges: tuple[_ZoneEdgeState, ...]
-    zone_prefixes: tuple[tuple[str, str], ...]
+    zone_prefixes: tuple[tuple[tuple[str, str], str], ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -225,8 +235,22 @@ class _PhysicalWorldProjection:
 
     node_ids: tuple[NodeId, ...]
     zone_ids: tuple[str, ...]
+    network_scopes: tuple[str, ...] = ("",)
+    @property
+    def service_keys(self) -> tuple[tuple[str, str], ...]:
+        return tuple((scope, zone) for scope in self.network_scopes for zone in self.zone_ids)
 
     def __post_init__(self) -> None:
+        if not self.network_scopes or tuple(sorted(set(self.network_scopes))) != self.network_scopes:
+            raise ValueError("network scopes must be nonempty, unique and canonical")
+        from skyseed_v2.shared.identifier import validate_identifier
+        for scope in self.network_scopes:
+            if not isinstance(scope, str):
+                raise TypeError("network scope must be a string")
+            if scope:
+                validate_identifier(scope, "network_scope")
+        if len(self.network_scopes) > 1 and "" in self.network_scopes:
+            raise ValueError("scoped and unscoped service cannot be mixed")
         nodes = tuple(self.node_ids)
         zones = tuple(self.zone_ids)
         if (
@@ -547,7 +571,7 @@ class BpfCompiledRealization:
         return self._intended_state.zone_edges
 
     @property
-    def zone_prefixes(self) -> tuple[tuple[str, str], ...]:
+    def zone_prefixes(self) -> tuple[tuple[tuple[str, str], str], ...]:
         return self._intended_state.zone_prefixes
 
 

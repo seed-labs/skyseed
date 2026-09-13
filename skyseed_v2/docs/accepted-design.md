@@ -181,12 +181,18 @@ only selected query rows become candidate objects. Full contact proofs are
 retained independently of rank. `*_pairs_not_returned` counts physically feasible
 rows excluded by query scope/contact predicates, not physical disappearance.
 Zone highest-elevation service semantics remain unchanged.
-Zone assignment remains globally unique across all Shells. Current Starlink
-examples keep ISLs within Shells and forbid GS transit. Their static geographic
-three-GS associations are separate from Zone service and GS allocation; bilateral
-reachability is not guaranteed by association. Tool logical-pair presentation
-does not change these policies. Coordinated Zone/GS selection and cross-Shell
-communication remain deferred work.
+Zone service identity is `(network_scope, zone_id)`. The empty scope retains
+unscoped behavior. The five-Shell example explicitly supplies satellite scope
+membership to the GS, Zone and Route Models: every shared GS reserves two
+preparing-or-operational slots per Shell (ten total), every geographic Zone has
+one explicit assignment per Shell, and the geographic three-GS association is
+applied separately in each scope. The scoped Route Model excludes other-scope
+satellites and GS transit. No cross-Shell communication Model is implemented.
+One Compiler/Runner owns shared interfaces, forwarding and cleanup. Distinct
+scoped Zone IPv4 destinations prevent shared-GS forwarding collisions. Physical
+feasibility, satellite capacities and preparation/handover rules still apply;
+association does not promise an operational path. Isolation is configured in
+Models, not imposed as a permanent PhysicalWorld rule.
 
 Delay updates compare `abs(current-effective)/abs(effective) >= 0.10`, including
 equality, increases and decreases. The adopted value becomes the new baseline;
@@ -244,7 +250,7 @@ The maintained runtime is persisted-only and precomputed-only. Generation
 completely drains the producer, losslessly normalizes already-compiled backend
 facts into deterministic typed packed runtime tables, incrementally derives the
 exact mechanical runtime-capacity demand while each normalized boundary is hot,
-validates the full finite sequence, and publishes the artifact-v3 terminal
+validates the full finite sequence, and publishes the artifact-v4 terminal
 manifest seal. Before `BpfRunner`
 construction, generated execution verifies source/input identity, manifest and
 binary hashes, version/seal and timeline metadata. During Preparation, Runner
@@ -301,7 +307,7 @@ qualification and Traffic inspection use the aligned authoritative Plan stream.
 ## Consecutive finite delivery
 
 The approved continuation mode keeps the node set fixed and accepts sequential,
-append-only finite sealed batches. Each optional v3 `delivery` manifest extension
+append-only finite sealed batches. Each optional v4 `delivery` manifest extension
 carries its batch index, prior manifest hash, prior end/Plan/state/generation,
 cadence and final flag. It extends the same artifact format; existing single
 final artifacts remain readable. No loaded future may be replaced.
@@ -332,7 +338,9 @@ For a delivery starting at T and covering D, Maintenance begins at T − αD.
 `batch_lead_fraction` defaults to 0.75 and must be in (0,1]; it is an engineering
 configuration, not an optimum. The qualification seam is `[0,300)` followed by
 `[300,600]`: 60 plus 61 five-second timestamps, B0 once and 120 Main boundaries.
-The second batch starts loading at nominal 75 s with a 225 s budget. The bounded
+The five-Shell scenario sets the lead fraction to 1.0: the second batch starts
+loading when Main begins, with a 300 s budget. The following older estimates
+describe the historical 0.75 scenario, not a new performance guarantee. The bounded
 planning estimate scales dated S1 decode/construction/prewrite by successor
 boundary count and runtime node count. S1/1 s gives about 101 s; the same-cadence
 S1/5 s reference gives about 141 s. The 225 s budget exceeds both, with about
@@ -383,14 +391,16 @@ runtime_artifact: Path, batch_lead_fraction: float = 0.75,
 batch_capacity_factor: int = 2)`. The `pathlib.Path` names the sealed finite artifact
 manifest; the realization-object/supplier constructor input and old experiment
 realization handoff are removed. The reader supports indexed access, but Runner
-decodes the entire first delivery during Preparation and each successor during
-Maintenance, never on demand during Main.
+decodes and constructs each delivery incrementally during Preparation or
+Maintenance, never on demand during Main. READY still requires the entire
+delivery, including all semantic prewrites, to succeed.
 
 `BpfRunner` owns initial Preparation, formal Main, optional continued-batch
-Maintenance, cleanup, and realized-state snapshots. Preparation opens and fully
-decodes the first sealed finite delivery, checks its metadata and binary
-structure, and constructs all of that delivery's immutable delta plans and
-activation JSON commands. Single-delivery execution prepares the whole sequence;
+Maintenance, cleanup, and realized-state snapshots. Preparation opens the first sealed finite delivery, checks its metadata and
+binary structure, and decodes one boundary at a time while constructing all
+immutable delta plans and activation JSON commands. Initial and successor
+deliveries use the same preparation path, releasing decoded boundary scratch
+data incrementally. Single-delivery execution prepares the whole sequence;
 continued execution does not initially decode or prewrite its successor.
 Artifact-local caches reuse decoded identities/timestamps; Preparation reuses
 previous route/access state, stable names/slots, and route-by-interface indexes.
@@ -529,15 +539,16 @@ deployment. `start.sh` deploys; `run.sh` starts Runner/Traffic; `launch.sh`
 combines start and run; `cleanup.sh` is independent. Detached Tools render the
 already-produced evidence without participating in network lifecycle.
 Generated deployment cleanup snapshots exact project-labelled immutable IDs,
-reverses declared and namespace dependencies, and uses bounded count-based
-batches within the same deployment owner. After executor/Runner evidence and
+reverses metadata-defined deployment groups and actual declared/namespace
+dependencies within the same deployment owner. Each whole group uses one
+Docker CLI native bounded removal queue before the next group is admitted. After executor/Runner evidence and
 cleanup complete, explicitly marked generated disposable network services can
 be force-removed without an idle grace period. Explicit stop signal/grace or
 pre-stop hooks retain graceful behavior; hooks address immutable IDs. Failure
 stops subsequent dependency removal. External networks and volumes/images are
-retained; retries inventory resources still present. Startup batch size and
-Compose concurrency remain separate. The count policy and its unqualified
-full-scale settings are documented in the
+retained; retries inventory resources still present. Startup uses whole groups with one fixed configurable Compose concurrency
+limit; failures retain matching successful groups for explicit deployment retry.
+The group strategy and its actual qualification status are documented in the
 [Compose owner README](../src/skyseed_v2/compose/README.md).
 The deployable `complete_static_emulator` teaching Example keeps its own
 start/cleanup controls; it does not package this Runner start/run/launch chain.
@@ -602,9 +613,3 @@ Changes to PhysicalFrame fields, S3 inputs, configured ISL neighborhoods/2+2 tar
 GroundStation acquisition, traffic-aware resource allocation, Runner phase
 authority, observable runtime-state semantics, Runner activation semantics, or
 backend selection require explicit approval from both the user and ChatGPT.
-
-Global unique Zone service and shared GS admission can select incompatible,
-disconnected Shell components. Resolving this is future Model coordination work.
-Per-Shell serving/routing contexts over shared GS entities and Zone geometry are
-only a recorded alternative, not an adopted design; shared GS physical capacity
-must not be duplicated. This closeout changes no routing or Model policy.

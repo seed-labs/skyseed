@@ -153,3 +153,26 @@ run("const uncertain={association_uncertainty:['ambiguous'],request:[{arrival_su
 '''
     result = subprocess.run([_node(), '-e', harness, str(tmp_path)], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
+
+
+def test_scoped_pair_filter_retains_wrong_shell_evidence_and_never_substitutes_service(tmp_path):
+    script = "const assert=require('node:assert/strict');\n" + _PAIR_SCRIPT.split('let pairFocus=')[0] + r'''
+const nodes=[{kind:'ground-station'},{kind:'satellite',shell_id:'S1'},{kind:'satellite',shell_id:'S2'}];
+const routes=[{source:0,target:{kind:'zone',zone_id:'Z'},network_scope:'S1'},
+{source:0,target:{kind:'zone',zone_id:'Z'},network_scope:'S2'},
+{source:1,target:{kind:'ground-station',node:0},network_scope:'S1'},
+{source:2,target:{kind:'ground-station',node:0},network_scope:'S2'}];
+const reverse=plannerReverseIndex(routes,nodes), pair={zone_id:'Z',ground_station:0,network_scope:'S1',forward:0};
+let refs=plannerPairRefs(pair,[['Z',2,'S2'],['Z',1,'S1']],routes,reverse);
+assert.equal(refs.serving,1);assert.equal(refs.forward,routes[0]);assert.equal(refs.reverse,routes[2]);
+refs=plannerPairRefs(pair,[['Z',2,'S2'],['Z',null,'S1']],routes,reverse);
+assert.equal(refs.serving,null);assert.equal(refs.reverse,null);
+assert.equal(plannerPairVisible(pair,refs,()=>false,true,s=>s==='S1'),true);
+assert.equal(plannerPairVisible(pair,refs,()=>true,true,s=>s==='S2'),false);
+refs=plannerPairRefs(pair,[['Z',2,'S1']],routes,reverse); // Deliberately incorrect serving Shell.
+assert.equal(refs.serving,2);assert.equal(refs.reverse,null);
+assert.equal(plannerPairVisible(pair,refs,()=>false,true,s=>s==='S1'),true);
+'''
+    path=tmp_path/'scope-data-check.js';path.write_text(script)
+    result=subprocess.run([_node(),str(path)],capture_output=True,text=True)
+    assert result.returncode==0,result.stderr

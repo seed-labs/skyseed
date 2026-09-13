@@ -45,7 +45,7 @@ Zone backend work orders readiness before forwarding publication and retirement.
 
 Precomputed generation drains the producer, validates the full finite compiled
 sequence, incrementally derives its exact mechanical runtime-capacity demand,
-and seals deterministic format-v3 typed packed runtime tables. Before
+and seals deterministic format-v4 typed packed runtime tables. Before
 `BpfRunner` construction, generated execution checks source/input identity,
 manifest and binary hashes, version/seal and timeline metadata. Predecessor,
 state-fingerprint continuity, equal cadence and exact next starts are checked
@@ -85,17 +85,30 @@ teardown, including after failure. `inspection_snapshot()` exposes detached
 Runner facts, including the last completed formal ACTIVE frontier.
 
 `BpfRunner` owns initial Preparation, formal Main, optional continued-batch
-Maintenance, cleanup, and realized-state snapshots. Preparation opens and fully
-decodes the first sealed finite delivery, checks its metadata and binary
-structure, and constructs all of that delivery's immutable delta plans and
-activation JSON commands. Single-delivery execution prepares the whole sequence;
+Maintenance, cleanup, and realized-state snapshots. Preparation checks sealed metadata and binary structure, then decodes and
+constructs one boundary at a time using the same path as successor Maintenance.
+All immutable delta plans, activation JSON commands and semantic prewrites must
+succeed before READY. Decoded boundary scratch data is released incrementally. Single-delivery execution prepares the whole sequence;
 continued execution does not initially decode or prewrite its successor.
 Artifact-local caches reuse decoded identities/timestamps; Preparation reuses
 previous route/access state, stable names/slots, and route-by-interface indexes.
+The v4 reader decodes operation records directly into eager typed intents instead
+of first allocating a recursive generic operation tree. Small boundary metadata
+retains the generic representation. Per-artifact text and scoped-target reuse is
+capped at 16,384 entries each (cached text payloads at most 256 bytes); caches clear
+on close. Existing node/connection/timestamp identity reuse remains artifact-local.
+File and per-record hashes, canonical field order, bounds, tags and typed-value
+checks remain. The sealed bytes, delivery API and complete READY requirement do
+not change; no history is retained to avoid future decoding.
 It discovers container incarnations once, retains
 namespace descriptors and rtnetlink sockets, initializes maps/programs at the
 sealed cumulative capacity for one delivery, or fixed resident reservations
 based on the first delivery and configured capacity factor for continuation.
+Initial IPv4 collision inventory uses those retained sockets for local addresses
+and prefixes plus all-table non-default routes. Point-to-point local/peer identity,
+complete multipart dumps, kernel errors and namespace incarnation checks remain;
+there is no `nsenter`/`ip` inventory fallback or concurrency change. Failure still
+returns through the existing initialization ownership/cleanup path.
 Continued per-node entry envelopes use first-batch peaks of the same typed
 entity kind; they allow peer work migration while retaining fixed limits
 and exact sealed-demand accounting. The extra reservation consumes memory.
@@ -286,3 +299,25 @@ unchanged immutable parts. Neither index owns a domain object or runtime
 lifecycle; Main and the existing helper retain their activation/retirement
 responsibilities. Compiler also shares one directed connection index across
 route lowering within each transition.
+
+## Scoped service lowering
+
+`BpfCompiledRealization.zone_prefixes` maps `(network_scope, zone_id)` to /32 IPv4
+destinations. Sorted scope/Zone identities deterministically allocate distinct
+addresses from the existing Zone pool; unscoped ordering retains its addresses.
+The bootstrap Plan fixes the complete service identity set. Subsequent Plans and
+sealed deliveries must retain it. Zone edge and forwarding indexes retain scope.
+One Runner materializes and cleans all shared GS state. Runner artifacts are v4
+(`SKYRUN4`, typed packed runtime tables v4); domain-history seals are v3 and
+compact compiler streams v3. Previous runtime versions are rejected.
+
+
+Preparation carries changed forwarding/Zone destinations through reference-counted
+route derivation. Only affected node route dictionaries change; equal node content
+continues to reuse BPF versions. Interface collision and add-before-withdraw capacity
+proofs are maintained from resource deltas. Main phase compatibility, fixed resident
+admission, actual kernel results and safe generation reclamation remain mandatory.
+Telemetry templates structurally share immutable interface descriptions and unchanged
+node route projections, retaining exact generation/time associations. The existing
+background evidence writer fsyncs loading, decoding, construction, prewrite and READY
+milestones without making observation a Main scheduling gate.

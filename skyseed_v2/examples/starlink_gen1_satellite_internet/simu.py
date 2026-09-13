@@ -99,7 +99,8 @@ def create_starlink_gen1_simulator(
     return simulator
 
 
-def create_starlink_gen1_planner(simulator: Simulator) -> Planner:
+def create_starlink_gen1_planner(simulator: Simulator, *, satellite_scopes=None,
+                                 ground_station_scope_limits=None) -> Planner:
     """Attach the accepted 2+2/K1 with forward service admission semantic Planner composition."""
 
     if not isinstance(simulator, Simulator):
@@ -141,17 +142,20 @@ def create_starlink_gen1_planner(simulator: Simulator) -> Planner:
             )
         ),
         ground_station_model=CoverageFirstGroundStationAccessPlanningModel(
-            default_ground_station_limit=MAXIMUM_GROUND_STATION_ACCESS_COUNT,
+            default_ground_station_limit=(sum(ground_station_scope_limits.values())
+                if ground_station_scope_limits else MAXIMUM_GROUND_STATION_ACCESS_COUNT),
+            satellite_scopes=satellite_scopes,
+            ground_station_scope_limits=ground_station_scope_limits,
             initial_candidate_count=32,
             acquisition_duration=STARLINK_GEN1_ACQUISITION_DURATION,
             minimum_service_duration=STARLINK_GEN1_GS_MINIMUM_SERVICE,
         ),
-        zone_service_model=HighestElevationZoneServicePlanningModel(),
+        zone_service_model=HighestElevationZoneServicePlanningModel(satellite_scopes=satellite_scopes),
         parameter_model=AccumulatedDeadbandParameterPlanningModel(
             parameter_configuration
         ),
         route_model=GatewayHopCountRoutePlanningModel(
-            gateway_candidate_count=GATEWAY_CANDIDATE_COUNT,
+            satellite_scopes=satellite_scopes,            gateway_candidate_count=GATEWAY_CANDIDATE_COUNT,
             gateway_candidate_max_distance_m=(
                 GATEWAY_CANDIDATE_MAX_DISTANCE_M
             ),

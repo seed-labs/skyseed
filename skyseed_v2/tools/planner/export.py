@@ -95,26 +95,27 @@ def write_network_export(generated: Path, output: Path) -> dict:
                 if a in satellites and b in satellites:
                     if satellites[a]['shell_id'] != satellites[b]['shell_id']: raise ValueError('cross-Shell ISL')
                     isl_adjacency[a].add(b);isl_adjacency[b].add(a)
-            serving={a.zone_id:None if a.satellite_id is None else a.satellite_id.value for a in state.zone_service_assignments}
-            if set(serving)!=zones or any(s is not None and s not in satellites for s in serving.values()):raise ValueError('Zone assignment membership mismatch')
+            serving={a.service_key:None if a.satellite_id is None else a.satellite_id.value for a in state.zone_service_assignments}
+            if {key[1] for key in serving}!=zones or any(s is not None and s not in satellites for s in serving.values()):raise ValueError('Zone assignment membership mismatch')
             outcomes=[]
             for outcome in state.route_outcomes:
                 demand=outcome.demand; source=demand.source.value
                 target=({'ground_station_id':demand.target.ground_station_id.value} if isinstance(demand.target,GroundStationRouteDemandTarget) else {'zone_id':demand.target.zone_id})
+                target['network_scope']=demand.target.network_scope
                 key=(source,tuple(target.items()))
                 if key not in demand_ids:
                     demand_ids[key]=len(demands);demands.append({'demand_id':len(demands),'source_node_id':source,'target':target})
                 if source not in nodes:raise ValueError('foreign route source')
                 if isinstance(outcome,ReachableRouteOutcome):
                     path=tuple(n.value for n in outcome.path)
-                    terminal=target.get('ground_station_id',serving.get(target.get('zone_id')))
+                    terminal=target.get('ground_station_id',serving.get((demand.target.network_scope,target.get('zone_id'))))
                     if path[0]!=source or path[-1]!=terminal or any(b not in adjacency[a] for a,b in zip(path,path[1:])):raise ValueError('route inconsistent with operational state')
                     if path not in path_ids:path_ids[path]=len(paths);paths.append(path)
                     outcomes.append([demand_ids[key],path_ids[path],None])
                 else:outcomes.append([demand_ids[key],None,outcome.reason.value])
             index=len(frame_index);filename=f'frames/frame-{index:03d}.json'
             _write(output/'network'/filename,{'schema_version':1,'frame_index':index,'timestamp_utc':timestamp,'elapsed_seconds':elapsed,
-                'satellite_positions_ecef_m':{n:xyz[n] for n in satellites},'operational_connections':connections,'zone_assignments':serving,'route_outcomes':outcomes})
+                'satellite_positions_ecef_m':{n:xyz[n] for n in satellites},'operational_connections':connections,'zone_assignments':[{'network_scope':key[0],'zone_id':key[1],'satellite_id':value} for key,value in sorted(serving.items())],'route_outcomes':outcomes})
             frame_index.append({'frame_index':index,'timestamp_utc':timestamp,'elapsed_seconds':elapsed,'file':filename})
             reserved_ground = _reserved_ground_accesses(evidence)
             selected=Counter(c.ground_station_id.value for c in reserved_ground)

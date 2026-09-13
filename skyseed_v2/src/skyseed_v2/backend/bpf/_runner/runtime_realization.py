@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import ChainMap
 from dataclasses import dataclass, field, replace
 from hashlib import blake2s
 from ipaddress import IPv4Address, IPv4Network, ip_interface
@@ -269,7 +270,7 @@ def _forwarding_key(binding: _ForwardingBinding) -> tuple[str, str, str]:
             target.ground_station_id.value,
         )
     if isinstance(target, ZoneRouteDemandTarget):
-        return binding.route_key.source.value, "zone", target.zone_id
+        return binding.route_key.source.value, "zone", target.service_key
     raise TypeError("compiled forwarding has an unknown target")
 
 
@@ -767,6 +768,8 @@ def _allocate_node_addresses(
 def _validate_boundary_lowering(boundary: _NominalBoundary) -> int:
     """Prove explicit edges survive the private phased Main lowering."""
 
+    if not boundary.constraint_edges:
+        return 0
     operations = {value.reference: value.intent for value in boundary.operations}
 
     def phase(intent: object) -> int:
@@ -820,7 +823,7 @@ class _BoundaryStateIndexes:
             for value in previous.parameters
         }
         self.forwarding = {v.route_key: v for v in previous.forwarding}
-        self.zone_edges = {v.zone_id: v for v in previous.zone_edges}
+        self.zone_edges = {v.service_key: v for v in previous.zone_edges}
         self.forwarding_by_connection = {}
         for binding in previous.forwarding:
             self.forwarding_by_connection.setdefault(
@@ -844,7 +847,7 @@ class _BoundaryStateIndexes:
                     intent.route_key, forwarding.get(intent.route_key)
                 )
             elif isinstance(intent, _ZoneEdgeIntent):
-                prior_zones.setdefault(intent.zone_id, zone_edges.get(intent.zone_id))
+                prior_zones.setdefault(intent.service_key, zone_edges.get(intent.service_key))
             if isinstance(intent, _ResourceIntent):
                 self._dirty.add("parameters")
                 touched_connections.add(intent.connection_id)
@@ -918,7 +921,7 @@ class _BoundaryStateIndexes:
                         intent.current.connection_id, set()
                     ).add(intent.route_key)
             elif isinstance(intent, _ZoneEdgeIntent):
-                prior = zone_edges.get(intent.zone_id)
+                prior = zone_edges.get(intent.service_key)
                 prior_service = None if prior is None else prior.service_satellite_id
                 if intent.phase is _ZoneEdgePhase.READINESS:
                     if (
@@ -926,10 +929,11 @@ class _BoundaryStateIndexes:
                         or intent.service_satellite_id is None
                     ):
                         raise ValueError("compiled Zone readiness is inconsistent")
-                    zone_edges[intent.zone_id] = _ZoneEdgeState(
+                    zone_edges[intent.service_key] = _ZoneEdgeState(
                         intent.zone_id,
                         intent.packet_prefix,
                         intent.service_satellite_id,
+                        intent.network_scope,
                     )
                 else:
                     if intent.previous_service_satellite_id is None:
@@ -937,7 +941,7 @@ class _BoundaryStateIndexes:
                     if intent.service_satellite_id is None:
                         if prior_service != intent.previous_service_satellite_id:
                             raise ValueError("compiled Zone retirement is stale")
-                        del zone_edges[intent.zone_id]
+                        del zone_edges[intent.service_key]
                     elif prior_service != intent.service_satellite_id:
                         raise ValueError(
                             "compiled Zone replacement retirement is stale"
@@ -970,19 +974,21 @@ class _BoundaryStateIndexes:
         )
         return changed
 
-    def snapshot(self):
+    def snapshot(self, *, ordered=True):
         prior = self._snapshot
+        def values(items, key):
+            return tuple(sorted(items, key=key)) if ordered else tuple(items)
         self._snapshot = _MaterializedDataplaneState(
-            tuple(sorted(self.resources, key=_connection_key))
+            values(self.resources, _connection_key)
             if "resources" in self._dirty else prior.resources,
-            tuple(sorted(self.parameters.values(), key=lambda value: (
+            values(self.parameters.values(), lambda value: (
                 _connection_key(value.connection_id),
                 _node_key(value.source), _node_key(value.target),
-            )))
+            ))
             if "parameters" in self._dirty else prior.parameters,
-            tuple(sorted(self.forwarding.values(), key=_forwarding_key))
+            values(self.forwarding.values(), _forwarding_key)
             if "forwarding" in self._dirty else prior.forwarding,
-            tuple(self.zone_edges[key] for key in sorted(self.zone_edges))
+            values(self.zone_edges.values(), lambda value: value.service_key)
             if "zone_edges" in self._dirty else prior.zone_edges,
         )
         self._dirty.clear()
@@ -1079,6 +1085,11 @@ class _TcBpfRuntimeRealization:
         self._node_slots = {node.value: slot for slot, node in enumerate(self._node_ids)}
         self._connection_names = {}
         self._packet_addresses = {}
+        self._route_destinations = {}
+        self._live_interface_names = {}
+        self._physical_interface_counts = {node.value: 0 for node in self._node_ids}
+        self._telemetry_interfaces = {}
+        self._telemetry_node_routes = {}
 
     def initialize(
         self,
@@ -1098,6 +1109,8 @@ class _TcBpfRuntimeRealization:
                 physical_world_nodes, tuple(zone_prefixes)
             )
         )
+        self._route_destinations = {(node, address): {None: 1}
+                                    for node, address in self._node_addresses.items()}
         components = {
             node_id: _component("n-", node_id.value)
             for node_id in physical_world_nodes
@@ -1396,10 +1409,10 @@ class _TcBpfRuntimeRealization:
         }
 
     def prepare_all(
-        self, boundaries: Sequence[object], *,
+        self, boundaries, *,
         logical_ports: Mapping[OperationalConnectionId, tuple[int, int]],
         runtime_capacity_demand: Mapping[str, Any] | None = None,
-        work_checkpoint=None,
+        work_checkpoint=None, progress=None,
     ) -> tuple[_PreparedBoundary, ...]:
         """Validate/materialize the complete finite sequence and prewrite semantics."""
         if not self._initialized or (self._plans_prepared and not self._continuation_enabled):
@@ -1407,6 +1420,7 @@ class _TcBpfRuntimeRealization:
         if runtime_capacity_demand is not None:
             self._admit_batch(runtime_capacity_demand)
         checkpoint = work_checkpoint or (lambda: None)
+        milestone = progress or (lambda *args, **kwargs: None)
         construction_started = monotonic_ns()
         construction_ns = prewrite_ns = prewrite_count = 0
         prewrite_helper_seconds = 0.0
@@ -1424,30 +1438,59 @@ class _TcBpfRuntimeRealization:
                 _cached_interface_names(connection, self._connection_names), ports,
             ):
                 self._port_by_interface[(endpoint.value, name)] = port
+            if self._telemetry_enabled and connection not in self._telemetry_interfaces:
+                self._telemetry_interfaces[connection] = tuple(MappingProxyType({
+                    "node_slot": self._node_slots[endpoint.value], "node_id": endpoint.value,
+                    "logical_port_id": port, "interface": name,
+                    "connection_id": _connection_key(connection), "peer_node_id": peer.value,
+                    "validity": "exact-generation",
+                }) for endpoint, peer, name, port in zip(
+                    (connection.endpoint_a, connection.endpoint_b), (connection.endpoint_b, connection.endpoint_a),
+                    _cached_interface_names(connection, self._connection_names), ports))
         previous = self._previous_build
         plans = []
         requests = []
         seen_connections = set()
         state_indexes = self._state_indexes
-        for boundary in boundaries:
+        decode_ns = 0
+        iterator = iter(boundaries)
+        milestone('decoding-start')
+        while True:
             checkpoint()
+            decode_started = monotonic_ns()
+            construction_ns += decode_started - construction_started
+            try:
+                boundary = next(iterator)
+            except StopIteration:
+                construction_started = monotonic_ns()
+                break
+            construction_started = monotonic_ns()
+            decode_ns += construction_started - decode_started
+            milestone('boundary-decoded', boundary_timestamp=boundary.nominal_time.isoformat(),
+                      boundary_count=len(plans)+1, decode_seconds=decode_ns/1e9)
             draft = self._derive_boundary_plan(
                 boundary, predecessor=previous, state_indexes=state_indexes,
                 previous_state=_empty_state() if previous is None else previous.state,
             )
             self._audit_boundary_capacity(draft)
+            milestone('boundary-constructed', boundary_timestamp=boundary.nominal_time.isoformat(),
+                      generation=draft.generation)
             seen_connections.update(draft.new_resources)
-            if not seen_connections <= logical_ports.keys():
+            if any(connection not in logical_ports for connection in draft.new_resources):
                 raise ValueError("Runner artifact omitted a logical port identity")
             if draft.generation_changed:
                 prewrite_started = monotonic_ns()
                 construction_ns += prewrite_started - construction_started
+                milestone('prewrite-start', boundary_timestamp=boundary.nominal_time.isoformat(),
+                          generation=draft.generation)
                 result = self._prewrite_nodes(draft, checkpoint)
                 construction_started = monotonic_ns()
                 prewrite_ns += construction_started - prewrite_started
                 prewrite_count += 1
                 prewrite_helper_seconds += result["helper_seconds"]
                 prewrite_helper_count += int(result["helper_complete"])
+                milestone('prewrite-complete', boundary_timestamp=boundary.nominal_time.isoformat(),
+                          generation=draft.generation, prewrite_seconds=prewrite_ns / 1e9)
                 self._resident_generations.add(draft.generation)
                 reservation = tuple((len(node.active_interfaces), len(node.routes)) for node in draft.generation_nodes)
                 self._generation_reservations[draft.generation] = reservation
@@ -1471,29 +1514,22 @@ class _TcBpfRuntimeRealization:
             for connection in (*request["connections"], *request["removed_connections"]):
                 connection["logical_port_a"] = self._port_by_interface[(connection["node_a"], connection["interface_a"])]
                 connection["logical_port_b"] = self._port_by_interface[(connection["node_b"], connection["interface_b"])]
-            for edge in draft.state.zone_edges:
-                self._all_zone_addresses[edge.service_satellite_id].add(str(ip_interface(edge.packet_prefix).ip))
             telemetry = []
             if self._telemetry_enabled and draft.generation_changed:
-                routes_by_interface = {}
                 for node in draft.generation_nodes:
-                    for destination, interface in node.routes:
-                        routes_by_interface.setdefault((node.key, interface), []).append(destination)
+                    cached = self._telemetry_node_routes.get(node.key)
+                    if cached is None or cached[0] is not node:
+                        routes = {}
+                        for destination, interface in node.routes:
+                            routes.setdefault(interface, []).append(destination)
+                        self._telemetry_node_routes[node.key] = node, {key: tuple(value) for key, value in routes.items()}
+                association = {"generation": draft.generation, "boundary_timestamp": boundary.nominal_time.isoformat()}
                 for connection in draft.state.resources:
-                    for endpoint, peer, name, port in zip(
-                        (connection.endpoint_a, connection.endpoint_b),
-                        (connection.endpoint_b, connection.endpoint_a),
-                        _cached_interface_names(connection, self._connection_names), logical_ports[connection],
-                    ):
-                        telemetry.append(_freeze({
-                            "generation": draft.generation,
-                            "boundary_timestamp": boundary.nominal_time.isoformat(),
-                            "node_slot": self._node_slots[endpoint.value], "node_id": endpoint.value,
-                            "logical_port_id": port, "interface": name,
-                            "connection_id": _connection_key(connection), "peer_node_id": peer.value,
-                            "route_destinations": tuple(routes_by_interface.get((endpoint.value, name), ())),
-                            "validity": "exact-generation",
-                        }))
+                    for identity in self._telemetry_interfaces[connection]:
+                        routes = self._telemetry_node_routes[identity['node_id']][1].get(identity['interface'], ())
+                        telemetry.append(MappingProxyType(ChainMap(
+                            MappingProxyType({'route_destinations': routes}),
+                            MappingProxyType(association), identity)))
             requests.append(request)
             plans.append(_PreparedBoundary(
                 boundary.nominal_time, draft.generation, draft.expected_active_generation,
@@ -1504,6 +1540,11 @@ class _TcBpfRuntimeRealization:
                 tuple(telemetry),
             ))
             previous = draft
+            milestone('boundary-prepared', boundary_timestamp=boundary.nominal_time.isoformat(),
+                      boundary_count=len(plans), generation=draft.generation,
+                      construction_seconds=(construction_ns + monotonic_ns() - construction_started) / 1e9,
+                      prewrite_seconds=prewrite_ns / 1e9)
+        milestone('decoding-complete', boundary_count=len(plans), decode_seconds=decode_ns/1e9)
         if not self._continuation_enabled and seen_connections != logical_ports.keys():
             raise ValueError("Runner artifact logical port inventory differs from finite resources")
         if len(plans) != self._capacity_demand["boundary_count"]:
@@ -1548,6 +1589,7 @@ class _TcBpfRuntimeRealization:
         self._preparation_timings = {
             **self._batch_prewrite_work,
             "finite_plan_construction_seconds": construction_ns / 1e9,
+            "boundary_decode_seconds": decode_ns / 1e9,
             "activation_wire_encoding_seconds": encoding_ns / 1e9,
             "semantic_prewrite_roundtrip_seconds": prewrite_ns / 1e9,
             "semantic_prewrite_helper_seconds": prewrite_helper_seconds if prewrite_helper_count == prewrite_count else None,
@@ -1555,6 +1597,7 @@ class _TcBpfRuntimeRealization:
             "boundary_count": len(plans),
         }
         self._previous_build = previous
+        milestone('delivery-prepared', **self._preparation_timings)
         return tuple(plans)
 
     def _admit_batch(self, demand):
@@ -1813,25 +1856,27 @@ class _TcBpfRuntimeRealization:
                         "decoded generation exceeds sealed runtime capacity demand: "
                         f"node={key}"
                     )
-        transition_resources = set(draft.previous_state.resources) | set(
-            draft.state.resources
-        )
-        _assert_unique_resource_bindings(transition_resources, self._connection_names)
-        if len(transition_resources) > demand["physical_connection_high_water"]:
-            raise _CapacityAuditError(
-                "decoded transition physical demand exceeds sealed envelope"
-            )
-        physical_by_key = {key: 0 for key in by_key}
-        for connection_id in transition_resources:
-            physical_by_key[connection_id.endpoint_a.value] += 1
-            physical_by_key[connection_id.endpoint_b.value] += 1
-        if any(
-            physical_by_key[key] > by_key[key]["physical_interface_high_water"]
-            for key in by_key
-        ):
-            raise _CapacityAuditError(
-                "decoded transition interface demand exceeds sealed envelope"
-            )
+        transition_count = len(draft.previous_state.resources) + len(draft.new_resources)
+        if transition_count > demand['physical_connection_high_water']:
+            raise _CapacityAuditError('decoded transition physical demand exceeds sealed envelope')
+        # Maintain the add-before-withdraw proof from connection deltas. Unchanged
+        # interfaces need no repeated collision scan or recount.
+        touched = set()
+        for connection in draft.new_resources:
+            for endpoint, name in zip((connection.endpoint_a, connection.endpoint_b),
+                                       _cached_interface_names(connection, self._connection_names)):
+                prior = self._live_interface_names.setdefault(name, connection)
+                if prior != connection:
+                    raise _CapacityAuditError('Runner interface-name capacity collision during Preparation')
+                self._physical_interface_counts[endpoint.value] += 1
+                touched.add(endpoint.value)
+        if any(self._physical_interface_counts[key] > by_key[key]['physical_interface_high_water'] for key in touched):
+            raise _CapacityAuditError('decoded transition interface demand exceeds sealed envelope')
+        for connection in draft.removed_resources:
+            for endpoint, name in zip((connection.endpoint_a, connection.endpoint_b),
+                                       _cached_interface_names(connection, self._connection_names)):
+                del self._live_interface_names[name]
+                self._physical_interface_counts[endpoint.value] -= 1
         terminal_checked = observed_boundaries + 1 == demand["boundary_count"]
         if terminal_checked:
             terminal = demand["terminal"]
@@ -1856,7 +1901,7 @@ class _TcBpfRuntimeRealization:
             "generation_count_after": (
                 observed_generations + int(draft.generation_changed)
             ),
-            "transition_physical_connections": len(transition_resources),
+            "transition_physical_connections": transition_count,
             "terminal_reconciled": terminal_checked,
         }
 
@@ -1935,6 +1980,77 @@ class _TcBpfRuntimeRealization:
                 )
         return result
 
+    def _delta_routes(self, previous, forwarding_changes, zone_changes, indexes):
+        """Update only changed destinations, retaining shared-binding conflicts."""
+        touched = set()
+        def address(prefix):
+            if prefix not in self._packet_addresses:
+                self._packet_addresses[prefix] = str(ip_interface(prefix).ip)
+            return self._packet_addresses[prefix]
+        def entry(value):
+            if isinstance(value, _ZoneEdgeState):
+                return value.service_satellite_id, address(value.packet_prefix), None
+            source, peer, connection = value.route_key.source, value.next_hop, value.connection_id
+            if not ((source == connection.endpoint_a and peer == connection.endpoint_b) or
+                    (source == connection.endpoint_b and peer == connection.endpoint_a)):
+                raise ValueError('compiled forwarding contradicts its Connection')
+            target = value.route_key.target
+            if isinstance(target, GroundStationRouteDemandTarget):
+                destination = self._node_addresses[target.ground_station_id]
+            elif isinstance(target, ZoneRouteDemandTarget):
+                if value.packet_prefix is None:
+                    raise ValueError('compiled Zone forwarding lacks packet identity')
+                destination = address(value.packet_prefix)
+            else:
+                raise TypeError('compiled forwarding has an unknown target')
+            return source, destination, _interface_name_for_source(connection, source, self._connection_names)
+        def change(value, amount):
+            node, destination, interface = entry(value)
+            key = node, destination
+            touched.add(key)
+            counts = self._route_destinations.setdefault(key, {})
+            count = counts.get(interface, 0) + amount
+            if count < 0:
+                raise ValueError('compiled route reference count is inconsistent')
+            if count:
+                counts[interface] = count
+            else:
+                del counts[interface]
+            if not counts:
+                del self._route_destinations[key]
+        for changes in (forwarding_changes, zone_changes):
+            for value in changes.values():
+                if value is not None:
+                    change(value, -1)
+        for changes, current in ((forwarding_changes, indexes.forwarding), (zone_changes, indexes.zone_edges)):
+            for key in changes:
+                if key in current:
+                    change(current[key], 1)
+        result = dict(previous)
+        removed, replaced = {}, {}
+        changed_nodes = set()
+        absent = object()
+        for node, destination in touched:
+            counts = self._route_destinations.get((node, destination), {})
+            if len(counts) > 1:
+                raise ValueError('compiled forwarding has conflicting destinations')
+            interface = next(iter(counts), absent)
+            old = previous[node].get(destination, absent)
+            if old == interface:
+                continue
+            if old is not absent and old is not None:
+                removed.setdefault(node, []).append(_DerivedRouteOperation(destination, old))
+            if interface is not absent and interface is not None:
+                replaced.setdefault(node, []).append(_DerivedRouteOperation(destination, interface))
+            if node not in changed_nodes:
+                changed_nodes.add(node)
+                result[node] = dict(previous[node])
+            if interface is absent:
+                result[node].pop(destination, None)
+            else:
+                result[node][destination] = interface
+        return result, removed, replaced
+
     def _derive_boundary_plan(
         self,
         boundary: _NominalBoundary,
@@ -1947,7 +2063,7 @@ class _TcBpfRuntimeRealization:
 
         _validate_boundary_lowering(boundary)
         resource_changes, forwarding_changes, zone_changes = state_indexes.apply(boundary)
-        state = state_indexes.snapshot()
+        state = state_indexes.snapshot(ordered=False)
         generation_changed = predecessor is None or bool(resource_changes or forwarding_changes or zone_changes)
         expected_active_generation = (
             _NO_ACTIVE_GENERATION
@@ -1962,31 +2078,45 @@ class _TcBpfRuntimeRealization:
         if generation >= _NO_ACTIVE_GENERATION:
             raise _CapacityAuditError("session generation identity space is exhausted")
         node_ids = self._node_ids
-        new_interfaces = (_interfaces_for_state(state, node_ids, self._connection_names)
-                          if predecessor is None or resource_changes
-                          else {node.node_id: node.active_interfaces for node in predecessor.generation_nodes})
-        old_routes = (predecessor.routes if predecessor is not None else
-                      {node: {self._node_addresses[node]: None} for node in node_ids})
-        new_routes = (_routes_for_state(
-            state, node_ids, self._node_addresses, self._connection_names,
-            self._packet_addresses, ordered=False,
-        ) if predecessor is None or forwarding_changes or zone_changes else old_routes)
-        old_access = predecessor.access_routes if predecessor is not None else {node: {} for node in node_ids}
-        new_access = (self._ground_station_access_peer_routes(state)
-                      if predecessor is None or resource_changes else old_access)
-        # Equality is checked once in C; untouched node dictionaries then skip
-        # Python-level old/new delta scans and generation route sorting.
-        if new_routes is not old_routes:
-            for node_id in node_ids:
-                if new_routes[node_id] == old_routes[node_id]:
-                    new_routes[node_id] = old_routes[node_id]
-        if new_access is not old_access:
-            for node_id in node_ids:
-                if new_access[node_id] == old_access[node_id]:
-                    new_access[node_id] = old_access[node_id]
-        old_resources = set(previous_state.resources)
         added_resources = tuple(sorted((key for key, prior in resource_changes.items() if prior is None), key=_connection_key))
         removed_resources = tuple(sorted((key for key, prior in resource_changes.items() if prior is not None), key=_connection_key))
+        prior_nodes = {} if predecessor is None else {node.node_id: node for node in predecessor.generation_nodes}
+        new_interfaces = {node: () if node not in prior_nodes else prior_nodes[node].active_interfaces for node in node_ids}
+        old_routes = (predecessor.routes if predecessor is not None else
+                      {node: {self._node_addresses[node]: None} for node in node_ids})
+        new_routes, route_delete, route_replace = self._delta_routes(old_routes, forwarding_changes, zone_changes, state_indexes)
+        added_resource_set = set(added_resources)
+        old_access = predecessor.access_routes if predecessor is not None else {node: {} for node in node_ids}
+        new_access = dict(old_access)
+        touched_interfaces = {}
+        touched_access = set()
+        for connections, added in ((removed_resources, False), (added_resources, True)):
+            for connection in connections:
+                for endpoint, name in zip((connection.endpoint_a, connection.endpoint_b),
+                                           _cached_interface_names(connection, self._connection_names)):
+                    if endpoint not in touched_interfaces:
+                        touched_interfaces[endpoint] = set(new_interfaces[endpoint])
+                    if added:
+                        touched_interfaces[endpoint].add(name)
+                    else:
+                        touched_interfaces[endpoint].remove(name)
+                if connection.kind is OperationalConnectionKind.GROUND_STATION_ACCESS:
+                    ground, satellite = _ground_station_access_endpoints(connection)
+                    if ground not in touched_access:
+                        touched_access.add(ground)
+                        new_access[ground] = dict(old_access[ground])
+                    destination = self._node_addresses[satellite]
+                    if added:
+                        interface = _interface_name_for_source(connection, ground, self._connection_names)
+                        if new_access[ground].setdefault(destination, interface) != interface:
+                            raise ValueError('active ground-station access resources conflict for one peer')
+                    else:
+                        del new_access[ground][destination]
+        for node, names in touched_interfaces.items():
+            new_interfaces[node] = tuple(sorted(names))
+        for node in touched_access:
+            if new_access[node] == old_access[node]:
+                new_access[node] = old_access[node]
         parameters = state_indexes.parameters
         new_connection_requests = []
         for connection_id in added_resources:
@@ -2033,29 +2163,22 @@ class _TcBpfRuntimeRealization:
             }
             for node_id in node_ids
         }
-        old_edges = {value.zone_id: value for value in previous_state.zone_edges}
-        new_edges = {value.zone_id: value for value in state.zone_edges}
-        changed_zone_ids = {
-            zone_id
-            for zone_id in set(old_edges) | set(new_edges)
-            if old_edges.get(zone_id) != new_edges.get(zone_id)
-        }
-        for zone_id in changed_zone_ids:
-            old = old_edges.get(zone_id)
-            new = new_edges.get(zone_id)
+        for zone_id, old in zone_changes.items():
+            new = state_indexes.zone_edges.get(zone_id)
             if old is not None:
                 mutable[old.service_satellite_id][
                     "zone_address_delete"
                 ].append(str(ip_interface(old.packet_prefix).ip))
             if new is not None:
-                mutable[new.service_satellite_id]["zone_address_add"].append(
-                    str(ip_interface(new.packet_prefix).ip)
-                )
+                address = self._packet_addresses[new.packet_prefix]
+                mutable[new.service_satellite_id]['zone_address_add'].append(address)
+                self._all_zone_addresses[new.service_satellite_id].add(address)
         for operation in boundary.operations:
             intent = operation.intent
             if (
                 not isinstance(intent, _QdiscIntent)
-                or intent.connection_id not in old_resources
+                or intent.connection_id in added_resource_set
+                or intent.connection_id not in state_indexes.resources
             ):
                 continue
             value = parameters[(intent.connection_id, intent.source, intent.target)]
@@ -2070,19 +2193,8 @@ class _TcBpfRuntimeRealization:
                 )
             )
         for node_id in node_ids:
-            if old_routes[node_id] is not new_routes[node_id]:
-                mutable[node_id]["route_delete"] = [
-                    _DerivedRouteOperation(destination, interface)
-                    for destination, interface in old_routes[node_id].items()
-                    if interface is not None
-                    and new_routes[node_id].get(destination) != interface
-                ]
-                mutable[node_id]["route_replace"] = [
-                    _DerivedRouteOperation(destination, interface)
-                    for destination, interface in new_routes[node_id].items()
-                    if interface is not None
-                    and old_routes[node_id].get(destination) != interface
-                ]
+            mutable[node_id]['route_delete'] = route_delete.get(node_id, [])
+            mutable[node_id]['route_replace'] = route_replace.get(node_id, [])
             if old_access[node_id] is not new_access[node_id]:
                 mutable[node_id]["access_peer_route_delete"] = [
                     _DerivedRouteOperation(destination, interface)
@@ -2104,13 +2216,13 @@ class _TcBpfRuntimeRealization:
                 prior_nodes[node_id]
                 if node_id in prior_nodes
                 and new_interfaces[node_id] == prior_nodes[node_id].active_interfaces
-                and new_routes[node_id] == old_routes[node_id]
+                and new_routes[node_id] is old_routes[node_id]
                 else _DerivedGenerationNode(
                     node_id=node_id,
                     key=node_id.value,
                     active_interfaces=new_interfaces[node_id],
                     routes=(prior_nodes[node_id].routes
-                            if node_id in prior_nodes and new_routes[node_id] == old_routes[node_id]
+                            if node_id in prior_nodes and new_routes[node_id] is old_routes[node_id]
                             else tuple(sorted(new_routes[node_id].items()))),
                 )
                 for node_id in node_ids

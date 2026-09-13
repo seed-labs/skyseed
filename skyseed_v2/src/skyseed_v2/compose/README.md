@@ -23,38 +23,42 @@ hooks execute against saved container IDs, preserving command, user, workdir,
 privilege and environment, before stopping a running container. This does not
 make Compose a Runner lifecycle owner. External networks, images and volumes
 remain; a failed command stops later dependency removal. Repeated cleanup
-inventories only remaining owned resources. Startup-failure rollback also removes
-dependents before their declared/namespace dependencies and stops on a cleanup
-failure; explicit hooks and stop settings run before force-removing a partially
-started service.
+inventories only remaining owned resources. A startup failure preserves confirmed
+successful groups, records the failing group's observed container state and stops
+admission. Explicit retry checks service configuration digests, immutable image IDs
+and container ownership, then starts only missing or unsuccessful services.
+Before replacing owners, retry compares retained `network_mode`, `ipc` and `pid`
+bindings with the current owner container IDs across the entire project. Missing,
+unsuccessful or replaced owners invalidate transitive namespace consumers even
+in later groups. Affected consumers stop/remove before their owners, honoring
+hooks and grace settings; startup then follows the normal dependency/group order.
+Unrelated healthy containers remain. Unverifiable retained namespace bindings
+are recreated instead of being accepted from an unchanged service digest.
 
-Generated controls use private configurable startup bounds and a cleanup count policy:
+Generated startup submits one whole metadata-defined group at a time. The five-Shell
+Example orders shared GS/auxiliaries, S1, S2, S3, S4, S5; actual dependencies take
+precedence over preferred group order. Internal service/namespace dependencies stay
+in Compose; earlier group dependencies are checked and external namespace references
+use confirmed container IDs. This is not restricted to five particular Shell names.
+`SKYSEED_DEPLOY_PARALLEL` defaults to 8 (configurable 1–64) throughout startup.
+The former service-count controls and resident-count curve are removed from these
+controls. Group configuration is constructed once per group invocation.
 
-| Environment ceiling | Default | Meaning |
-|---|---:|---|
-| `SKYSEED_DEPLOY_BATCH_SIZE` | 64 | services in a Compose startup invocation |
-| `SKYSEED_DEPLOY_PARALLEL` | 8 | Compose concurrent requests, independently bounded |
-| `SKYSEED_CLEANUP_BATCH_SIZE` | 16 | immutable IDs in one Docker stop/remove command; also its request bound |
-| `SKYSEED_DEPLOY_RESIDENT_STEP` | 2000 | cleanup-only remaining owned-container count at which the removal ceiling halves |
+Cleanup reverses the groups and any actual within-group dependencies, then removes
+owned networks. One whole removal group is passed to `docker rm` at a time; Docker
+CLI 29.6.2's native `parallelOperation` queue caps concurrent operations at 50.
+No second dispatcher or overlapping group commands are introduced. Explicit graceful
+settings/hooks still complete before removal. The CLI queue is distinct from Compose
+stop/down and is not governed by Compose's startup parallel flag.
 
-Startup remains 64 services / eight concurrent requests at every resident count,
-unless explicitly configured. Cleanup uses eight IDs while at/above 2000
-remaining, then 16. `SKYSEED_DEPLOY_RESIDENT_STEP` retains its configuration name
-for compatibility but affects cleanup only. Resident startup counts are measurements,
-not a trigger for changing concurrency.
-Shell groups organize progress, not equal-sized resource units. Values are
-positive integers; concurrency cannot exceed batch size, and batch ceilings
-cannot exceed 64. There are no fixed inter-batch sleeps, CPU-count equality,
-pressure admission, pause or abort gates. Namespace dependencies in derived
-startup files reference already-verified immutable container IDs.
-
-These are bounded engineering defaults informed by the retained 4765-container
-run and teardown traces, not an optimum. The earlier full deployment used
-64/eight throughout; the final teardown was manually accelerated. This round
-has command/dependency regressions and one isolated nine-service smoke only.
-The cleanup count transition and 16-ID setting have **not** been
-qualified at five-Shell scale. Docker/Compose hook semantics follow the
-[Compose service specification](https://docs.docker.com/reference/compose-file/services/).
+Startup has one 3600-second stage budget, carried from generated startup into all
+group commands; cleanup has one 1800-second budget. A timed-out client does not prove
+that daemon work has stopped: admission stops and evidence records uncertainty.
+There are no artificial inter-group sleeps or pressure-based execution gates.
+`deployment-measurements.jsonl` and `teardown-measurements.jsonl` preserve append-only
+group progress and lightweight host checkpoints. Historical 64/8 and 128/8 evidence
+remains a comparison, not qualification of the new strategy. Current results are in
+[CURRENT](../../../docs/CURRENT.md).
 
 ## Local assembly / ownership map
 
@@ -177,3 +181,13 @@ launch, verification, batching, and fail-closed evidence.
 When this package changes, update the local map and detailed diagram,
 `compose-launcher.md`/failure contracts, public imports, examples, and focused
 launcher tests.
+
+Generated controlled startup derives `runtime/skyseed-image-compose.yml` from
+the canonical full Compose source for unique-image inspection and representative
+builds. It contains image/build inputs, with no runtime admission. Each bounded
+startup invocation still passes the full admitted service definitions to Compose;
+existing metadata/dependency ordering and project-label cleanup remain authoritative.
+This avoids feeding thousands of runtime services into Compose's single-document
+parser during image preparation, without raising parser or host protection limits.
+The derived image file is replaceable deployment scratch, like the existing startup
+group file; it is not an additional deployment owner or source of domain identity.

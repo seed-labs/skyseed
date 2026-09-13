@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from queue import Empty, Full, Queue
 from threading import Event, RLock, Thread
@@ -116,6 +117,14 @@ class _NonBlockingEventHistory:
                         )
                         + "\n"
                     )
+                    if record.get('event') in {
+                        'batch_load_start', 'batch_loading_complete', 'batch_preparation_progress',
+                        'batch_ready', 'preparation_stage', 'runtime_cleanup_end',
+                    }:
+                        # Milestones survive interruption; only the existing
+                        # evidence writer waits for disk, never Main.
+                        stream.flush()
+                        os.fsync(stream.fileno())
                     with self._lock:
                         self._written += 1
                     self._queue.task_done()
@@ -123,6 +132,7 @@ class _NonBlockingEventHistory:
                         stream.flush()
                         last_flush = monotonic()
                 stream.flush()
+                os.fsync(stream.fileno())
         except BaseException as error:
             self._fail(error)
 

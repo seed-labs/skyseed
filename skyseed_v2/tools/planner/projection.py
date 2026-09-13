@@ -46,7 +46,7 @@ def project_planner_data(
     if not isinstance(observation, PlannerInspectionRead):
         raise TypeError("observation must be a PlannerInspectionRead")
     data = deepcopy(observation.snapshot)
-    data["format_version"] = 3
+    data["format_version"] = 4
     physical_by_timestamp = {
         value["timestamp"]: value for value in physical_frames
     }
@@ -263,6 +263,7 @@ def project_planner_data(
                             None
                             if value.satellite_id is None
                             else node_index[value.satellite_id.value],
+                            value.network_scope,
                         ]
                         for value in state.zone_service_assignments
                     ),
@@ -509,9 +510,10 @@ def project_planner_data(
             "label": value["label"],
             "shard": value["shard"],
             "source": node_index[_node_value(value["demand"]["source"])],
-            "target": ({"kind": "zone", "zone_id": value["demand"]["target"]["zone_id"]}
+            "network_scope": value["demand"]["target"]["network_scope"],
+            "target": ({"kind": "zone", "zone_id": value["demand"]["target"]["zone_id"], "network_scope": value["demand"]["target"]["network_scope"]}
                        if value["demand"]["target"]["kind"] == "zone" else
-                       {"kind": "ground-station", "node": node_index[_node_value(value["demand"]["target"]["ground_station_id"])]}),
+                       {"kind": "ground-station", "network_scope": value["demand"]["target"]["network_scope"], "node": node_index[_node_value(value["demand"]["target"]["ground_station_id"])]}),
             # Activity/status changes are tiny; full paths stay in focused shards.
             "activity": _route_activity(value["timeline"]),
         }
@@ -618,6 +620,7 @@ def _compact_transition(
                 None
                 if value.current_satellite_id is None
                 else _node_number(node_index, value.current_satellite_id.value),
+                value.network_scope,
             ]
             for value in transition.zone_service_transitions
         ),
@@ -675,7 +678,7 @@ def _extend_route_timelines(timelines, demand_records, transitions, frame_index,
             canonical = json.dumps(demand, sort_keys=True, separators=(",", ":"))
             key = sha256(canonical.encode("utf-8")).hexdigest()
             source, target = _node_value(demand["source"]), demand["target"]
-            label = (f"{source} → Zone {target['zone_id']}" if target["kind"] == "zone"
+            label = (f"{target.get('network_scope', '')} {source} → Zone {target['zone_id']}" if target["kind"] == "zone"
                      else f"{source} → {_node_value(target['ground_station_id'])}")
             record = {"label": label, "demand": demand, "shard": int(key[:2], 16) % 32, "timeline": []}
             demand_records[change.demand] = timelines[key] = record
@@ -865,10 +868,10 @@ def _pair_index(routes, nodes):
         source, target = route['source'], route['target']
         if nodes[source]['kind'] != 'ground-station' or target['kind'] != 'zone':
             continue
-        identity = (target['zone_id'], nodes[source]['node_id'])
+        identity = (target.get('network_scope', ''), target['zone_id'], nodes[source]['node_id'])
         if identity in pairs:
             raise ValueError('multiple recorded demands for one typed Zone–GS pair')
         pairs[identity] = {'key': json.dumps(identity, separators=(',', ':')),
-                           'zone_id': target['zone_id'], 'ground_station': source,
+                           'zone_id': target['zone_id'], 'network_scope': target.get('network_scope', ''), 'ground_station': source,
                            'forward': i}
     return tuple(pairs[key] for key in sorted(pairs))

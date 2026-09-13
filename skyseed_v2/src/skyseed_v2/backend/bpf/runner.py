@@ -569,20 +569,8 @@ class BpfRunner:
             self._artifact_expected_node_count = self._artifact.physical_world_node_count
             self._record("preparation_stage", stage="artifact-loading-validation",
                          duration_seconds=(monotonic_ns() - artifact_started) / 1e9)
-            normalization_started = monotonic()
-            boundaries = tuple(self._artifact.boundaries())
-            if not boundaries:
+            if not self._artifact.boundary_count:
                 raise ValueError("BpfRunner artifact contains no nominal boundary")
-            self._boundaries = boundaries
-            self._nominal_origin = self._boundaries[0].nominal_time
-            self._record(
-                "preparation_stage",
-                stage="finite-boundary-materialization",
-                duration_seconds=monotonic() - normalization_started,
-                boundary_count=len(self._boundaries),
-                boundary_decode="complete-in-preparation",
-                rich_compiled_realizations_reconstructed=False,
-            )
             discovery_started = monotonic()
             bindings = self._discover_runtime_bindings(
                 self._artifact.physical_world_projection
@@ -660,9 +648,8 @@ class BpfRunner:
                     telemetry.record_failure(error)
                 self._record("traffic_telemetry_started", **telemetry.snapshot())
             plan_started = monotonic_ns()
-            self._prepared_plans = runtime.prepare_all(
-                boundaries, logical_ports=self._artifact.logical_ports,
-            )
+            self._prepared_plans = self._prepare_delivery(self._artifact, batch_index=0)
+            self._nominal_origin = self._prepared_plans[0].nominal_time
             self._record("preparation_stage", stage="finite-plan-construction-and-prewrite",
                          duration_seconds=(monotonic_ns() - plan_started) / 1e9,
                          phases=getattr(runtime, "_preparation_timings", {}))
@@ -837,6 +824,14 @@ class BpfRunner:
                 with self._condition:
                     self._condition.notify_all()
 
+    def _prepare_delivery(self, artifact, *, batch_index, deadline=None):
+        """The same incremental decode/construct/prewrite path for every delivery."""
+        return self._runtime_realization.prepare_all(
+            artifact.boundaries(), logical_ports=artifact.logical_ports,
+            work_checkpoint=None if deadline is None else lambda: self._maintenance_checkpoint(deadline),
+            progress=lambda stage, **fields: self._record(
+                'batch_preparation_progress', batch_index=batch_index, stage=stage, **fields))
+
     def _load_batch(self, contract, scheduled, deadline):
         started = monotonic()
         index = contract["delivery"]["index"]
@@ -854,14 +849,8 @@ class BpfRunner:
                 raise ValueError("registered batch manifest was replaced")
             loaded = monotonic()
             self._runtime_realization._admit_batch(artifact.runtime_capacity_demand)
-            boundaries = []
-            for boundary in artifact.boundaries():
-                self._maintenance_checkpoint(deadline)
-                boundaries.append(boundary)
-            decoded = monotonic()
-            plans = self._runtime_realization.prepare_all(
-                boundaries, logical_ports=artifact.logical_ports,
-                work_checkpoint=lambda: self._maintenance_checkpoint(deadline))
+            self._record('batch_loading_complete', batch_index=index, load_seconds=loaded-started)
+            plans = self._prepare_delivery(artifact, batch_index=index, deadline=deadline)
             constructed = monotonic()
             self._maintenance_checkpoint(deadline)
             with self._condition:
@@ -874,8 +863,9 @@ class BpfRunner:
                          boundary_timestamp=contract["timeline"]["start"],
                          ready_monotonic_seconds=constructed, deadline_monotonic_seconds=deadline,
                          readiness_margin_seconds=deadline - constructed,
-                         load_seconds=loaded - started, decode_seconds=decoded - loaded,
-                         construction_prewrite_seconds=constructed - decoded,
+                         load_seconds=loaded - started,
+                         decode_seconds=self._runtime_realization._preparation_timings['boundary_decode_seconds'],
+                         construction_prewrite_seconds=(constructed - loaded - self._runtime_realization._preparation_timings['boundary_decode_seconds']),
                          total_seconds=constructed - started,
                          phases=self._runtime_realization._preparation_timings,
                          resident_capacity=self._runtime_realization.working_set_counts(),

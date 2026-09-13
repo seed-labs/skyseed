@@ -124,9 +124,9 @@ def _required_semantic_precedences(
             SemanticEventKind.ZONE_SERVICE_ASSIGN,
             SemanticEventKind.ZONE_SERVICE_CHANGE,
         }:
-            zone_readiness[event.zone_id] = event
+            zone_readiness[event.service_key] = event
         elif event.kind is SemanticEventKind.ZONE_SERVICE_UNASSIGN:
-            zone_unassignments[event.zone_id] = event
+            zone_unassignments[event.service_key] = event
         elif event.kind in {
             SemanticEventKind.ROUTE_REACHABLE,
             SemanticEventKind.ROUTE_CHANGE,
@@ -157,7 +157,7 @@ def _required_semantic_precedences(
                     SemanticEventPrecedence(parameter_readiness, readiness)
                 )
         if isinstance(demand.target, ZoneRouteDemandTarget):
-            zone_ready = zone_readiness.get(demand.target.zone_id)
+            zone_ready = zone_readiness.get(demand.target.service_key)
             if zone_ready is not None:
                 precedences.append(
                     SemanticEventPrecedence(zone_ready, readiness)
@@ -182,7 +182,7 @@ def _required_semantic_precedences(
                 SemanticEventPrecedence(withdrawal, unreachable)
             )
         if isinstance(demand.target, ZoneRouteDemandTarget):
-            unassignment = zone_unassignments.get(demand.target.zone_id)
+            unassignment = zone_unassignments.get(demand.target.service_key)
             if unassignment is not None:
                 precedences.append(
                     SemanticEventPrecedence(withdrawal, unassignment)
@@ -250,7 +250,7 @@ def _event_semantic_key(event: SemanticEventReference) -> tuple:
         else (
             _route_demand_key(event.route_demand)
             if event.route_demand is not None
-            else (event.zone_id,)
+            else (event.service_key,)
         )
     )
     return event.kind.value, identity
@@ -322,7 +322,7 @@ def _route_demand_key(demand: RouteDemand | None) -> tuple:
         if isinstance(target, GroundStationRouteDemandTarget)
         else ("Z", target.zone_id)
     )
-    return _node_key(demand.source), target_key
+    return _node_key(demand.source), demand.target.network_scope, target_key
 
 
 def _node_key(node_id) -> tuple:

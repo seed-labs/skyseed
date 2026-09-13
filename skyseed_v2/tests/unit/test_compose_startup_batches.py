@@ -6,6 +6,110 @@ import pytest
 from skyseed_v2.compose import launcher as module
 
 
+@pytest.mark.parametrize('failed_container', [False, True])
+def test_whole_shell_failure_reentry_preserves_confirmed_containers_and_evidence(tmp_path, monkeypatch, failed_container):
+    import json
+    from copy import deepcopy
+    prefix = 'org.seedsecuritylabs.seedemu.meta.skyseed.'
+    runtime = tmp_path/'runtime'; runtime.mkdir()
+    services = {'gs': {'image': 'node'}, **{
+        f'{group}-{i}': {'image': 'node', 'labels': {prefix+'entity_type': 'Satellite', prefix+'shell_id': group}}
+        for group, count in [('A', 300), ('B', 3), ('C', 2)] for i in range(count)}}
+    (runtime/'docker-compose.yml').write_text(module.safe_dump({'services': services}))
+    alive, commands = {}, []
+    failing = True
+    def inspect(project, definitions, names, **kwargs):
+        return [deepcopy(alive[n]) for n in names if n in alive]
+    monkeypatch.setattr(module, '_inspect_startup_services', inspect)
+    def invoke(command, **kwargs):
+        if command[1] == 'rm':
+            for identity in command[3:]:
+                del alive[identity.removeprefix('id-')]
+        return CompletedProcess(command, 0, '[{"Id":"image-id"}]', '')
+    monkeypatch.setattr(module, 'run', invoke)
+    def deploy(command, guard):
+        nonlocal failing
+        selected = module.safe_load(Path(command[command.index('-f')+1]).read_text())['services']
+        requested = command[command.index('--no-recreate')+1:]
+        commands.append(tuple(requested))
+        assert command[3] == '8'
+        assert all(n not in alive for n in requested)
+        for name in requested:
+            alive[name] = {'Id': 'id-'+name, 'Image': 'image-id', 'Config': {
+                'Labels': {**selected[name]['labels'], 'com.docker.compose.project': 'project',
+                           'com.docker.compose.service': name}},
+                'State': {'Status': 'running', 'Running': True}, 'RestartCount': 0}
+            if name.startswith('B') and failing:
+                if failed_container:
+                    alive[name]['State'].update(Status='exited', Running=False, ExitCode=1)
+                failing = False
+                raise module.ComposeMaterializationError('injected partial group')
+    monkeypatch.setattr(module, '_bounded_startup_command', deploy)
+    monkeypatch.setenv('SKYSEED_DEPLOY_BATCH_SIZE', '1')
+    monkeypatch.delenv('SKYSEED_DEPLOY_PARALLEL', raising=False)
+    with pytest.raises(module.ComposeMaterializationError, match='partial group'):
+        module._controlled_startup(tmp_path, 'project')
+    assert len(alive) == 302 and not any(n.startswith('C') for n in alive)
+    evidence = runtime/'deployment-measurements.jsonl'
+    original = evidence.read_bytes()
+    stopped = json.loads(original.splitlines()[-1])
+    assert stopped['completed_groups'] == ['shared', 'A']
+    assert len(stopped['partial_state']) == 1
+    preserved = deepcopy({name: container for name, container in alive.items()
+                          if not failed_container or not name.startswith('B')})
+    module._controlled_startup(tmp_path, 'project')
+    assert len(alive) == len(services) and all(alive[n] == c for n, c in preserved.items())
+    assert [len(c) for c in commands] == [1, 300, 3, 3 if failed_container else 2, 2]
+    assert evidence.read_bytes().startswith(original)
+    alive['A-0']['Image'] = 'different-image'
+    with pytest.raises(module.ComposeMaterializationError, match='identity differs'):
+        module._controlled_startup(tmp_path, 'project')
+    assert len(commands) == 5
+
+
+def test_group_input_preserves_internal_dependencies_and_checks_external_conditions(tmp_path):
+    services = {'base': {}, 'inside': {'image': 'n'}, 'child': {'image': 'n', 'pid': 'service:inside',
+        'depends_on': {'base': {'condition': 'service_healthy'}, 'inside': {'condition': 'service_started'}}}}
+    path = tmp_path/'group.yml'
+    identities = {'base': {'Id': 'immutable', 'State': {'Status': 'running', 'Health': {'Status': 'starting'}}}}
+    with pytest.raises(module.ComposeMaterializationError, match='unsatisfied'):
+        module._write_startup_group(path, {'services': services}, ['inside', 'child'], identities, {'inside': 'a', 'child': 'b'})
+    identities['base']['State']['Health']['Status'] = 'healthy'
+    module._write_startup_group(path, {'services': services}, ['inside', 'child'], identities, {'inside': 'a', 'child': 'b'})
+    selected = module.safe_load(path.read_text())['services']
+    assert selected['child']['pid'] == 'service:inside'
+    assert selected['child']['depends_on'] == {'inside': {'condition': 'service_started'}}
+    assert 'base' in services['child']['depends_on']
+
+
+def test_stage_remaining_budget_does_not_reset_between_groups(tmp_path, monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr(module, 'monotonic', lambda: now[0])
+    guard = module._StartupMeasurements(tmp_path/'events', deadline=500.0)
+    assert guard.remaining() == 400
+    now[0] = 499
+    assert guard.remaining() == 1
+    now[0] = 500
+    with pytest.raises(TimeoutError, match='overall'):
+        guard.remaining()
+
+
+def test_unexpected_successful_process_exit_stops_startup_without_polling(tmp_path, monkeypatch):
+    runtime = tmp_path/'runtime'; runtime.mkdir()
+    (runtime/'docker-compose.yml').write_text('services:\n  node:\n    image: node\n')
+    alive = []
+    monkeypatch.setattr(module, '_inspect_startup_services', lambda *args, **kwargs: list(alive))
+    monkeypatch.setattr(module, 'run', lambda command, **kwargs: CompletedProcess(command, 0, '[{"Id":"image-id"}]', ''))
+    def start(*args):
+        alive.append({'Id': 'node-id', 'Config': {'Labels': {'com.docker.compose.service': 'node'}},
+                      'State': {'Status': 'exited', 'Running': False, 'ExitCode': 0}})
+    monkeypatch.setattr(module, '_bounded_startup_command', start)
+    monkeypatch.setattr(module, 'sleep', lambda *args: pytest.fail('known exit must not wait for the stage deadline'))
+    with pytest.raises(module.ComposeMaterializationError, match='unsuccessful containers'):
+        module._controlled_startup(tmp_path, 'project')
+    assert len(alive) == 1
+
+
 def test_shell_membership_and_dependency_order_come_from_metadata():
     prefix = 'org.seedsecuritylabs.seedemu.meta.skyseed.'
     services = {'s5': {'labels': {prefix+'entity_type': 'Satellite', prefix+'shell_id': 'S5'}, 'depends_on': ['base']},
@@ -13,7 +117,10 @@ def test_shell_membership_and_dependency_order_come_from_metadata():
                 's1': {'labels': {prefix+'entity_type': 'Satellite', prefix+'shell_id': 'S1'}}}
     assert module._startup_groups(services) == [('shared', ('base', 'gs')), ('S1', ('s1',)), ('S5', ('s5',))]
     services['gs']['depends_on'] = ['s5']
-    with pytest.raises(module.ComposeMaterializationError, match='later Shell'):
+    services['s5'].pop('depends_on')
+    assert [g for g, _ in module._startup_groups(services)] == ['S1', 'S5', 'shared']
+    services['s5']['depends_on'] = ['gs']
+    with pytest.raises(module.ComposeMaterializationError, match='cyclic'):
         module._startup_groups(services)
 
 
@@ -28,72 +135,17 @@ def test_optional_inspection_accepts_only_explicit_absence(tmp_path, monkeypatch
 
 
 
-def test_docker_query_timeout_pauses_before_bounded_retry(tmp_path, monkeypatch):
+def test_docker_query_timeout_stops_without_retry(tmp_path, monkeypatch):
     from subprocess import TimeoutExpired
-    guard = module._StartupMeasurements(tmp_path/'pressure.jsonl')
     calls = []
-    monkeypatch.setattr(module, 'sleep', lambda seconds: None)
     def invoke(command, **kwargs):
         calls.append(command)
-        if len(calls) == 1:
-            raise TimeoutExpired(command, 10)
-        return CompletedProcess(command, 1, '\n', 'error: no such object: node')
+        raise TimeoutExpired(command, 10)
     monkeypatch.setattr(module, 'run', invoke)
-    assert module._inspect_startup_services('project', {'node': {}}, ['node'], allow_missing=True, guard=guard) == []
-    assert all(c[:3] == ['docker', 'container', 'inspect'] for c in (calls[0], calls[1]))
-
-
-def test_generated_batch_excludes_future_services_and_keeps_project_networks(tmp_path):
-    from yaml import safe_load
-    original = {'services': {'base': {'image': 'base'},
-                            's1': {'image': 'node', 'depends_on': ['base'], 'network_mode': 'none'},
-                            's5': {'image': 'node'}}, 'networks': {'default': {'driver': 'bridge'}}}
-    path = tmp_path / 'batch.yml'
-    module._write_startup_batch(path, original, ['s1'])
-    selected = safe_load(path.read_text())
-    assert set(selected['services']) == {'s1'}
-    assert 'depends_on' not in selected['services']['s1']
-    assert selected['networks'] == original['networks']
-    assert original['services']['s1']['depends_on'] == ['base']
-
-
-@pytest.mark.parametrize('reuse', [False, True])
-def test_controlled_path_covers_mixed_dependency_waves(tmp_path, monkeypatch, reuse):
-    from yaml import safe_dump, safe_load
-    runtime = tmp_path / 'runtime'; runtime.mkdir()
-    services = {name: {'image': 'node'} for name in 'abcdef'}
-    services['e']['depends_on'] = ['d']
-    services['f']['depends_on'] = ['a']
-    (runtime / 'docker-compose.yml').write_text(safe_dump({'services': services}))
-    monkeypatch.setattr(module, 'sleep', lambda seconds: None)
-    monkeypatch.setenv('SKYSEED_DEPLOY_BATCH_SIZE', '3')
-    monkeypatch.setenv('SKYSEED_DEPLOY_PARALLEL', '2')
-    started = {'a', 'd'} if reuse else set()
-    commands = []
-    def invoke(command, guard):
-        selected = safe_load(Path(command[command.index('-f')+1]).read_text())['services']
-        assert 1 <= len(selected) <= 3 and '--no-deps' in command and command[3] == '2'
-        assert not (set(selected) & started)
-        assert all(set(services[name].get('depends_on', ())) <= started for name in selected)
-        commands.append(tuple(selected))
-        started.update(selected)
-    monkeypatch.setattr(module, '_bounded_startup_command', invoke)
-    def inspect(project, services, names, **kwargs):
-        return [{'Id': name, 'Config': {'Image': services[name]['image'],
-                    'Labels': {'com.docker.compose.project': project, 'com.docker.compose.service': name}},
-                 'State': {'Status': 'running', 'Running': True,
-                           'ExitCode': 0, 'Pid': 0}, 'RestartCount': 0}
-                for name in names if name in started]
-    monkeypatch.setattr(module, '_inspect_startup_services', inspect)
-    module._controlled_startup(tmp_path, 'project')
-    assert started == set(services)
-    assert commands == ([('b', 'c'), ('f',), ('e',)] if reuse else [('a', 'b', 'c'), ('d', 'f'), ('e',)])
-    import json
-    events = [json.loads(line) for line in (runtime/'deployment-measurements.jsonl').read_text().splitlines()]
-    batches = [event for event in events if event['kind'] == 'batch-complete']
-    handled = [name for event in batches for name in event['services']]
-    assert sorted(handled) == sorted(services)
-    assert next(event for event in events if event['kind'] == 'deployment-complete')['services'] == 6
+    with pytest.raises(TimeoutExpired):
+        module._inspect_startup_services('project', {'node': {}}, ['node'], allow_missing=True,
+                                        guard=module._StartupMeasurements(tmp_path/'events.jsonl'))
+    assert len(calls) == 1
 
 
 def test_inspection_rejects_duplicate_service_as_incomplete_coverage(monkeypatch):
@@ -129,11 +181,12 @@ elif args[:2]==['network','ls']:
     for identity,key in state['networks'].items():
         print(json.dumps(identity),json.dumps('owned-project'),json.dumps(key))
 elif args[0]=='stop':
-    assert len(args[1:])<=8
+    assert len(args[1:])<=23
     if 'id-base' in args[1:]:assert set(state['containers'])=={'id-base'}
     state['stopped'].extend(args[1:])
 elif args[0]=='rm':
-    assert len(args[1:])<=8 and all(i in state['stopped'] for i in args[1:])
+    args.remove('--force')
+    assert len(args[1:])<=23 and all(i in state['stopped'] for i in args[1:])
     if state['fail']:
         state['fail']=False;code=7;print('injected remove failure',file=sys.stderr)
     else:
@@ -158,8 +211,7 @@ path.write_text(json.dumps(state));sys.exit(code)
     done = json.loads(state.read_text())
     assert done['containers'] == {} and done['networks'] == {'net-external': 'external'}
     mutations = [call for call in done['calls'] if call[0] in ('stop', 'rm')]
-    assert all(len(call[1:]) <= 8 for call in mutations)
-    assert any(len(call[1:]) == 8 for call in mutations)
+    assert any(len(call[1:]) == 23 for call in mutations)
     assert subprocess.run([str(tmp_path/'cleanup.sh')], env=env).returncode == 0
     again = json.loads(state.read_text())
     assert [call for call in again['calls'] if call[0] in ('stop','rm')] == mutations
@@ -178,33 +230,19 @@ def test_teardown_rejects_wrong_owner_before_mutation(tmp_path, monkeypatch):
     assert len(calls)==1 and calls[0][1]=='ps'
 
 
-def test_resident_policy_separates_batch_size_from_requests(monkeypatch):
-    for key in ('SKYSEED_DEPLOY_BATCH_SIZE','SKYSEED_DEPLOY_PARALLEL','SKYSEED_CLEANUP_BATCH_SIZE','SKYSEED_DEPLOY_RESIDENT_STEP'):
-        monkeypatch.delenv(key, raising=False)
-    assert module._deployment_bounds('startup', 1999) == (64, 8)
-    assert module._deployment_bounds('startup', 2000) == (64, 8)
-    assert module._deployment_bounds('startup', 4765) == (64, 8)
-    monkeypatch.setenv('SKYSEED_DEPLOY_BATCH_SIZE', '12')
-    monkeypatch.setenv('SKYSEED_DEPLOY_PARALLEL', '3')
-    assert module._deployment_bounds('startup', 4765) == (12, 3)
-    assert module._deployment_bounds('cleanup', 4765) == (8, 8)
-    assert module._deployment_bounds('cleanup', 1999) == (16, 16)
-    monkeypatch.setenv('SKYSEED_CLEANUP_BATCH_SIZE', '65')
-    with pytest.raises(ValueError): module._deployment_bounds('cleanup', 1)
+def test_fixed_group_concurrency_ignores_retired_count_controls(monkeypatch):
+    monkeypatch.delenv('SKYSEED_DEPLOY_PARALLEL', raising=False)
+    monkeypatch.setenv('SKYSEED_DEPLOY_BATCH_SIZE', '1')
+    monkeypatch.setenv('SKYSEED_DEPLOY_RESIDENT_STEP', '1')
+    assert module._startup_parallel() == 8
+    monkeypatch.setenv('SKYSEED_DEPLOY_PARALLEL', '12')
+    assert module._startup_parallel() == 12
+    monkeypatch.setenv('SKYSEED_DEPLOY_PARALLEL', '0')
+    with pytest.raises(ValueError):
+        module._startup_parallel()
 
 
-def test_namespace_dependencies_use_saved_container_ids(tmp_path):
-    services = {'base': {}, 'dependent': {'network_mode': 'service:base', 'pid': 'service:base'}}
-    assert module._startup_groups(services) == [('shared', ('base', 'dependent'))]
-    module._write_startup_batch(tmp_path/'batch.yml', {'services': services}, ['dependent'], {'base': 'immutable-base-id'})
-    selected = module.safe_load((tmp_path/'batch.yml').read_text())['services']
-    assert selected['dependent']['network_mode'] == 'container:immutable-base-id'
-    assert selected['dependent']['pid'] == 'container:immutable-base-id'
-    with pytest.raises(module.ComposeMaterializationError, match='not materialized'):
-        module._write_startup_batch(tmp_path/'batch.yml', {'services': services}, ['dependent'])
-
-
-def test_actual_cleanup_requests_follow_remaining_count_and_preserve_hooks(tmp_path, monkeypatch):
+def test_whole_cleanup_keeps_real_dependencies_and_graceful_hooks(tmp_path, monkeypatch):
     import json
     runtime=tmp_path/'runtime';runtime.mkdir()
     services={'base': {}, **{f'n{i:04}': {'depends_on':['base'], 'x-skyseed-disposable-network':True} for i in range(2020)},
@@ -224,13 +262,11 @@ def test_actual_cleanup_requests_follow_remaining_count_and_preserve_hooks(tmp_p
         elif args[0] in ('stop','rm'):
             ids=args[1:];fast=ids[0]=='--force'
             if fast:ids=ids[1:]
-            assert len(ids)<=module._deployment_bounds('cleanup',len(alive))[1]
             if 'id-base' in ids:assert len(alive)==1
             if args[0]=='stop':stopped.update(ids)
             else:
                 for i in ids:
-                    assert fast==module._disposable_network_service(services[alive[i]])
-                    if not fast:assert i in stopped
+                    if not module._disposable_network_service(services[alive[i]]):assert i in stopped
                     del alive[i]
         elif args[:2]==['network','rm']:
             assert not alive
@@ -241,7 +277,7 @@ def test_actual_cleanup_requests_follow_remaining_count_and_preserve_hooks(tmp_p
     module._controlled_teardown(tmp_path,'project')
     assert not alive and networks=={'external-id':'external'}
     forced=[c for c in calls if c[:3]==['docker','rm','--force']]
-    assert any(len(c[3:])==8 for c in forced) and any(len(c[3:])==16 for c in forced)
+    assert [len(c[3:]) for c in forced] == [2023, 1]
     hook=next(c for c in calls if c[:2]==['docker','exec'])
     assert hook==['docker','exec','--user','123','--workdir','/tmp','--privileged','--env','VALUE=retained','id-hook','sh','-c','echo saved']
     assert calls.index(hook)<next(i for i,c in enumerate(calls) if c[:2]==['docker','stop'] and 'id-hook' in c)
@@ -262,33 +298,6 @@ def test_fast_cleanup_failure_stops_later_dependency_removal(tmp_path, monkeypat
     assert len(calls)==2
 
 
-@pytest.mark.parametrize('fail', [False, True])
-def test_startup_failure_rollback_keeps_reverse_namespace_order(tmp_path, monkeypatch, fail):
-    services={'base':{},'child':{'network_mode':'service:base','stop_signal':'SIGUSR1'}}
-    alive={'base','child'};calls=[]
-    def inspect(project, services, names, **kwargs):
-        return [{'Id':'id-'+n,'Config':{'Labels':{'com.docker.compose.service':n}},'State':{'Running':True}} for n in names if n in alive]
-    monkeypatch.setattr(module,'_inspect_startup_services',inspect)
-    def run(command, **kwargs):
-        calls.append(command)
-        if command[1]=='rm':
-            assert command==['docker','rm','--force','id-child'] if 'child' in alive else command==['docker','rm','--force','id-base']
-            if fail:return CompletedProcess(command,1,'','child removal failed')
-            for identity in command[3:]:alive.remove(identity.removeprefix('id-'))
-        if command[1:3]==['container','inspect']:return CompletedProcess(command,1,'','No such object')
-        return CompletedProcess(command,0,'','')
-    monkeypatch.setattr(module,'run',run)
-    guard=module._StartupMeasurements(tmp_path/'rollback.jsonl')
-    if fail:
-        with pytest.raises(module.ComposeMaterializationError,match='incomplete'):
-            module._controlled_startup_cleanup('project',services,['base','child'],guard)
-        assert alive=={'base','child'} and not any('id-base' in c for c in calls)
-    else:
-        module._controlled_startup_cleanup('project',services,['base','child'],guard)
-        assert not alive
-    assert calls[0]==['docker','stop','id-child']
-
-
 def test_stop_hooks_use_compose_resolved_options_without_name_based_stop(tmp_path):
     import json
     original={'node':{'pre_stop':[{'command':'echo ${VALUE}', 'environment':{'VALUE':'${VALUE}'}}]}}
@@ -300,3 +309,122 @@ def test_stop_hooks_use_compose_resolved_options_without_name_based_stop(tmp_pat
     assert calls==[['docker','compose','-p','project','-f',str(tmp_path/'compose.yml'),'config','--format','json']]
     assert module._pre_stop_commands(resolved['node'],'immutable-id')==[['docker','exec','--env','VALUE=resolved','immutable-id','echo','resolved']]
     assert original['node']['pre_stop'][0]['environment']['VALUE']=='${VALUE}'
+
+
+def test_image_preparation_preserves_builds_and_external_images_without_runtime_fields(tmp_path):
+    from yaml import safe_dump,safe_load
+    runtime=tmp_path/'runtime';runtime.mkdir()
+    source=runtime/'docker-compose.yml'
+    base={'image':'base','build':{'context':'.','dockerfile':'dummies/base'}}
+    node={'image':'${COMPOSE_PROJECT_NAME}-nodes','build':'./node','platform':'linux/amd64',
+          'network_mode':'service:base','depends_on':['base'],'volumes':['/host:/host']}
+    services={'base':base,'node':node,'replica':{'image':node['image'],'command':['sleep','infinity']},
+              'map':{'image':'external/map:v1','ports':['8888:80']}}
+    source.write_text(safe_dump({'services':services,'secrets':{'token':{'file':'./token'}}}))
+    before=source.read_bytes()
+    derived=module._prepare_controlled_image_compose(tmp_path,'project')
+    value=safe_load(derived.read_text())
+    assert source.read_bytes()==before
+    assert value['services']=={'base':base,'node':{key:node[key] for key in ('image','build','platform')},
+                              'map':{'image':'external/map:v1'}}
+    assert value['secrets']=={'token':{'file':'./token'}}
+    services['replica'].pop('image');source.write_text(safe_dump({'services':services}))
+    with pytest.raises(module.ComposeMaterializationError,match='lacks image'):
+        module._prepare_controlled_image_compose(tmp_path,'project')
+
+
+@pytest.mark.parametrize('field,observed_field', [('network_mode', 'NetworkMode'), ('ipc', 'IpcMode'), ('pid', 'PidMode')])
+@pytest.mark.parametrize('owner_state', ['failed', 'missing', 'replaced', 'matching'])
+def test_retry_reconciles_actual_cross_group_namespace_bindings(tmp_path, monkeypatch, field, observed_field, owner_state):
+    import json
+    from copy import deepcopy
+    prefix = 'org.seedsecuritylabs.seedemu.meta.skyseed.'
+    def shell(name):
+        return {prefix+'entity_type': 'Satellite', prefix+'shell_id': name}
+    services = {'base': {'image': 'node'},
+                'child': {'image': 'node', 'labels': shell('S1'), field: 'service:base',
+                          'stop_grace_period': '2s', 'pre_stop': [{'command': ['save']}]},
+                'leaf': {'image': 'node', 'labels': shell('S2'), 'pid': 'service:child'},
+                'unrelated': {'image': 'node', 'labels': shell('S1'), 'depends_on': ['base']}}
+    runtime = tmp_path/'runtime'; runtime.mkdir()
+    (runtime/'docker-compose.yml').write_text(module.safe_dump({'services': services}))
+    def container(name, identity):
+        return {'Id': identity, 'Image': 'image-id', 'RestartCount': 0,
+                'Config': {'Labels': {'com.docker.compose.project': 'project', 'com.docker.compose.service': name,
+                                     module._DEPLOYMENT_CONFIG_LABEL: module._deployment_service_digest(services[name], 'image-id')}},
+                'HostConfig': {}, 'State': {'Status': 'running', 'Running': True}}
+    alive = {n: container(n, 'old-'+n) for n in services}
+    alive['child']['HostConfig'][observed_field] = 'container:old-base'
+    alive['leaf']['HostConfig']['PidMode'] = 'container:old-child'
+    if owner_state == 'failed':
+        alive['base']['State'].update(Status='exited', Running=False, ExitCode=1)
+    elif owner_state == 'missing':
+        del alive['base']
+    elif owner_state == 'replaced':
+        alive['base']['Id'] = 'new-base'
+    retained = deepcopy(alive['unrelated']); calls=[]; started=[]
+    monkeypatch.setattr(module, '_inspect_startup_services', lambda project, definitions, names, **kw: [deepcopy(alive[n]) for n in names if n in alive])
+    monkeypatch.setattr(module, '_resolved_stop_services', lambda *args: services)
+    def invoke(command, **kw):
+        calls.append(command)
+        if command[1] == 'rm':
+            for identity in command[3:]:
+                name = next(n for n,c in alive.items() if c['Id'] == identity)
+                # Namespace consumers must be removed before their owners.
+                assert not any('container:'+identity in c['HostConfig'].values() for n,c in alive.items() if n != name)
+                del alive[name]
+        return CompletedProcess(command, 0, '[{"Id":"image-id"}]', '')
+    monkeypatch.setattr(module, 'run', invoke)
+    def deploy(command, guard):
+        selected = module.safe_load(Path(command[command.index('-f')+1]).read_text())['services']
+        for name in command[command.index('--no-recreate')+1:]:
+            started.append(name)
+            alive[name] = container(name, 'new-'+name)
+            for f, hf in [('network_mode','NetworkMode'),('ipc','IpcMode'),('pid','PidMode')]:
+                if f in selected[name]:
+                    binding = selected[name][f]
+                    if binding.startswith('service:'):
+                        binding = 'container:'+alive[binding[8:]]['Id']
+                    alive[name]['HostConfig'][hf] = binding
+    monkeypatch.setattr(module, '_bounded_startup_command', deploy)
+    module._controlled_startup(tmp_path, 'project')
+    assert alive['unrelated'] == retained
+    assert alive['child']['HostConfig'][observed_field] == 'container:'+alive['base']['Id']
+    assert alive['leaf']['HostConfig']['PidMode'] == 'container:'+alive['child']['Id']
+    if owner_state == 'matching':
+        assert not started and not any(c[1] in ('rm','stop','exec') for c in calls)
+    else:
+        assert started == (['base'] if owner_state in ('failed','missing') else []) + ['child','leaf']
+        hook = ['docker','exec','old-child','save']
+        assert calls.index(hook) < calls.index(['docker','stop','old-child'])
+        events = [json.loads(v) for v in (runtime/'deployment-measurements.jsonl').read_text().splitlines()]
+        assert any(e['kind'] == 'retry-unsuccessful-containers' for e in events)
+        assert events[-1]['kind'] == 'deployment-complete'
+
+
+def test_cross_group_retry_removal_failure_preserves_owner_and_partial_evidence(tmp_path, monkeypatch):
+    import json
+    from copy import deepcopy
+    services={'base':{'image':'node'},'child':{'image':'node','network_mode':'service:base',
+        'labels':{'org.seedsecuritylabs.seedemu.meta.skyseed.entity_type':'Satellite',
+                  'org.seedsecuritylabs.seedemu.meta.skyseed.shell_id':'S1'}}}
+    runtime=tmp_path/'runtime';runtime.mkdir();(runtime/'docker-compose.yml').write_text(module.safe_dump({'services':services}))
+    alive={n:{'Id':'old-'+n,'Image':'image-id','Config':{'Labels':{
+        'com.docker.compose.service':n,module._DEPLOYMENT_CONFIG_LABEL:module._deployment_service_digest(s,'image-id')}},
+        'State':{'Status':'running','Running':True},'HostConfig':{}} for n,s in services.items()}
+    alive['base']['State'].update(Status='exited',Running=False,ExitCode=1)
+    alive['child']['HostConfig']['NetworkMode']='container:old-base'
+    monkeypatch.setattr(module,'_inspect_startup_services',lambda p,s,n,**kw:[deepcopy(alive[k]) for k in n])
+    calls=[]
+    def invoke(command,**kw):
+        calls.append(command)
+        if command[1]=='rm':return CompletedProcess(command,1,'','injected removal failure')
+        return CompletedProcess(command,0,'[{"Id":"image-id"}]','')
+    monkeypatch.setattr(module,'run',invoke)
+    monkeypatch.setattr(module,'_bounded_startup_command',lambda *a:pytest.fail('failure must stop admission'))
+    with pytest.raises(module.ComposeMaterializationError,match='removal failure'):module._controlled_startup(tmp_path,'project')
+    assert not any('old-base' in c for c in calls if c[1] in ('stop','rm'))
+    event=json.loads((runtime/'deployment-measurements.jsonl').read_text().splitlines()[-1])
+    assert event['kind']=='admission-stopped' and event['failing_group']=='deployment-reconciliation'
+    assert {c['Id'] for c in event['partial_state']}=={'old-base','old-child'}
+    assert event['confirmed_groups_preserved'] is True

@@ -4,5 +4,10 @@ sampling_interval_seconds: 5
 total_duration_seconds: 600
 delivered_coverage_seconds: 300
 # Engineering choices, qualified with a measured loading margin; not an optimum.
-batch_lead_fraction: 0.75
+batch_lead_fraction: 1.0
 batch_capacity_factor: 2
+
+# Reserved preparing + operational connections; no borrowing between scopes.
+ground_station_slots_per_shell: 2
+ground_station_total_capacity: 10
+independent_shell_planning: true

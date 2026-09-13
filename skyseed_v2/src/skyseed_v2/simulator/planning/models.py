@@ -674,6 +674,7 @@ class CoverageFirstGroundStationAccessPlanningModel:
     """
 
     __slots__ = (
+        "_satellite_scopes", "_scope_limits",
         "_default_ground_station_limit",
         "_ground_station_policy_limit",
         "initial_candidate_count",
@@ -688,6 +689,8 @@ class CoverageFirstGroundStationAccessPlanningModel:
     )
 
     def __init__(self, *, default_ground_station_limit: int,
+                 satellite_scopes: Mapping[NodeId, str] | None = None,
+                 ground_station_scope_limits: Mapping[str, int] | None = None,
                  ground_station_policy_limit: int | None = None,
                  initial_candidate_count: int | None = None,
                  acquisition_duration: timedelta = timedelta(0),
@@ -713,6 +716,12 @@ class CoverageFirstGroundStationAccessPlanningModel:
                 or not isinstance(initial_candidate_count, int) or initial_candidate_count < 1):
             raise ValueError("initial_candidate_count must be positive or None")
         self.initial_candidate_count = initial_candidate_count
+        self._satellite_scopes = _validated_satellite_scopes(satellite_scopes)
+        self._scope_limits = dict(ground_station_scope_limits or {})
+        if set(self._scope_limits) != set(self._satellite_scopes.values()):
+            raise ValueError("scope quotas must match satellite_scopes")
+        if any(isinstance(v, bool) or not isinstance(v, int) or v < 0 for v in self._scope_limits.values()):
+            raise ValueError("scope quotas must be non-negative integers")
         self._search_hint = None
         self._ground_station_policy_limit = ground_station_policy_limit
         self._default_ground_station_limit = default_ground_station_limit
@@ -746,19 +755,22 @@ class CoverageFirstGroundStationAccessPlanningModel:
             by_pair[(candidate.ground_station_id, candidate.satellite_id)] = (
                 candidate
             )
-        selected = _allocate_continuous_ground_station_accesses(
-            tuple(
-                _GroundAccessAllocationPreference(
-                    station,
-                    limit,
-                    tuple(by_station.get(station, ())),
-                )
-                for station, limit in self._station_limits
-            ),
-            self._satellite_limits,
-            retained_pairs,
-            work=self._allocation_work,
-        )
+        selected = {}
+        work = {}
+        for scope, quota in sorted(self._scope_limits.items()) if self._scope_limits else [("", None)]:
+            partial_work = {}
+            partial = _allocate_continuous_ground_station_accesses(
+                tuple(_GroundAccessAllocationPreference(station,
+                    limit if quota is None else quota,
+                    tuple(c for c in by_station.get(station, ())
+                          if not self._satellite_scopes or self._satellite_scopes[c.satellite_id] == scope))
+                      for station, limit in self._station_limits),
+                self._satellite_limits, retained_pairs, work=partial_work)
+            for station, satellites in partial.items():
+                selected.setdefault(station, []).extend(satellites)
+            for key, value in partial_work.items():
+                work[key] = work.get(key, 0) + value
+        self._allocation_work = work
         return tuple(
             sorted(
                 (
@@ -783,6 +795,17 @@ class CoverageFirstGroundStationAccessPlanningModel:
         # cannot be recovered by increasing a rank limit.
         if not any(count >= limit for count in counts.values()):
             return False
+        if self._scope_limits:
+            # A global geometric rank limit may hide an entire scope. Widen
+            # until no scope has a shortage or the physical query is exhausted.
+            per_scope = {}
+            for candidate in candidates:
+                key = candidate.ground_station_id, self._satellite_scopes[candidate.satellite_id]
+                if self._satellite_limits[candidate.satellite_id] != 0:
+                    per_scope.setdefault(key, set()).add(candidate.satellite_id)
+            return any(len(per_scope.get((station, scope), ())) < quota
+                       for station, _ in self._station_limits for scope, quota in self._scope_limits.items()) or any(
+                       count >= limit for count in counts.values())
         grouped = {}
         for candidate in candidates:
             if self._satellite_limits[candidate.satellite_id] != 0:
@@ -824,6 +847,7 @@ class CoverageFirstGroundStationAccessPlanningModel:
 
         if self._prepared_world is physical_world:
             return
+        _validate_scope_world(physical_world, self._satellite_scopes)
         station_limit_by_id: dict[NodeId, int] = {}
         satellite_limits: dict[NodeId, int | None] = {}
         for autonomous_system in physical_world.autonomous_systems:
@@ -833,6 +857,8 @@ class CoverageFirstGroundStationAccessPlanningModel:
                     limit = ground_station.max_simultaneous_satellite_accesses
                 if self._ground_station_policy_limit is not None:
                     limit = min(limit, self._ground_station_policy_limit)
+                if sum(self._scope_limits.values()) > limit:
+                    raise ValueError("reserved scope quotas exceed physical GS capacity")
                 station_limit_by_id[ground_station.node_id] = limit
             for shell in autonomous_system.shells:
                 for orbit in shell.orbits:
@@ -858,9 +884,10 @@ class HighestElevationZoneServicePlanningModel:
     Route planner.
     """
 
-    __slots__ = ("_world", "_zones", "_zone_ids", "_satellite_ids")
+    __slots__ = ("_world", "_zones", "_zone_ids", "_satellite_ids", "_satellite_scopes")
 
-    def __init__(self) -> None:
+    def __init__(self, *, satellite_scopes: Mapping[NodeId, str] | None = None) -> None:
+        self._satellite_scopes = _validated_satellite_scopes(satellite_scopes)
         self._world = None
         self._zones = ()
         self._zone_ids = frozenset()
@@ -875,6 +902,7 @@ class HighestElevationZoneServicePlanningModel:
         if not isinstance(physical_world, PhysicalWorld):
             raise TypeError("physical_world must be a PhysicalWorld")
         if self._world is not physical_world:
+            _validate_scope_world(physical_world, self._satellite_scopes)
             try:
                 zones = physical_world.get_zone_layout().zones
             except RuntimeError:
@@ -891,9 +919,9 @@ class HighestElevationZoneServicePlanningModel:
                 raise TypeError(
                     "previous_assignments must contain Zone assignments"
                 )
-            if assignment.zone_id in previous_by_zone:
+            if assignment.service_key in previous_by_zone:
                 raise ValueError("previous_assignments contains a duplicate")
-            previous_by_zone[assignment.zone_id] = assignment.satellite_id
+            previous_by_zone[assignment.service_key] = assignment.satellite_id
         best: dict[str, ZoneServiceCandidate] = {}
         zone_ids = self._zone_ids
         for candidate in candidates:
@@ -903,7 +931,8 @@ class HighestElevationZoneServicePlanningModel:
                 raise ValueError("Zone candidate is foreign to PhysicalWorld")
             if candidate.satellite_id not in self._satellite_ids:
                 raise ValueError("Zone candidate Satellite is foreign to PhysicalWorld")
-            current = best.get(candidate.zone_id)
+            key = self._satellite_scopes.get(candidate.satellite_id, ""), candidate.zone_id
+            current = best.get(key)
             if current is None or (
                 -candidate.elevation_deg,
                 _node_key(candidate.satellite_id),
@@ -911,30 +940,19 @@ class HighestElevationZoneServicePlanningModel:
                 -current.elevation_deg,
                 _node_key(current.satellite_id),
             ):
-                best[candidate.zone_id] = candidate
+                best[key] = candidate
         assignments = []
         changes = []
-        for zone in zones:
-            satellite_id = (
-                None
-                if zone.zone_id not in best
-                else best[zone.zone_id].satellite_id
-            )
-            assignment = ZoneServiceAssignment(
-                zone.zone_id,
-                satellite_id,
-            )
-            assignments.append(assignment)
-            had_previous = zone.zone_id in previous_by_zone
-            previous_satellite_id = previous_by_zone.pop(zone.zone_id, None)
-            if not had_previous or previous_satellite_id != satellite_id:
-                changes.append(
-                    ZoneServiceTransition(
-                        zone.zone_id,
-                        previous_satellite_id,
-                        satellite_id,
-                    )
-                )
+        scopes = sorted(set(self._satellite_scopes.values())) if self._satellite_scopes else [""]
+        for scope in scopes:
+            for zone in zones:
+                key = scope, zone.zone_id
+                satellite_id = None if key not in best else best[key].satellite_id
+                assignments.append(ZoneServiceAssignment(zone.zone_id, satellite_id, scope))
+                had_previous = key in previous_by_zone
+                previous_satellite_id = previous_by_zone.pop(key, None)
+                if not had_previous or previous_satellite_id != satellite_id:
+                    changes.append(ZoneServiceTransition(zone.zone_id, previous_satellite_id, satellite_id, scope))
         if previous_by_zone:
             raise ValueError(
                 "previous_assignments contains a Zone foreign to PhysicalWorld"
@@ -1100,6 +1118,7 @@ class GatewayHopCountRoutePlanningModel:
     """
 
     __slots__ = (
+        "_satellite_scopes", "_scope_models",
         "_route_engine",
         "_gateway_candidate_count",
         "_gateway_candidate_max_distance_m",
@@ -1114,6 +1133,7 @@ class GatewayHopCountRoutePlanningModel:
     def __init__(
         self,
         *,
+        satellite_scopes: Mapping[NodeId, str] | None = None,
         gateway_candidate_count: int = 1,
         gateway_candidate_max_distance_m: float | None = None,
     ) -> None:
@@ -1134,6 +1154,8 @@ class GatewayHopCountRoutePlanningModel:
                     "gateway_candidate_max_distance_m must be positive or None"
                 )
             gateway_candidate_max_distance_m = converted
+        self._satellite_scopes = _validated_satellite_scopes(satellite_scopes)
+        self._scope_models = {}
         self._route_engine = _GroupedRouteEngine()
         self._gateway_candidate_count = gateway_candidate_count
         self._gateway_candidate_max_distance_m = (
@@ -1156,13 +1178,23 @@ class GatewayHopCountRoutePlanningModel:
 
     def shutdown(self, *, wait: bool = True) -> None:
         self._route_engine.shutdown(wait=wait)
+        for model in self._scope_models.values():
+            model.shutdown(wait=wait)
 
     def _active_compute_worker_count(self) -> int:
+        if self._scope_models:
+            return sum(model._active_compute_worker_count() for model in self._scope_models.values())
         if not self._route_engine.executor_lifecycle.executor_live:
             return 0
         return self._route_engine._executor_worker_count
 
     def _route_work_counts(self):
+        if self._scope_models:
+            totals = dict(self._construction_work)
+            for model in self._scope_models.values():
+                for key, value in model._route_work_counts().items():
+                    totals[key] = totals.get(key, 0) + value
+            return totals
         observation = self._route_engine.last_compute_observation
         if observation is None:
             return {}
@@ -1179,7 +1211,7 @@ class GatewayHopCountRoutePlanningModel:
         zone_service_assignments: tuple[ZoneServiceAssignment, ...],
     ) -> tuple[RouteDemand, ...]:
         candidates_by_zone = self._prepare_gateway_candidates(physical_world)
-        identities = tuple((value.zone_id, value.satellite_id) for value in zone_service_assignments)
+        identities = tuple((value.service_key, value.satellite_id) for value in zone_service_assignments)
         if identities == self._demand_assignments:
             self._construction_work["route_demands_reused"] = len(self._last_demands)
             return self._last_demands
@@ -1187,7 +1219,7 @@ class GatewayHopCountRoutePlanningModel:
         demands = set()
         current_services = {}
         for assignment in zone_service_assignments:
-            previous = self._demands_by_service.get(assignment.zone_id)
+            previous = self._demands_by_service.get(assignment.service_key)
             if previous is not None and previous[0] == assignment.satellite_id:
                 values = previous[1]
                 self._construction_work["route_demands_reused"] += len(values)
@@ -1196,10 +1228,10 @@ class GatewayHopCountRoutePlanningModel:
                 for gateway_id in candidates_by_zone.get(assignment.zone_id, ()):
                     if assignment.satellite_id is not None:
                         values.append(RouteDemand(assignment.satellite_id,
-                            GroundStationRouteDemandTarget(gateway_id)))
-                    values.append(RouteDemand(gateway_id, ZoneRouteDemandTarget(assignment.zone_id)))
+                            GroundStationRouteDemandTarget(gateway_id, assignment.network_scope)))
+                    values.append(RouteDemand(gateway_id, ZoneRouteDemandTarget(assignment.zone_id, assignment.network_scope)))
                 values = tuple(values)
-            current_services[assignment.zone_id] = (assignment.satellite_id, values)
+            current_services[assignment.service_key] = (assignment.satellite_id, values)
             demands.update(values)
         self._demands_by_service = current_services
         self._demand_assignments = identities
@@ -1233,6 +1265,30 @@ class GatewayHopCountRoutePlanningModel:
         demands: tuple[RouteDemand, ...],
         previous_outcomes: tuple[RouteOutcome, ...],
     ) -> RoutePlanningResult:
+        if self._satellite_scopes:
+            _validate_scope_world(physical_world, self._satellite_scopes)
+            scopes = set(self._satellite_scopes.values())
+            if any(d.target.network_scope not in scopes for d in demands):
+                raise ValueError("Route demand has unknown network scope")
+            outcomes, transitions = [], []
+            for scope in sorted(scopes):
+                model = self._scope_models.setdefault(scope, None)
+                if model is None:
+                    model = self._scope_models[scope] = GatewayHopCountRoutePlanningModel(
+                        gateway_candidate_count=self._gateway_candidate_count,
+                        gateway_candidate_max_distance_m=self._gateway_candidate_max_distance_m)
+                connections = tuple(c for c in operational_connections if all(
+                    n.entity_kind == "ground-station" or self._satellite_scopes[n] == scope
+                    for n in (c.connection_id.endpoint_a, c.connection_id.endpoint_b)))
+                scoped_demands = tuple(d for d in demands if d.target.network_scope == scope)
+                if any(d.source.entity_kind == "satellite" and self._satellite_scopes[d.source] != scope for d in scoped_demands):
+                    raise ValueError("Route source is outside its network scope")
+                result = model.plan_route_outcomes(physical_world, connections,
+                    tuple(v for v in zone_service_assignments if v.network_scope == scope),
+                    scoped_demands, tuple(v for v in previous_outcomes if v.demand.target.network_scope == scope))
+                outcomes.extend(result.outcomes)
+                transitions.extend(result.transitions)
+            return RoutePlanningResult(tuple(outcomes), tuple(transitions))
         previous_by_demand: dict[RouteDemand, RouteOutcome] = {}
         for previous in previous_outcomes:
             if not isinstance(
@@ -1258,7 +1314,7 @@ class GatewayHopCountRoutePlanningModel:
             self._routing_edges = edges
         context = self._routing_context
         assignments = {
-            value.zone_id: value.satellite_id
+            value.service_key: value.satellite_id
             for value in zone_service_assignments
         }
         ordered_demands = tuple(sorted(demands, key=_route_demand_key))
@@ -1268,7 +1324,7 @@ class GatewayHopCountRoutePlanningModel:
         reused = 0
         for index, demand in enumerate(ordered_demands):
             ground_target = isinstance(demand.target, GroundStationRouteDemandTarget)
-            terminal = demand.target.ground_station_id if ground_target else assignments.get(demand.target.zone_id)
+            terminal = demand.target.ground_station_id if ground_target else assignments.get(demand.target.service_key)
             if terminal is None:
                 unresolved[index] = RouteUnreachableReason.ZONE_UNSERVED
                 continue
@@ -1451,8 +1507,32 @@ def _route_demand_key(demand: RouteDemand) -> tuple:
         if isinstance(target, GroundStationRouteDemandTarget)
         else ("Z", target.zone_id)
     )
-    return _node_key(demand.source), target_key
+    return _node_key(demand.source), demand.target.network_scope, target_key
 
 
 def _node_key(node_id: NodeId) -> tuple[int, str, str]:
     return node_id.asn, node_id.entity_kind, node_id.entity_id
+
+
+def _validated_satellite_scopes(values):
+    if values is None:
+        return MappingProxyType({})
+    from .values import _validate_network_scope
+    result = dict(values)
+    for node, scope in result.items():
+        if not isinstance(node, NodeId) or node.entity_kind != "satellite":
+            raise ValueError("satellite_scopes keys must identify satellites")
+        _validate_network_scope(scope)
+        if not scope:
+            raise ValueError("configured network scopes must be non-empty")
+    if not result:
+        raise ValueError("configured satellite_scopes must not be empty")
+    return MappingProxyType(result)
+
+
+def _validate_scope_world(world, scopes):
+    if scopes:
+        actual = {sat.node_id for system in world.autonomous_systems
+                  for shell in system.shells for orbit in shell.orbits for sat in orbit.satellites}
+        if set(scopes) != actual:
+            raise ValueError("satellite_scopes must cover exactly the PhysicalWorld satellites")

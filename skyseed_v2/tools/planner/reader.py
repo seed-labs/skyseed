@@ -70,8 +70,7 @@ def _read_plan_history_entry(data):
         "schema", "plan", "transition_fingerprints", "frames", "frontiers"
     }:
         raise ValueError("invalid published planning evidence envelope")
-    if data["schema"] not in {"skyseed-v2-published-planning-evidence-v2",
-                               "skyseed-v2-published-planning-evidence-v3"}:
+    if data["schema"] not in {"skyseed-v2-published-planning-evidence-v4"}:
         raise ValueError("unsupported PublishedPlanningEvidence schema")
     plan = plan_from_data(data["plan"])
     fingerprints = tuple(data["transition_fingerprints"])
@@ -84,7 +83,7 @@ def _read_plan_history_entry(data):
         value.timestamp.isoformat() for value in plan.transitions
     ):
         raise ValueError("frame timestamps must match Plan transitions")
-    if data["schema"].endswith("-v3") and any("ground_station_preparations" not in frame for frame in frames):
+    if data["schema"].endswith("-v4") and any("ground_station_preparations" not in frame for frame in frames):
         raise ValueError("v3 evidence requires GS preparation records")
     frontiers = _frontiers_from_data(data["frontiers"])
     if frontiers.publication != plan.end_timestamp:
@@ -392,7 +391,7 @@ def _validated_sequence(
 
 _PLANNING_HEADER = {
     "record_type": "published_planning_history_header",
-    "format_version": 1,
+    "format_version": 2,
     "codec": "skyseed-v2-planning-evidence",
 }
 _PHYSICAL_HEADER = {
@@ -408,9 +407,9 @@ _COMPILER_HEADER = {
 }
 _COMPILER_HEADER_V2 = {
     "record_type": "compiled_realization_history_header",
-    "format_version": 2,
+    "format_version": 3,
     "semantic_payload_owner": "sealed Runner artifact",
-    "projection": "compact-exact-compiler-inspection-v1",
+    "projection": "compact-exact-compiler-inspection-v2",
 }
 _COMPILER_FIELDS = {
     "record_type",

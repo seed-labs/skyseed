@@ -323,6 +323,7 @@ classDiagram
     class GroundStationRouteDemandTarget {
         <<immutable public value>>
         +ground_station_id
+        +network_scope
     }
     class HighestElevationZoneServicePlanningModel {
         <<reference Model implementation>>
@@ -623,6 +624,8 @@ classDiagram
         +route_demand
         +timestamp
         +zone_id
+        +network_scope
+        +service_key
     }
     class FrameBatchPlanningWindowPolicy {
         <<reference Model implementation>>
@@ -637,6 +640,8 @@ classDiagram
     class ZoneRouteDemandTarget {
         <<immutable public value>>
         +zone_id
+        +network_scope
+        +service_key
     }
 ```
 
@@ -651,6 +656,8 @@ classDiagram
         +is_served
         +satellite_id
         +zone_id
+        +network_scope
+        +service_key
     }
     class ZoneServicePlanningModel {
         <<replaceable Protocol role>>
@@ -666,6 +673,8 @@ classDiagram
         +current_satellite_id
         +previous_satellite_id
         +zone_id
+        +network_scope
+        +service_key
     }
 ```
 
@@ -680,7 +689,7 @@ classDiagram
 | `EffectiveConnectionParameters` | `skyseed_v2.simulator.planning.EffectiveConnectionParameters` | `bandwidth_bps`, `delay_us`, `packet_loss_ppm` |
 | `GatewayHopCountRoutePlanningModel` | `skyseed_v2.simulator.planning.GatewayHopCountRoutePlanningModel` | `create_route_demands()`, `plan_route_outcomes()`, `shutdown()` |
 | `GroundStationAccessPlanningModel` | `skyseed_v2.simulator.planning.GroundStationAccessPlanningModel` | `acquisition_duration`, `minimum_service_duration`, `select_ground_station_accesses()` |
-| `GroundStationRouteDemandTarget` | `skyseed_v2.simulator.planning.GroundStationRouteDemandTarget` | `ground_station_id` |
+| `GroundStationRouteDemandTarget` | `skyseed_v2.simulator.planning.GroundStationRouteDemandTarget` | `ground_station_id`, `network_scope` |
 | `HighestElevationZoneServicePlanningModel` | `skyseed_v2.simulator.planning.HighestElevationZoneServicePlanningModel` | `assign_zone_service()` |
 | `InterSatelliteConnectionPlanningModel` | `skyseed_v2.simulator.planning.InterSatelliteConnectionPlanningModel` | `acquisition_duration`, `create_inter_satellite_candidate_pairs()`, `minimum_service_duration`, `select_inter_satellite_links()` |
 | `InterSatelliteLifecycleEvidence` | `skyseed_v2.simulator.planning.InterSatelliteLifecycleEvidence` | `acquisition_duration`, `candidate`, `operational`, `remaining_acquisition`, `selected_since` |
@@ -715,14 +724,14 @@ classDiagram
 | `RouteUnreachableReason` | `skyseed_v2.simulator.planning.RouteUnreachableReason` | `NO_OPERATIONAL_PATH`, `ZONE_UNSERVED` |
 | `SemanticEventKind` | `skyseed_v2.simulator.planning.SemanticEventKind` | `CONNECTION_ESTABLISH`, `CONNECTION_WITHDRAW`, `PARAMETER_READY`, `PARAMETER_UPDATE`, `ROUTE_CHANGE`, `ROUTE_REACHABLE`, `ROUTE_UNREACHABLE`, `ROUTE_WITHDRAW`, `ZONE_SERVICE_ASSIGN`, `ZONE_SERVICE_CHANGE`, `ZONE_SERVICE_UNASSIGN` |
 | `SemanticEventPrecedence` | `skyseed_v2.simulator.planning.SemanticEventPrecedence` | `predecessor`, `successor` |
-| `SemanticEventReference` | `skyseed_v2.simulator.planning.SemanticEventReference` | `connection_id`, `kind`, `route_demand`, `timestamp`, `zone_id` |
+| `SemanticEventReference` | `skyseed_v2.simulator.planning.SemanticEventReference` | `connection_id`, `kind`, `route_demand`, `timestamp`, `zone_id`, `network_scope`, `service_key` |
 | `FrameBatchPlanningWindowPolicy` | `skyseed_v2.simulator.planning.FrameBatchPlanningWindowPolicy` | `frames_per_batch`, `validate_observation_interval()` |
 | `UnreachableRouteOutcome` | `skyseed_v2.simulator.planning.UnreachableRouteOutcome` | `demand`, `reason` |
-| `ZoneRouteDemandTarget` | `skyseed_v2.simulator.planning.ZoneRouteDemandTarget` | `zone_id` |
-| `ZoneServiceAssignment` | `skyseed_v2.simulator.planning.ZoneServiceAssignment` | `is_served`, `satellite_id`, `zone_id` |
+| `ZoneRouteDemandTarget` | `skyseed_v2.simulator.planning.ZoneRouteDemandTarget` | `zone_id`, `network_scope`, `service_key` |
+| `ZoneServiceAssignment` | `skyseed_v2.simulator.planning.ZoneServiceAssignment` | `is_served`, `satellite_id`, `zone_id`, `network_scope`, `service_key` |
 | `ZoneServicePlanningModel` | `skyseed_v2.simulator.planning.ZoneServicePlanningModel` | `assign_zone_service()` |
 | `ZoneServicePlanningResult` | `skyseed_v2.simulator.planning.ZoneServicePlanningResult` | `assignments`, `transitions` |
-| `ZoneServiceTransition` | `skyseed_v2.simulator.planning.ZoneServiceTransition` | `current_satellite_id`, `previous_satellite_id`, `zone_id` |
+| `ZoneServiceTransition` | `skyseed_v2.simulator.planning.ZoneServiceTransition` | `current_satellite_id`, `previous_satellite_id`, `zone_id`, `network_scope`, `service_key` |
 
 | `GroundStationLifecycleEvidence` | `skyseed_v2.simulator.planning.GroundStationLifecycleEvidence` | `acquisition_duration`, `candidate`, `operational`, `remaining_acquisition`, `selected_since` |
 
@@ -782,3 +791,27 @@ evidence retains exact identities/reasons; incidental iteration order is not a
 selection authority. GS allocation consumes existing candidate values directly.
 Route demand/request/outcome reuse invalidates on assignment, demand and graph
 dependencies; unchanged immutable outcomes emit no artificial transitions.
+
+## Configurable network scope
+
+Zone service identity is `(network_scope, zone_id)`. The empty scope retains
+unscoped behavior. The five-Shell example explicitly supplies satellite scope
+membership to the GS, Zone and Route Models: every shared GS reserves two
+preparing-or-operational slots per Shell (ten total), every geographic Zone has
+one explicit assignment per Shell, and the geographic three-GS association is
+applied separately in each scope. The scoped Route Model excludes other-scope
+satellites and GS transit. No cross-Shell communication Model is implemented.
+One Compiler/Runner owns shared interfaces, forwarding and cleanup. Distinct
+scoped Zone IPv4 destinations prevent shared-GS forwarding collisions. Physical
+feasibility, satellite capacities and preparation/handover rules still apply;
+association does not promise an operational path. Isolation is configured in
+Models, not imposed as a permanent PhysicalWorld rule.
+
+The three reference Models accept `satellite_scopes: Mapping[NodeId, str]`.
+GS selection also requires matching `ground_station_scope_limits`; their sum
+must fit each physical GS capacity. These are copied configuration values, not
+new owners. `service_key` on Zone values and event references returns the scope
+and geographic identity; Route targets carry `network_scope` in both directions.
+Semantic Plan/state/transition fingerprints use v2, Plan and transition evidence
+v3, and published planning evidence v4. Older codecs are rejected rather than
+being interpreted with scoped semantics.

@@ -245,7 +245,7 @@ def test_projection_serializes_complete_operational_state_only_once(
     _, evidence, _, _, _ = complete_evidence
     data = collect_planner_data(evidence)
 
-    assert data["format_version"] == 3
+    assert data["format_version"] == 4
     for frame in data["frames"]:
         assert "operational" not in frame
         assert "routing" not in frame
@@ -258,10 +258,10 @@ def test_projection_serializes_complete_operational_state_only_once(
             "unreachable_route_count",
         }
         assert frame["transition"]["schema"] == (
-            "skyseed-v2-plan-transition-evidence-v2"
+            "skyseed-v2-plan-transition-evidence-v3"
         )
     encoded = json.dumps(data, sort_keys=True, separators=(",", ":"))
-    assert encoded.count("skyseed-v2-planned-operational-state-v1") == 1
+    assert encoded.count("skyseed-v2-planned-operational-state-v2") == 1
     assert len(data["_tool_frame_chunks"]) == len(data["frames"])
     assert all("route_outcomes" not in value for value in data["_tool_frame_chunks"])
     final_state_bytes = len(

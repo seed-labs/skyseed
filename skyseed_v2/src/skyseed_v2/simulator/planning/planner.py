@@ -397,7 +397,7 @@ class PlanningFrameEvidence:
         selected_zones = _ordered_unique_evidence(
             self.selected_zone_service_candidates,
             ZoneServiceCandidate,
-            lambda value: value.zone_id,
+            lambda value: (value.zone_id, _node_key(value.satellite_id)),
             "selected_zone_service_candidates",
         )
         if len(selected_zones) > summaries[2].feasible_count:
@@ -2152,10 +2152,11 @@ def _validate_zone_result(
     assignments = _unique_by(
         result.assignments,
         ZoneServiceAssignment,
-        lambda value: value.zone_id,
+        lambda value: value.service_key,
         "Zone model assignments",
     )
-    if set(assignments) != zone_ids:
+    service_keys = {(scope, zone) for scope in ({v.network_scope for v in result.assignments} or {""}) for zone in zone_ids}
+    if set(assignments) != service_keys:
         raise ValueError(
             "Zone model must return exactly one explicit assignment per Zone"
         )
@@ -2172,21 +2173,22 @@ def _validate_zone_result(
                 raise ValueError(
                     "Zone model selected a Satellite absent from physical candidates"
                 )
-    previous = {value.zone_id: value.satellite_id for value in previous_assignments}
+    previous = {value.service_key: value.satellite_id for value in previous_assignments}
     expected_changes = {
         zone_id: ZoneServiceTransition(
-            zone_id,
+            zone_id[1],
             previous.get(zone_id),
             assignments[zone_id].satellite_id,
+            zone_id[0],
         )
-        for zone_id in zone_ids
+        for zone_id in service_keys
         if zone_id not in previous
         or previous[zone_id] != assignments[zone_id].satellite_id
     }
     changes = _unique_by(
         result.transitions,
         ZoneServiceTransition,
-        lambda value: value.zone_id,
+        lambda value: value.service_key,
         "Zone model compact changes",
     )
     if changes != expected_changes:
@@ -2253,7 +2255,7 @@ def _validate_route_outcomes(
         by_demand = {value.demand: value for value in values}
         if set(by_demand) != set(demands) or len(values) != len(demands):
             raise ValueError("Route model must return exactly one outcome per demand")
-    assignments = {value.zone_id: value.satellite_id for value in zone_assignments}
+    assignments = {value.service_key: value.satellite_id for value in zone_assignments}
     edges = {
         pair for value in connections
         for pair in ((value.connection_id.endpoint_a, value.connection_id.endpoint_b),
@@ -2272,9 +2274,9 @@ def _validate_route_outcomes(
         else:
             if not isinstance(demand.target, ZoneRouteDemandTarget):
                 raise TypeError("Route demand target is invalid")
-            if demand.target.zone_id not in assignments:
+            if demand.target.service_key not in assignments:
                 raise ValueError("Route demand references a foreign Zone")
-            terminal = assignments[demand.target.zone_id]
+            terminal = assignments[demand.target.service_key]
             unserved = terminal is None
         if isinstance(outcome, ReachableRouteOutcome):
             if unserved:

@@ -57,7 +57,7 @@ def plan_transition_to_data(value: PlanTransition) -> dict[str, object]:
     if not isinstance(value, PlanTransition):
         raise TypeError("value must be a PlanTransition")
     result = _plan_transition_material(value, compact_routes=True)
-    result["schema"] = "skyseed-v2-plan-transition-evidence-v2"
+    result["schema"] = "skyseed-v2-plan-transition-evidence-v3"
     return result
 
 
@@ -79,7 +79,7 @@ def plan_transition_from_data(value: Mapping[str, object]) -> PlanTransition:
     )
     _schema(
         record,
-        "skyseed-v2-plan-transition-evidence-v2",
+        "skyseed-v2-plan-transition-evidence-v3",
         "PlanTransition",
     )
     return PlanTransition(
@@ -150,7 +150,7 @@ def planned_operational_state_from_data(
     )
     _schema(
         record,
-        "skyseed-v2-planned-operational-state-v1",
+        "skyseed-v2-planned-operational-state-v2",
         "PlannedOperationalState",
     )
     return PlannedOperationalState(
@@ -190,7 +190,7 @@ def plan_to_data(value: Plan) -> dict[str, object]:
         reference: index for index, reference in enumerate(event_references)
     }
     return {
-        "schema": "skyseed-v2-plan-evidence-v2",
+        "schema": "skyseed-v2-plan-evidence-v3",
         "plan_id": value.plan_id,
         "previous_plan_id": value.previous_plan_id,
         "physical_world_fingerprint": value.physical_world_fingerprint,
@@ -231,7 +231,7 @@ def plan_from_data(value: Mapping[str, object]) -> Plan:
         },
         "Plan",
     )
-    _schema(record, "skyseed-v2-plan-evidence-v2", "Plan")
+    _schema(record, "skyseed-v2-plan-evidence-v3", "Plan")
     transitions = tuple(
         plan_transition_from_data(item)
         for item in _records(record["transitions"], "transitions")
@@ -284,7 +284,7 @@ def published_planning_evidence_to_data(
     if not isinstance(value, PublishedPlanningEvidence):
         raise TypeError("value must be PublishedPlanningEvidence")
     return {
-        "schema": "skyseed-v2-published-planning-evidence-v3",
+        "schema": "skyseed-v2-published-planning-evidence-v4",
         "plan": plan_to_data(value.plan),
         "transition_fingerprints": list(value.transition_fingerprints),
         "frames": [
@@ -310,9 +310,9 @@ def published_planning_evidence_from_data(
         },
         "PublishedPlanningEvidence",
     )
-    if record["schema"] not in {"skyseed-v2-published-planning-evidence-v2", "skyseed-v2-published-planning-evidence-v3"}:
+    if record["schema"] not in {"skyseed-v2-published-planning-evidence-v2", "skyseed-v2-published-planning-evidence-v4"}:
         raise ValueError("unsupported PublishedPlanningEvidence schema")
-    if record["schema"] == "skyseed-v2-published-planning-evidence-v3" and any(
+    if record["schema"] == "skyseed-v2-published-planning-evidence-v4" and any(
         "ground_station_preparations" not in frame for frame in _records(record["frames"], "frames")
     ):
         raise ValueError("v3 evidence requires GS preparation records")
@@ -395,11 +395,12 @@ def _zone_assignment_from_data(
 ) -> ZoneServiceAssignment:
     record = _record(
         value,
-        {"zone_id", "satellite_id"},
+        {"zone_id", "satellite_id", "network_scope"},
         "ZoneServiceAssignment",
     )
     return ZoneServiceAssignment(
         zone_id=_string(record["zone_id"], "zone_id"),
+        network_scope=record["network_scope"],
         satellite_id=_optional_node_from_data(
             record["satellite_id"], "satellite_id"
         ),
@@ -411,11 +412,12 @@ def _zone_transition_from_data(
 ) -> ZoneServiceTransition:
     record = _record(
         value,
-        {"zone_id", "previous_satellite_id", "current_satellite_id"},
+        {"zone_id", "previous_satellite_id", "current_satellite_id", "network_scope"},
         "ZoneServiceTransition",
     )
     return ZoneServiceTransition(
         zone_id=_string(record["zone_id"], "zone_id"),
+        network_scope=record["network_scope"],
         previous_satellite_id=_optional_node_from_data(
             record["previous_satellite_id"], "previous_satellite_id"
         ),
@@ -454,18 +456,18 @@ def _route_demand_from_data(value: Mapping[str, object]) -> RouteDemand:
     )
     kind = _string(target.get("kind"), "target.kind")
     if kind == "ground-station":
-        _exact_keys(target, {"kind", "ground_station_id"}, "RouteDemandTarget")
+        _exact_keys(target, {"kind", "ground_station_id", "network_scope"}, "RouteDemandTarget")
         route_target = GroundStationRouteDemandTarget(
             _node_from_data(
                 _mapping(
                     target["ground_station_id"], "target.ground_station_id"
                 )
-            )
+            ), target["network_scope"]
         )
     elif kind == "zone":
-        _exact_keys(target, {"kind", "zone_id"}, "RouteDemandTarget")
+        _exact_keys(target, {"kind", "zone_id", "network_scope"}, "RouteDemandTarget")
         route_target = ZoneRouteDemandTarget(
-            _string(target["zone_id"], "target.zone_id")
+            _string(target["zone_id"], "target.zone_id"), target["network_scope"]
         )
     else:
         raise ValueError("target.kind is unsupported")

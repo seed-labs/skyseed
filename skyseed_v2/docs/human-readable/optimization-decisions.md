@@ -63,7 +63,7 @@ frontier、Runner phase 或 atomic forwarding generation 已保证的先后关�
 每次 Route transition 只编码一份 RouteDemand，并使用低压缩级别的 gzip
 JSONL。Compiler inspection 保留需要的摘要与边界工作量，避免复制完整运行
 载荷。代价是读者必须遵循各自 schema；紧凑 Compiler history 不能当作完整
-Runner 输入。旧离线测量与当前 artifact-v3 的记录分开保留。
+Runner 输入。旧离线测量与优化里程碑的 artifact-v3 记录分开保留；当前 scoped-service 合同使用 artifact-v4，不重新解释旧记录。
 [记录 P2](../provenance/optimization-decision-history.md#p2)
 
 ## 最终优化轮：减少重复工作，保留完整事实
@@ -230,3 +230,33 @@ Traffic 共享接口身份和代际区间，保留旧 JSONL 的流式读取；�
 把并发参数用于全部 service 停止，因此不能只设置该参数。Traffic 控制 RPC
 超时仅重试一次并保留证据，身份异常或再次超时仍失败；清理由 worker 完成。
 机制细节、测量局限见[本轮记录](../provenance/optimization-decision-history.md#focused-correction)。
+
+
+2026-09-13 的部署策略以整个 Shell 为进度和失败定位单位：共享 GS 先启动，
+然后依次提交完整 Shell，启动并发固定为 8；退出逆序，每次只提交一个组，
+复用 Docker CLI 自带的 50 操作队列。真实依赖和明确退出语义仍优先。
+部署失败保留已确认且配置匹配的组；显式重试还核对跨组 namespace 的实际
+owner 容器 ID。owner 缺失、失败或已替换时，先逆依赖移除受影响的传递使用者，
+再按组重建；无关健康容器保留。这是重试一致性修正，不单列为性能成果。
+此前按容器数量分段的策略已被替代，不再拟合宿主最佳参数。
+
+准备路径把引用计数的目的地址变化直接传到节点路由，并逐边界解码、构造和
+释放临时数据；遥测复用静态接口身份和未变化节点的路由描述。首批和后继
+使用同一路径，只有整个交付准备及预写成功才可 READY。此五 Shell 例子的
+提前比例为 1.0，容量倍率仍为 2，保持一个 Runner 和固定时钟。
+实测状态与证据边界见 [采用记录](../provenance/optimization-decision-history.md#whole-shell-deployment-and-incremental-preparation-2026-09-13)。
+
+**直接恢复 v4 边界。** 2026-09-14 的离线诊断确认通用递归解包占主要处理
+时间。私有 reader 直接从原 v4 字节游标构造 typed operations，省去每条操作的
+通用 list/dict 中间树；元数据仍按规范读取。短字符串和带 scope 的目标各最多
+复用 16384 项，节点、连接、时间身份沿用单个有限 artifact 的缓存，关闭时全部
+清空。每次只恢复当前边界，所有 intent 均立即构造，未把转换推迟到下游；整文件
+及逐记录 hash、格式检查、顺序和完整 READY 保持。缓存需要有限额外内存，不能
+把离线进程 RSS 当成全容器部署的总用量或新的 live READY 余量。
+
+**复用 namespace 的 IPv4 查询通道。** 首次碰撞审计使用初始化已经持有的
+Netlink socket 读取本地地址/前缀及所有路由表的非 default 路由，省去每节点
+两个 `nsenter/ip` 进程。仍先核对 namespace incarnation，区分点对点接口的
+local 与 peer，收齐 multipart dump 并传播内核错误。原有审计、并发和失败清理
+责任保持。仅完成一次当前 namespace 的只读语义核对，未测新全规模审计时长。
+两项采用机制的匹配测量及限制见 [离线收尾记录](../provenance/optimization-decision-history.md#offline-preparation-closeout)。

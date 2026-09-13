@@ -65,7 +65,7 @@ def test_projection_preserves_lineage_and_compact_compiler_statistics(
         assert record["summary"]["planned_routes_unreachable"] == 1
     assert data["realizations"][0]["summary"]["constraints"] > 0
     assert data["realizations"][0]["operation_counts"]
-    assert data["format_version"] == 3
+    assert data["format_version"] == 5
     assert "source_plan" not in data["realizations"][0]
     assert "compiled_intents" not in data["realizations"][0]
     assert "intended_state" not in data["realizations"][0]

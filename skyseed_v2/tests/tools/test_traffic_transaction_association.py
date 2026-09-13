@@ -79,7 +79,7 @@ def test_forwarded_reply_without_delivery_evidence_is_not_a_confirmed_loss():
     projected = _project_transaction(row, boundary={'timestamp': ORIGIN.isoformat()},
         zone_assignments={}, route_outcomes=[route],
         nodes_by_address={'100.64.0.133': {'node_id': '65040/ground-station/gs'}},
-        zone_prefixes={'z': '198.18.0.17/32'}, activation_times=())
+        zone_prefixes={('', 'z'): '198.18.0.17/32'}, activation_times=())
     assert projected['observed_reply'] is True
     assert projected['reply_delivery'] == 'unconfirmed'
     assert projected['classification'] == 'unclassified'

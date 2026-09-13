@@ -112,7 +112,7 @@ def project_bpf_compiler_data(
         "planned_routes_unreachable_samples": total_unreachable,
     }
     return {
-        "format_version": 3,
+        "format_version": 5,
         "tool": "bpf-compiler-inspection",
         "authority": deepcopy(source["authority"]),
         "inventory": inventory,
@@ -238,7 +238,7 @@ def project_compact_bpf_compiler_data(
         ),
     }
     return {
-        "format_version": 4,
+        "format_version": 5,
         "tool": "bpf-compiler-inspection",
         "authority": {
             "status": "non-authoritative-view",

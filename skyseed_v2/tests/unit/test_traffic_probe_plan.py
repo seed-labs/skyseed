@@ -162,7 +162,7 @@ def test_absent_route_outcome_is_not_inferred_unreachable() -> None:
         nominal_time=complete_time(),
         route_outcomes={},
         forwarding={},
-        zone_edges={"zone-a": ("198.18.0.1/32", satellite)},
+        zone_edges={("", "zone-a"): ("198.18.0.1/32", satellite)},
         resources=set(),
         route_outcomes_changed=[],
         changed_access_ground_stations=[],
@@ -172,7 +172,7 @@ def test_absent_route_outcome_is_not_inferred_unreachable() -> None:
     seed = _PairSeed(
         _DIRECTION_GROUND_TO_ZONE,
         ground,
-        "zone-a",
+        ("", "zone-a"),
         defaultdict(set),
     )
     with pytest.raises(ValueError, match="no explicit planned Route outcome"):
@@ -199,7 +199,7 @@ def test_probe_selection_discards_candidate_without_full_route_horizon(
             _PairSeed(
                 _DIRECTION_GROUND_TO_ZONE,
                 invalid_ground,
-                "zone-a",
+                ("", "zone-a"),
                 {"persistent-control-candidate": {nominal_boundaries[0]}},
             ),
             *original_candidates(plan_values, values, nominal_boundaries),
@@ -227,7 +227,7 @@ def test_explicit_unreachable_reason_is_preserved() -> None:
         nominal_time=complete_time(),
         route_outcomes={demand: outcome},
         forwarding={},
-        zone_edges={"zone-a": ("198.18.0.1/32", satellite)},
+        zone_edges={("", "zone-a"): ("198.18.0.1/32", satellite)},
         resources=set(),
         route_outcomes_changed=[demand],
         changed_access_ground_stations=[],
@@ -237,7 +237,7 @@ def test_explicit_unreachable_reason_is_preserved() -> None:
     seed = _PairSeed(
         _DIRECTION_GROUND_TO_ZONE,
         ground,
-        "zone-a",
+        ("", "zone-a"),
         defaultdict(set),
     )
     reachable, path, service, reason = _resolve_path(seed, projection)
@@ -348,7 +348,7 @@ def test_probe_plan_resolves_paths_only_after_bounded_coverage_selection(
                     "ground-station",
                     f"bounded-background-{index:03d}",
                 ),
-                template.zone_id,
+                template.service_key,
                 {"persistent-control-candidate": {START}},
             )
             selected.append(seed)
@@ -438,7 +438,7 @@ def test_probe_plan_classifies_zone_source_migration_and_path_change() -> None:
     seed = _PairSeed(
         _DIRECTION_ZONE_TO_GROUND,
         ground,
-        "zone-a",
+        ("", "zone-a"),
         {"zone-service-handover": {START + timedelta(seconds=10)}},
     )
     intervals = (
@@ -498,7 +498,7 @@ def test_probe_reachability_requires_request_and_echo_return_paths() -> None:
                 "198.18.0.1/32",
             )
         },
-        zone_edges={"zone-a": ("198.18.0.1/32", satellite)},
+        zone_edges={("", "zone-a"): ("198.18.0.1/32", satellite)},
         resources={access},
         route_outcomes_changed=[outward_demand],
         changed_access_ground_stations=[],
@@ -510,7 +510,7 @@ def test_probe_reachability_requires_request_and_echo_return_paths() -> None:
         _PairSeed(
             _DIRECTION_GROUND_TO_ZONE,
             ground,
-            "zone-a",
+            ("", "zone-a"),
             defaultdict(set),
         ),
         projection,
@@ -523,7 +523,7 @@ def test_probe_reachability_requires_request_and_echo_return_paths() -> None:
             _PairSeed(
                 _DIRECTION_ZONE_TO_GROUND,
                 ground,
-                "zone-a",
+                ("", "zone-a"),
                 defaultdict(set),
             ),
             projection,
@@ -609,7 +609,7 @@ def test_unserved_zone_preserves_explicit_route_outcome_reason() -> None:
         _PairSeed(
             _DIRECTION_GROUND_TO_ZONE,
             ground,
-            "zone-a",
+            ("", "zone-a"),
             defaultdict(set),
         ),
         projection,
@@ -1233,7 +1233,7 @@ def test_global_selection_covers_five_shells_without_multiplying_workload():
     seeds = []
     for i in range(5):
         for direction in (_DIRECTION_GROUND_TO_ZONE, _DIRECTION_ZONE_TO_GROUND):
-            seed = _PairSeed(direction, NodeId(1, 'ground-station', f'g{i}'), f'z{i}', {})
+            seed = _PairSeed(direction, NodeId(1, 'ground-station', f'g{i}'), ("", f'z{i}'), {})
             for case, offset in [('stable', 10), ('transition', 200)]:
                 seed.reason_times[f'shell-coverage:S{i+1}:{case}'] = {START+timedelta(seconds=offset+i*20)}
             seeds.append(seed)
@@ -1243,7 +1243,7 @@ def test_global_selection_covers_five_shells_without_multiplying_workload():
     assert {r[0].key for r in selected} == {s.key for s in seeds}
     for i in range(5):
         for direction in (_DIRECTION_GROUND_TO_ZONE, _DIRECTION_ZONE_TO_GROUND):
-            assert len([r for r in selected if r[0].zone_id == f'z{i}' and r[0].direction == direction]) == 2
+            assert len([r for r in selected if r[0].service_key[1] == f'z{i}' and r[0].direction == direction]) == 2
 
 
 @pytest.mark.parametrize('incremental', [False, True])
@@ -1299,7 +1299,7 @@ def test_long_control_outside_reservoir_gets_only_reachable_window_credit():
     from skyseed_v2.experiment.traffic.probe_plan import _complete_control_coverage
     ground = NodeId(65001, 'ground-station', 'g')
     satellites = [NodeId(65001, 'satellite', f's{i}') for i in range(2)]
-    seed = _PairSeed(_DIRECTION_ZONE_TO_GROUND, ground, 'zone', {
+    seed = _PairSeed(_DIRECTION_ZONE_TO_GROUND, ground, ("", 'zone'), {
         'long-changing-candidate': {START}, 'persistent-control-candidate': {START}})
     times = tuple(START + timedelta(seconds=i*5) for i in range(4))
     def scan(visit):
@@ -1312,7 +1312,7 @@ def test_long_control_outside_reservoir_gets_only_reachable_window_credit():
             # The return path is unsupported at 10 s; it earns neither goal.
             if index == 2:
                 outcomes.pop(reverse)
-            visit(SimpleNamespace(nominal_time=at, zone_edges={'zone': ('edge', satellite)},
+            visit(SimpleNamespace(nominal_time=at, zone_edges={('', 'zone'): ('edge', satellite)},
                 route_outcomes=outcomes, changed_access_ground_stations=[ground] if index == 0 else []))
         return times
     _complete_control_coverage(scan, (seed,), times, dict(zip(satellites, ('S1', 'S2'))))

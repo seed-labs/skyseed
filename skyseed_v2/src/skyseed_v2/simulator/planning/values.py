@@ -140,8 +140,10 @@ class ZoneServiceAssignment:
 
     zone_id: str
     satellite_id: NodeId | None
+    network_scope: str = ""
 
     def __post_init__(self) -> None:
+        _validate_network_scope(self.network_scope)
         object.__setattr__(
             self, "zone_id", validate_identifier(self.zone_id, "zone_id")
         )
@@ -154,6 +156,10 @@ class ZoneServiceAssignment:
     def is_served(self) -> bool:
         return self.satellite_id is not None
 
+    @property
+    def service_key(self) -> tuple[str, str]:
+        return self.network_scope, self.zone_id
+
 
 @dataclass(frozen=True, slots=True)
 class GroundStationRouteDemandTarget:
@@ -165,8 +171,10 @@ class GroundStationRouteDemandTarget:
     """
 
     ground_station_id: NodeId
+    network_scope: str = ""
 
     def __post_init__(self) -> None:
+        _validate_network_scope(self.network_scope)
         _require_node_kind(
             self.ground_station_id,
             "ground-station",
@@ -184,11 +192,17 @@ class ZoneRouteDemandTarget:
     """
 
     zone_id: str
+    network_scope: str = ""
 
     def __post_init__(self) -> None:
+        _validate_network_scope(self.network_scope)
         object.__setattr__(
             self, "zone_id", validate_identifier(self.zone_id, "zone_id")
         )
+    @property
+    def service_key(self) -> tuple[str, str]:
+        return self.network_scope, self.zone_id
+
 
 
 RouteDemandTarget = GroundStationRouteDemandTarget | ZoneRouteDemandTarget
@@ -319,7 +333,7 @@ class PlannedOperationalState:
         assignments = _ordered_unique(
             self.zone_service_assignments,
             ZoneServiceAssignment,
-            lambda value: value.zone_id,
+            lambda value: value.service_key,
             "zone_service_assignments",
         )
         outcomes = _ordered_unique(
@@ -346,8 +360,10 @@ class ZoneServiceTransition:
     zone_id: str
     previous_satellite_id: NodeId | None
     current_satellite_id: NodeId | None
+    network_scope: str = ""
 
     def __post_init__(self) -> None:
+        _validate_network_scope(self.network_scope)
         object.__setattr__(
             self, "zone_id", validate_identifier(self.zone_id, "zone_id")
         )
@@ -363,6 +379,10 @@ class ZoneServiceTransition:
                 raise TypeError(
                     f"{field_name} must identify a Satellite or be None"
                 )
+
+    @property
+    def service_key(self) -> tuple[str, str]:
+        return self.network_scope, self.zone_id
 
 
 @dataclass(frozen=True, slots=True)
@@ -446,7 +466,7 @@ class PlanTransition:
         zones = _ordered_unique(
             self.zone_service_transitions,
             ZoneServiceTransition,
-            lambda value: value.zone_id,
+            lambda value: value.service_key,
             "zone_service_transitions",
         )
         routes = _ordered_unique(
@@ -532,8 +552,10 @@ class SemanticEventReference:
     connection_id: OperationalConnectionId | None = None
     zone_id: str | None = None
     route_demand: RouteDemand | None = None
+    network_scope: str = ""
 
     def __post_init__(self) -> None:
+        _validate_network_scope(self.network_scope)
         object.__setattr__(
             self,
             "timestamp",
@@ -551,6 +573,8 @@ class SemanticEventReference:
             object.__setattr__(
                 self, "zone_id", validate_identifier(self.zone_id, "zone_id")
             )
+        if self.network_scope and self.zone_id is None:
+            raise ValueError("event network_scope belongs only to a Zone subject")
         if self.route_demand is not None and not isinstance(
             self.route_demand, RouteDemand
         ):
@@ -585,6 +609,10 @@ class SemanticEventReference:
             raise ValueError("Zone event requires zone_id")
         if self.kind in route_kinds and self.route_demand is None:
             raise ValueError("Route event requires route_demand")
+
+    @property
+    def service_key(self) -> tuple[str, str]:
+        return self.network_scope, self.zone_id
 
 
 @dataclass(frozen=True, slots=True)
@@ -657,6 +685,7 @@ def semantic_event_references(
                         else SemanticEventKind.ZONE_SERVICE_CHANGE
                     ),
                     zone_id=change.zone_id,
+                    network_scope=change.network_scope,
                 )
             )
         if change.previous_satellite_id is not None:
@@ -665,6 +694,7 @@ def semantic_event_references(
                     timestamp,
                     SemanticEventKind.ZONE_SERVICE_UNASSIGN,
                     zone_id=change.zone_id,
+                    network_scope=change.network_scope,
                 )
             )
     for change in transition.route_outcome_transitions:
@@ -1057,7 +1087,7 @@ def apply_plan_transition(
         del connections[identifier]
 
     assignments = {
-        value.zone_id: value
+        value.service_key: value
         for value in (
             ()
             if previous_state is None
@@ -1065,7 +1095,7 @@ def apply_plan_transition(
         )
     }
     for change in transition.zone_service_transitions:
-        prior = assignments.get(change.zone_id)
+        prior = assignments.get(change.service_key)
         if prior is None:
             if change.previous_satellite_id is not None:
                 raise ValueError(
@@ -1078,8 +1108,8 @@ def apply_plan_transition(
                 )
             if prior.satellite_id == change.current_satellite_id:
                 raise ValueError("transition contains a no-op Zone change")
-        assignments[change.zone_id] = ZoneServiceAssignment(
-            change.zone_id, change.current_satellite_id
+        assignments[change.service_key] = ZoneServiceAssignment(
+            change.zone_id, change.current_satellite_id, change.network_scope
         )
 
     outcomes = {
@@ -1198,7 +1228,7 @@ def _plan_identifier(
 ) -> str:
     return _json_fingerprint(
         {
-            "schema": "skyseed-v2-plan-v1",
+            "schema": "skyseed-v2-plan-v2",
             "previous_plan_id": previous_plan_id,
             "physical_world_fingerprint": physical_world_fingerprint,
             "input_state_fingerprint": input_state_fingerprint,
@@ -1228,7 +1258,7 @@ def _planned_operational_state_material(
     state: PlannedOperationalState,
 ) -> dict[str, object]:
     return {
-        "schema": "skyseed-v2-planned-operational-state-v1",
+        "schema": "skyseed-v2-planned-operational-state-v2",
         "timestamp": state.timestamp.isoformat(),
         "operational_connections": [
             _connection_material(value) for value in state.operational_connections
@@ -1236,6 +1266,7 @@ def _planned_operational_state_material(
         "zone_service_assignments": [
             {
                 "zone_id": value.zone_id,
+                "network_scope": value.network_scope,
                 "satellite_id": _optional_node_material(value.satellite_id),
             }
             for value in state.zone_service_assignments
@@ -1248,7 +1279,7 @@ def _planned_operational_state_material(
 
 def _plan_transition_material(transition: PlanTransition, *, compact_routes=False) -> dict[str, object]:
     return {
-        "schema": "skyseed-v2-plan-transition-v1",
+        "schema": "skyseed-v2-plan-transition-v2",
         "timestamp": transition.timestamp.isoformat(),
         "established_connections": [
             _connection_material(value)
@@ -1265,6 +1296,7 @@ def _plan_transition_material(transition: PlanTransition, *, compact_routes=Fals
         "zone_service_transitions": [
             {
                 "zone_id": value.zone_id,
+                "network_scope": value.network_scope,
                 "previous_satellite_id": _optional_node_material(
                     value.previous_satellite_id
                 ),
@@ -1297,6 +1329,7 @@ def _semantic_event_material(
             else _connection_id_material(event.connection_id)
         ),
         "zone_id": event.zone_id,
+        "network_scope": event.network_scope,
         "route_demand": (
             None
             if event.route_demand is None
@@ -1342,12 +1375,13 @@ def _route_demand_material(demand: RouteDemand) -> dict[str, object]:
         "target": (
             {
                 "kind": "ground-station",
+                "network_scope": target.network_scope,
                 "ground_station_id": _node_material(
                     target.ground_station_id
                 ),
             }
             if isinstance(target, GroundStationRouteDemandTarget)
-            else {"kind": "zone", "zone_id": target.zone_id}
+            else {"kind": "zone", "zone_id": target.zone_id, "network_scope": target.network_scope}
         ),
     }
 
@@ -1562,15 +1596,15 @@ def _validate_acyclic(
 def _route_demand_key(demand: RouteDemand) -> tuple:
     source = _node_key(demand.source)
     if isinstance(demand.target, GroundStationRouteDemandTarget):
-        return source, "G", _node_key(demand.target.ground_station_id)
-    return source, "Z", demand.target.zone_id
+        return source, demand.target.network_scope, "G", _node_key(demand.target.ground_station_id)
+    return source, demand.target.network_scope, "Z", demand.target.zone_id
 
 
 def _semantic_event_key(event: SemanticEventReference) -> tuple:
     if event.connection_id is not None:
         identity = ("C", _connection_key(event.connection_id))
     elif event.zone_id is not None:
-        identity = ("Z", event.zone_id)
+        identity = ("Z", event.service_key)
     else:
         identity = ("R", _route_demand_key(event.route_demand))
     return event.kind.value, identity
@@ -1630,3 +1664,10 @@ def _require_node_kind(
 
 def _node_key(node_id: NodeId) -> tuple[int, str, str]:
     return node_id.asn, node_id.entity_kind, node_id.entity_id
+
+
+def _validate_network_scope(value: str) -> None:
+    if not isinstance(value, str):
+        raise TypeError("network_scope must be a string")
+    if value:
+        validate_identifier(value, "network_scope")
