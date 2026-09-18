@@ -6,6 +6,7 @@
 | What does live execution need, and how large are the scenes? | [Linux host](user-guides/linux-host.md), [scale and resources](user-guides/scale-and-resources.md) |
 | How do I run an example? | [Getting started](user-guides/getting-started.md) |
 | How do I build entities, choose Zones or replace a Model? | [Inputs and scenes](user-guides/inputs-and-scenes.md), [Model authoring](user-guides/model-extension.md) |
+| Which methods and data can my code use? | [Public API reference](api/README.md) |
 | How do I generate, continue or control execution? | [Computation and controls](user-guides/computation-and-controls.md) |
 | Where are my results and visualizations? | [Outputs and Tools](user-guides/outputs-and-tools.md), [interactive demos](demos/index.html) |
 | What exactly is guaranteed at a boundary? | [Developer references](development/README.md) |
@@ -16,6 +17,7 @@
 Developer reference topics own precise current semantics. Architecture explains them, guides
 exercise them, and source READMEs locate their implementations. Historical paths,
 measurements and proposals describe their original conditions, not fresh validation.
+The API reference explains useful public calls and values, with source links for exact signatures.
 
 The [complete system diagram](architecture/system-architecture.svg) is a zoomable vector;
 [overview](architecture/overview.md) explains its ownership, control and data notation.

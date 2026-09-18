@@ -1,6 +1,10 @@
 """Rectangle membership, with the first supplied match authoritative.
 
 Inject zone_membership_model=FirstMatchMembershipModel() alongside a Zone layout.
+
+Read the supplied Zones, zone.contains(latitude_deg, longitude_deg), priority
+and geometry. Calling the World membership query here would recurse.
+Reference: docs/api/physical.md (Zone queries); this does not select service satellites.
 """
 
 

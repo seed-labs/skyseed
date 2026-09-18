@@ -41,10 +41,12 @@ class CircularOrbitPositionModel:
     GCRS Cartesian point to the formal ITRS/ECEF Position. No velocity or
     inertial-frame value crosses the public Position boundary.
 
-    Layer: built-in Simulator physical Model with private static-element reuse. Users explicitly create
-    it, one ``PhysicalWorld`` owns it, and ``PhysicalWorld.frame_at()`` invokes it. It is
-    not a default, ephemeris owner, velocity source, time cursor or fallback
-    and is public from ``skyseed_v2.simulator``.
+    Layer: built-in Simulator physical Model with private static-element reuse.
+    Default Simulator assembly selects it unless a Position Model is supplied;
+    users may also construct it explicitly. One ``PhysicalWorld`` owns it, and
+    ``PhysicalWorld.frame_at()`` invokes it. It is not an ephemeris owner,
+    velocity source, time cursor or fallback, and is public from
+    ``skyseed_v2.simulator``.
     """
 
     __slots__ = ("_prepared",)

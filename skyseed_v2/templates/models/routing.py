@@ -2,6 +2,10 @@
 
 Inject route_model=SimpleRouteModel() and supply explicit route_demands.
 No demand factory, cache, worker, inheritance or resource shutdown is required.
+
+Read supplied operational connections, assignments, demands and previous outcomes.
+Use assignment.service_key to preserve Zone scope; world.get_node/get_ground_station
+provide static entity data. Reference: docs/api/planning.md (service and routing).
 """
 from collections import deque
 from skyseed_v2.simulator import planner

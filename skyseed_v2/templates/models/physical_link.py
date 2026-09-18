@@ -2,6 +2,10 @@
 
 Supply candidate tuples and inject physical_link_model=StaticPhysicalLinkModel(...).
 Absent measures and future windows are intentional. Connections still acquire.
+
+Read physical_frame.get_position(node_id), positions and timestamp; request
+supplies pairs and inclusion flags. Public geometry helpers are optional.
+Reference: docs/api/physical.md and docs/api/planning.md (physical candidates).
 """
 from skyseed_v2.simulator import physical
 

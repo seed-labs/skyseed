@@ -7,3 +7,5 @@
 5. [Find results and browse Tools](outputs-and-tools.md).
 
 The [example index](../../examples/README.md) identifies each teaching purpose.
+The [API reference](../api/README.md) locates public queries, Model input fields,
+geometry helpers, construction and control methods.

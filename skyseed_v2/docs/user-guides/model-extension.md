@@ -23,6 +23,69 @@ Omitted roles receive fresh defaults; supplied objects are preserved. Configurin
 Model's constructor differs from replacing its algorithm: [Tiny](../../examples/Sky00_tiny_network/tiny_network.py)
 demonstrates the first, [S5](../../examples/Sky01_s5_custom_models/model.py) the second.
 
+## Data available to each Model
+
+The default Models already use public queries and fields to read their inputs. Custom
+Models can use the same facilities without subclassing a default or copying its private
+caches. This table maps each role to useful data; the
+[contract table](../development/model-interfaces.md) links its template and default implementation.
+
+| Role | Useful inputs and helpers | Reference |
+|---|---|---|
+| Position | World AS → shells → orbits → satellites; orbit elements, GS coordinates; `geometry.geodetic_to_ecef` | [Entities](../api/physical.md#physicalworld), [geometry](../api/physical.md#geometry-helpers) |
+| PhysicalLink | Supplied frame's `timestamp`, `positions`, `get_position`; request pairs/flags; distance, elevation and line-of-sight helpers | [Snapshots](../api/physical.md#position-snapshots), [candidates](../api/planning.md#physical-candidates) |
+| ISL | `world.get_satellite`, orbit traversal, endpoint capacities; candidate plane/distance data; `state.selected_since` | [Entities](../api/physical.md#physicalworld), [selection state](../api/planning.md#selection-state) |
+| GS | `world.get_ground_station`, `get_satellite`, access capacities; supplied candidates and preparing/operational selections | [Entities](../api/physical.md#physicalworld), [selection state](../api/planning.md#selection-state) |
+| Zone service | `world.get_zone_layout().zones`, candidate satellite IDs/elevation, previous service assignments | [Zones](../api/physical.md#zone-queries), [service values](../api/planning.md#service-and-routing) |
+| Parameters | Observation's connection ID, optional physical delay/candidate, previous Model memory; no World argument | [Parameters](../api/planning.md#effective-parameters) |
+| Routing | Operational connections and directional parameters, service assignments, demands, previous outcomes; World entity/Zone lookups | [Service and routes](../api/planning.md#service-and-routing) |
+
+Optional ZoneMembership receives owned Zones or matches. It can use `zone.contains`,
+`priority` and `geometry`; see [Zone queries](../api/physical.md#zone-queries). It does
+not select the serving satellite.
+
+For example, inside a PhysicalLink Model, read the supplied snapshot for the requested
+ISL pairs and compute only the quantity your algorithm needs:
+
+```python
+from skyseed_v2.simulator import geometry
+
+for a_id, b_id in request.inter_satellite_pairs:
+    a = physical_frame.get_position(a_id)
+    b = physical_frame.get_position(b_id)
+    distance_m = geometry.ecef_distance_m(a, b)
+```
+
+Inside GS selection, look up the actual owners of static limits (`candidate` is a GS
+access candidate):
+
+```python
+station = physical_world.get_ground_station(candidate.ground_station_id)
+satellite = physical_world.get_satellite(candidate.satellite_id)
+station_limit = station.max_simultaneous_satellite_accesses
+satellite_limit = satellite.max_simultaneous_ground_station_accesses
+```
+
+These limits may be unspecified; the [GS template](../../templates/models/ground_station.py)
+shows an explicit policy and capacity accounting. In routing, resolve a Zone target
+within its scope from the supplied assignments:
+
+```python
+service = {item.service_key: item.satellite_id for item in zone_service_assignments}
+terminal = service[demand.target.service_key]  # demand.target is a ZoneRouteDemandTarget
+```
+
+`terminal=None` means unserved, not a graph node. A GS target instead exposes
+`ground_station_id`. The [routing template](../../templates/models/routing.py) handles both.
+
+Reading a snapshot does not rerun Position. `world.frame_at(other_timestamp)` does:
+use it only when your algorithm actually needs another evaluation, never recursively
+from Position itself. Selection/route hooks should use their supplied candidates and
+state rather than repeat the preceding calculation or advance Planner themselves.
+This does not require default prediction, caching or optimization policies.
+
+## Verify a replacement
+
 Begin with `--operation generate --through planner` on a small scene, examine explicit
 route/service outcomes, then compile through the normal chain. To test state retention,
 run retained computation and append one short range. Compare transition semantics where

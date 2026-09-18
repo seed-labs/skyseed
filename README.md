@@ -18,6 +18,7 @@ The active application is [skyseed_v2](skyseed_v2/README.md). The official repos
 | Explore without running an experiment | [Download/local interactive demos](skyseed_v2/docs/demos/README.md) |
 | Run the default assembly example | [S4](skyseed_v2/examples/Sky02_s4_default/README.md) |
 | Try a smaller scene and customize Models | [S5 and its local algorithms](skyseed_v2/examples/Sky01_s5_custom_models/README.md) |
+| Look up public methods and Model input data | [API reference](skyseed_v2/docs/api/README.md) |
 | Develop or review changes | [Developer references and workflow](skyseed_v2/docs/development/README.md) |
 
 ## Install, calculate and run

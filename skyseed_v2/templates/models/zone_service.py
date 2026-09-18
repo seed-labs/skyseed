@@ -1,4 +1,9 @@
-"""First available candidate per Zone; inject zone_service_model=FirstCandidateServiceModel()."""
+"""First available candidate per Zone; inject zone_service_model=FirstCandidateServiceModel().
+
+Read world.get_zone_layout().zones, supplied candidates and previous assignments.
+A ZoneServiceAssignment with satellite_id=None explicitly means unserved.
+Reference: docs/api/physical.md (Zones) and docs/api/planning.md (service values).
+"""
 from skyseed_v2.simulator import planner
 
 

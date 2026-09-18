@@ -7,6 +7,12 @@ authenticated retrieval. Existing directories, imports, APIs, environment names 
 distribution version `0.1.0` are retained; this publication introduces no release tag
 or product-title suffix.
 
+The publication's documentation supplement adds a [public API reference](api/README.md),
+per-role data navigation in the [Model guide](user-guides/model-extension.md), and short
+query hints in the copyable templates. It documents existing calls and input values;
+it adds no interfaces, algorithms or execution behavior. Its checks cover links,
+the new usage snippets and unchanged executable Python, without new live qualification.
+
 Phase 4b-2 retains computation by default in all six examples; finite `generate()`
 remains available. PhysicalWorld, Planner and Compiler cutoffs publish completed
 requests and retain the original cursor for continuation. Tools read one completed

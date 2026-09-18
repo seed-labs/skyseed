@@ -1,6 +1,10 @@
 """Fixed executable directional parameters, independent of optional physical delay.
 
 Inject parameter_model=FixedParameterModel(); edit the two directions as needed.
+
+Read each observation.connection_id, optional physical_delay_us/physical_candidate,
+and previous_memory. This hook receives no World. Directional effective parameters
+use bps, microseconds and loss ppm. Reference: docs/api/planning.md (parameters).
 """
 from skyseed_v2.simulator import planner
 

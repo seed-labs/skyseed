@@ -12,6 +12,7 @@ scale reference. The project name is **SkySEED**; existing technical names such 
 | Understand the components and their cooperation | [Architecture overview](docs/architecture/overview.md) and [full-size diagram](docs/architecture/system-architecture.svg) |
 | Learn the default assembly | [S4](examples/Sky02_s4_default/README.md) |
 | Try a smaller scene and edit local algorithms | [S5 custom Models](examples/Sky01_s5_custom_models/README.md) |
+| Find public queries, Model data and control methods | [API reference](docs/api/README.md) |
 | Check an installation | [Tiny](examples/Sky00_tiny_network/README.md) |
 | Continue, deploy, run or stop | [Computation and controls](docs/user-guides/computation-and-controls.md) |
 | Inspect retained interactive results | [Local demonstrations](docs/demos/README.md) |

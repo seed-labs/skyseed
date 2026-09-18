@@ -2,6 +2,11 @@
 
 Inject inter_satellite_model=SimpleInterSatelliteModel(pairs). This small policy
 keeps incumbents first but makes no future-service or optimality claim.
+
+Use world.get_satellite(node_id) for static capabilities; state.selected_since
+includes preparing reservations, while state.operational_connections holds IDs
+already operational. Reference: docs/api/planning.md (selection state) and
+docs/api/physical.md (entities).
 """
 from collections import Counter
 from skyseed_v2.simulator import planner

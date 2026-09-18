@@ -2,6 +2,10 @@
 
 Inject ground_station_model=SimpleGroundStationModel(). This policy uses the
 explicit author fallback only for unspecified GroundStation hardware capacity.
+
+Use world.get_ground_station/get_satellite for endpoint capacities, and the
+supplied state for retained/preparing selections. Unspecified limits are None.
+Reference: docs/api/physical.md (entities) and docs/api/planning.md (selection state).
 """
 from collections import Counter
 from skyseed_v2.simulator import planner

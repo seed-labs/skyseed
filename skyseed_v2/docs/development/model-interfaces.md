@@ -3,6 +3,9 @@
 Use this reference when implementing or reviewing a Model. The role table locates
 minimum interfaces, templates and concrete implementations; the sections below separate
 required output semantics from optional capabilities and default policies.
+For the data and helper methods available inside these hooks, use the
+[per-role authoring map](../user-guides/model-extension.md#data-available-to-each-model)
+and [public API reference](../api/README.md).
 
 A Model is an independently injected algorithm. Constructors, representation and research
 assumptions belong to its author. Structural Protocols require only the calls below; there
