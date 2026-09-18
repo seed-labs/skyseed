@@ -1,0 +1,287 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1480" height="2615" viewBox="0 0 1480 2615" role="img" aria-labelledby="title description">
+<title id="title">SkySEED — complete system architecture</title>
+<desc id="description">Authored inputs, Emulator, pure simulation, chronological production, BPF execution and separately owned evidence. Nested groups show ownership; blue arrows transfer values, dashed purple arrows call or control, and diamond lines hold objects.</desc>
+<defs>
+ <marker id="data" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#176a9d"/></marker>
+ <marker id="call" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10" fill="none" stroke="#7952a3"/></marker>
+ <marker id="owns" markerWidth="12" markerHeight="12" refX="0" refY="6" orient="auto"><path d="M0,6 L6,1 L12,6 L6,11 z" fill="#285a49"/></marker>
+</defs>
+<style>text{font-family:Arial,Helvetica,sans-serif;fill:#183245}.title{font-size:23px;font-weight:bold}.body{font-size:18px}.caption{font-size:17px;fill:#456274}.label{font-size:16px;paint-order:stroke;stroke:#f5f8fb;stroke-width:7px;stroke-linejoin:round}</style>
+<rect width="100%" height="100%" fill="#f5f8fb"/>
+
+<text x="40" y="48" class="caption">SkySEED  /  FROM AUTHORED SCENE TO OBSERVED NETWORK</text>
+<text x="40" y="88" class="title">One system, explicit owners and three kinds of evidence</text>
+<text x="40" y="120" class="body">Read top to bottom. Cards select real interfaces; a card is not necessarily a process.</text>
+<polyline points="42,161 125,161" fill="none" stroke="#285a49" stroke-width="2.2" marker-start="url(#owns)"/>
+<text x="145" y="167" class="caption">Holds / owns; nesting = composition</text>
+<polyline points="630,161 706,161" fill="none" stroke="#7952a3" stroke-width="2.2" marker-end="url(#call)" stroke-dasharray="8 5"/>
+<text x="720" y="167" class="caption">Calls / controls</text>
+<polyline points="1080,161 1156,161" fill="none" stroke="#176a9d" stroke-width="2.2" marker-end="url(#data)"/>
+<text x="1170" y="167" class="caption">Transfers data</text>
+<g class="card">
+<rect x="40" y="205" width="440" height="245" rx="10" fill="#fff" stroke="#8099aa"/>
+<text x="58" y="237" class="title">Authored Example + configuration</text>
+<path d="M58,252 H462" stroke="#c4d0d9"/>
+<text x="58" y="280" class="body">Satellite input: Shells, orbit epoch / phase,</text>
+<text x="58" y="306" class="body">ISL and GS device capabilities</text>
+<text x="58" y="332" class="body">GS input: sites, coordinates, access limits</text>
+<text x="58" y="358" class="body">ZoneLayoutDefinition; Model settings</text>
+<text x="58" y="384" class="body">Timeline start / end / cadence</text>
+<text x="58" y="410" class="body">Explicit SEED layers, ASs, IXs and peering</text>
+</g>
+<g class="card">
+<rect x="520" y="205" width="440" height="245" rx="10" fill="#fff" stroke="#8099aa"/>
+<text x="538" y="237" class="title">SEED Emulator + SkySEED entities</text>
+<path d="M538,252 H942" stroke="#c4d0d9"/>
+<text x="538" y="280" class="body">Emulator → Base → SkySEED AS</text>
+<text x="538" y="306" class="body">AS holds EmulatorShell and GS objects</text>
+<text x="538" y="332" class="body">Shell → EmulatorOrbit → EmulatorSatellite</text>
+<text x="538" y="358" class="body">OrbitParameters; satellite phase / capacities</text>
+<text x="538" y="384" class="body">EmulatorGroundStation: location / capacity</text>
+<text x="538" y="410" class="body">SEED nodes remain on this side of adapter</text>
+</g>
+<g class="card">
+<rect x="1000" y="205" width="440" height="245" rx="10" fill="#fff" stroke="#8099aa"/>
+<text x="1018" y="237" class="title">External adapter → receiver values</text>
+<path d="M1018,252 H1422" stroke="#c4d0d9"/>
+<text x="1018" y="280" class="body">create_simulator_static_input(systems)</text>
+<text x="1018" y="306" class="body">copies facts into SimulatorStaticInput</text>
+<text x="1018" y="332" class="body">SimulationDefinition(static_input, timeline)</text>
+<text x="1018" y="358" class="body">SimulationTimeline: start_time, end_time,</text>
+<text x="1018" y="384" class="body">observation_interval; finite and immutable</text>
+<text x="1018" y="410" class="body">No SEED objects enter Simulator</text>
+</g>
+<polyline points="480,280 520,280" fill="none" stroke="#7952a3" stroke-width="2.2" marker-end="url(#call)" stroke-dasharray="8 5"/>
+<polyline points="960,355 1000,355" fill="none" stroke="#176a9d" stroke-width="2.2" marker-end="url(#data)"/>
+<rect x="40" y="505" width="1400" height="580" rx="14" fill="#edf4f0" stroke="#285a49" stroke-width="2"/>
+<text x="60" y="539" class="title">Simulator</text>
+<text x="60" y="565" class="caption">_definition; owns _physical_world, _physical_link_model and _planner. Explicit create_physical_world(), create_planner(), shutdown().</text>
+<g class="card">
+<rect x="65" y="590" width="425" height="235" rx="10" fill="#fff" stroke="#8099aa"/>
+<text x="83" y="622" class="title">PhysicalWorld</text>
+<path d="M83,637 H472" stroke="#c4d0d9"/>
+<text x="83" y="665" class="body">_autonomous_systems; _nodes_by_id</text>
+<text x="83" y="691" class="body">_position_model: PositionModel</text>
+<text x="83" y="717" class="body">_zone_layout: ZoneLayout | None</text>
+<text x="83" y="743" class="body">ZoneLayout holds optional membership Model</text>
+<text x="83" y="769" class="body">frame_at(timestamp); get_satellite(NodeId)</text>
+<text x="83" y="795" class="body">Immutable identity / physical facts</text>
+</g>
+<g class="card">
+<rect x="528" y="590" width="425" height="235" rx="10" fill="#fff" stroke="#8099aa"/>
+<text x="546" y="622" class="title">PhysicalLinkModel + query values</text>
+<path d="M546,637 H935" stroke="#c4d0d9"/>
+<text x="546" y="665" class="body">compute_observation(world, frame, request)</text>
+<text x="546" y="691" class="body">PhysicalLinkRequest: potential pairs / scopes</text>
+<text x="546" y="717" class="body">PhysicalLinkQueryResult: sparse ISL, GS,</text>
+<text x="546" y="743" class="body">Zone candidates; optional measurements</text>
+<text x="546" y="769" class="body">Prediction / limited search are capabilities</text>
+<text x="546" y="795" class="body">Feasibility is not operational selection</text>
+</g>
+<g class="card">
+<rect x="992" y="590" width="423" height="235" rx="10" fill="#fff" stroke="#8099aa"/>
+<text x="1010" y="622" class="title">Planner</text>
+<path d="M1010,637 H1397" stroke="#c4d0d9"/>
+<text x="1010" y="665" class="body">_current_state; acquisition reservations</text>
+<text x="1010" y="691" class="body">_parameter_memory; bounded _unpublished</text>
+<text x="1010" y="717" class="body">ISL / GS / ZoneService / Parameter / Route</text>
+<text x="1010" y="743" class="body">prime(); observe(frame, observation)</text>
+<text x="1010" y="769" class="body">flush(); finish(); get_state()</text>
+<text x="1010" y="795" class="body">Framework derives event ordering</text>
+</g>
+<g class="card">
+<rect x="65" y="870" width="425" height="185" rx="10" fill="#fff" stroke="#8099aa"/>
+<text x="83" y="902" class="title">PhysicalPositionSnapshot</text>
+<path d="M83,917 H472" stroke="#c4d0d9"/>
+<text x="83" y="945" class="body">timestamp; complete NodeId → ECEF positions</text>
+<text x="83" y="971" class="body">PositionModel computes; World validates</text>
+<text x="83" y="997" class="body">Query result refers to this same timestamp</text>
+<text x="83" y="1023" class="body">No operational state or timeline cursor</text>
+</g>
+<g class="card">
+<rect x="528" y="870" width="425" height="185" rx="10" fill="#fff" stroke="#8099aa"/>
+<text x="546" y="902" class="title">PlannedOperationalState</text>
+<path d="M546,917 H935" stroke="#c4d0d9"/>
+<text x="546" y="945" class="body">timestamp; operational_connections</text>
+<text x="546" y="971" class="body">zone_service_assignments; route_outcomes</text>
+<text x="546" y="997" class="body">Current state + Transition → next state</text>
+<text x="546" y="1023" class="body">Preparation memory stays with Planner</text>
+</g>
+<g class="card">
+<rect x="992" y="870" width="423" height="185" rx="10" fill="#fff" stroke="#8099aa"/>
+<text x="1010" y="902" class="title">Plan → ordered PlanTransitions</text>
+<path d="M1010,917 H1397" stroke="#c4d0d9"/>
+<text x="1010" y="945" class="body">previous_plan_id; input/output fingerprints</text>
+<text x="1010" y="971" class="body">Transition: timestamp + semantic changes</text>
+<text x="1010" y="997" class="body">semantic_event_precedences: event edges</text>
+<text x="1010" y="1023" class="body">Dependencies order events, not timestamps</text>
+</g>
+<polyline points="1220,450 1220,505" fill="none" stroke="#176a9d" stroke-width="2.2" marker-end="url(#data)"/>
+<polyline points="490,700 528,700" fill="none" stroke="#176a9d" stroke-width="2.2" marker-end="url(#data)"/>
+<polyline points="953,700 992,700" fill="none" stroke="#176a9d" stroke-width="2.2" marker-end="url(#data)"/>
+<polyline points="265,825 265,870" fill="none" stroke="#176a9d" stroke-width="2.2" marker-end="url(#data)"/>
+<polyline points="1015,825 1015,848 740,848 740,870" fill="none" stroke="#285a49" stroke-width="2.2" marker-start="url(#owns)"/>
+<polyline points="1210,825 1210,870" fill="none" stroke="#176a9d" stroke-width="2.2" marker-end="url(#data)"/>
+<polyline points="400,870 400,847 560,847 560,825" fill="none" stroke="#176a9d" stroke-width="2.2" marker-end="url(#data)"/>
+<g class="card">
+<rect x="40" y="1155" width="440" height="255" rx="10" fill="#fff" stroke="#8099aa"/>
+<text x="58" y="1187" class="title">ExperimentController</text>
+<path d="M58,1202 H462" stroke="#c4d0d9"/>
+<text x="58" y="1230" class="body">_emulator; _simulator; _producer; _deployer</text>
+<text x="58" y="1256" class="body">generate() / serve(on_completed=...)</text>
+<text x="58" y="1282" class="body">continue_calculation(); status(); cancellation</text>
+<text x="58" y="1308" class="body">Integrates control endpoints and recording</text>
+<text x="58" y="1334" class="body">Optional presentation task pins completed</text>
+<text x="58" y="1360" class="body">facts; calculation and runtime stay separate</text>
+</g>
+<g class="card">
+<rect x="520" y="1155" width="440" height="255" rx="10" fill="#fff" stroke="#8099aa"/>
+<text x="538" y="1187" class="title">Producer · chronological work</text>
+<path d="M538,1202 H942" stroke="#c4d0d9"/>
+<text x="538" y="1230" class="body">_timeline; _previous_result; bounded queues</text>
+<text x="538" y="1256" class="body">produce(); request_extension(); close()</text>
+<text x="538" y="1282" class="body">Calls World → physical query → Planner</text>
+<text x="538" y="1308" class="body">Then compile_bpf for the Compiler cutoff</text>
+<text x="538" y="1334" class="body">Suffix-only cursor; retained Models / state</text>
+<text x="538" y="1360" class="body">Seals deliveries; publishes completed range</text>
+</g>
+<g class="card">
+<rect x="1000" y="1155" width="440" height="255" rx="10" fill="#fff" stroke="#8099aa"/>
+<text x="1018" y="1187" class="title">BPF Compiler · compile_bpf</text>
+<path d="M1018,1202 H1422" stroke="#c4d0d9"/>
+<text x="1018" y="1230" class="body">BpfCompilationResult: exact Plan lowering</text>
+<text x="1018" y="1256" class="body">Inputs: Plan / PhysicalWorld / predecessor</text>
+<text x="1018" y="1282" class="body">source_plan_id; output_planned_state</text>
+<text x="1018" y="1308" class="body">compiled_activation_boundaries; constraints</text>
+<text x="1018" y="1334" class="body">Resource / parameter / forwarding intents</text>
+<text x="1018" y="1360" class="body">Predecessor indexes retain incremental work</text>
+<text x="1018" y="1386" class="body">Backend lowering consumes dependencies</text>
+</g>
+<polyline points="480,1260 520,1260" fill="none" stroke="#285a49" stroke-width="2.2" marker-start="url(#owns)"/>
+<polyline points="740,1155 740,1085" fill="none" stroke="#7952a3" stroke-width="2.2" marker-end="url(#call)" stroke-dasharray="8 5"/>
+<text x="755" y="1125" class="label">advance one formal timestamp</text>
+<polyline points="1210,1055 1210,1155" fill="none" stroke="#176a9d" stroke-width="2.2" marker-end="url(#data)"/>
+<text x="1225" y="1125" class="label">Plan</text>
+<polyline points="960,1310 1000,1310" fill="none" stroke="#7952a3" stroke-width="2.2" marker-end="url(#call)" stroke-dasharray="8 5"/>
+<g class="card">
+<rect x="520" y="1470" width="920" height="130" rx="10" fill="#fff" stroke="#8099aa"/>
+<text x="538" y="1502" class="title">Sealed deliveries + request publication</text>
+<path d="M538,1517 H1422" stroke="#c4d0d9"/>
+<text x="538" y="1545" class="body">results/compiler/: binary Runner artifact, manifest, material references, execution.json</text>
+<text x="538" y="1571" class="body">results/experiment/completed.json: one atomic request boundary and bounded stream prefixes</text>
+</g>
+<polyline points="740,1410 740,1470" fill="none" stroke="#176a9d" stroke-width="2.2" marker-end="url(#data)"/>
+<polyline points="1220,1410 1220,1470" fill="none" stroke="#176a9d" stroke-width="2.2" marker-end="url(#data)"/>
+<g class="card">
+<rect x="40" y="1680" width="395" height="255" rx="10" fill="#fff" stroke="#8099aa"/>
+<text x="58" y="1712" class="title">Deployer · SEED deployment</text>
+<path d="M58,1727 H417" stroke="#c4d0d9"/>
+<text x="58" y="1755" class="body">output; project_name</text>
+<text x="58" y="1781" class="body">prepare(emulator); build(); start()</text>
+<text x="58" y="1807" class="body">status(); cleanup()</text>
+<text x="58" y="1833" class="body">SEED build contexts and Docker Compose</text>
+<text x="58" y="1859" class="body">Container and deployment network owner</text>
+<text x="58" y="1885" class="body">Not a time-dependent calculation stage</text>
+</g>
+<polyline points="240,1410 240,1680" fill="none" stroke="#7952a3" stroke-width="2.2" marker-end="url(#call)" stroke-dasharray="8 5"/>
+<text x="65" y="1537" class="label">deploy.sh / cleanup.sh</text>
+<polyline points="480,1370 495,1370 495,1640 940,1640 940,1680" fill="none" stroke="#7952a3" stroke-width="2.2" marker-end="url(#call)" stroke-dasharray="8 5"/>
+<text x="580" y="1630" class="label">run.sh / runtime control</text>
+<g class="card">
+<rect x="40" y="1980" width="395" height="175" rx="10" fill="#fff" stroke="#8099aa"/>
+<text x="58" y="2012" class="title">deployment/ — deployed identity</text>
+<path d="M58,2027 H417" stroke="#c4d0d9"/>
+<text x="58" y="2055" class="body">Compose / build inputs; project identity</text>
+<text x="58" y="2081" class="body">Startup / teardown measurements</text>
+<text x="58" y="2107" class="body">Container incarnations handed to Runner</text>
+<text x="58" y="2133" class="body">Cleanup follows Runner resource drainage</text>
+</g>
+<polyline points="240,1935 240,1980" fill="none" stroke="#176a9d" stroke-width="2.2" marker-end="url(#data)"/>
+<rect x="470" y="1680" width="970" height="475" rx="14" fill="#edf4f0" stroke="#285a49" stroke-width="2"/>
+<text x="490" y="1714" class="title">Runner — BPF backend</text>
+<text x="490" y="1740" class="caption">_artifact; _active_frontier; _runtime_realization; _helper. run(), pause(), resume(), cancel_runtime(), cleanup().</text>
+<text x="490" y="1770" class="caption">The three cards below are responsibilities of Runner, not three public classes.</text>
+<g class="card">
+<rect x="490" y="1800" width="292" height="205" rx="10" fill="#fff" stroke="#8099aa"/>
+<text x="508" y="1832" class="title">Initialization</text>
+<path d="M508,1847 H764" stroke="#c4d0d9"/>
+<text x="508" y="1875" class="body">prepare()</text>
+<text x="508" y="1901" class="body">Load initial artifact / identities</text>
+<text x="508" y="1927" class="body">Acquire privileged helper</text>
+<text x="508" y="1953" class="body">Open namespace FDs / sockets</text>
+<text x="508" y="1979" class="body">Prepare first batch; activate B0</text>
+</g>
+<g class="card">
+<rect x="804" y="1800" width="292" height="205" rx="10" fill="#fff" stroke="#8099aa"/>
+<text x="822" y="1832" class="title">Execution</text>
+<path d="M822,1847 H1078" stroke="#c4d0d9"/>
+<text x="822" y="1875" class="body">run(); activate_next()</text>
+<text x="822" y="1901" class="body">Create resources → READY</text>
+<text x="822" y="1927" class="body">Publish forwarding generation</text>
+<text x="822" y="1953" class="body">Withdraw old; expose ACTIVE</text>
+<text x="822" y="1979" class="body">Pause / material hold keep state</text>
+</g>
+<g class="card">
+<rect x="1118" y="1800" width="302" height="205" rx="10" fill="#fff" stroke="#8099aa"/>
+<text x="1136" y="1832" class="title">Maintenance</text>
+<path d="M1136,1847 H1402" stroke="#c4d0d9"/>
+<text x="1136" y="1875" class="body">append_batch(path)</text>
+<text x="1136" y="1901" class="body">Successor: preparing → READY</text>
+<text x="1136" y="1927" class="body">Construct / prewrite future work</text>
+<text x="1136" y="1953" class="body">Execution alone activates</text>
+<text x="1136" y="1979" class="body">Reclaim after reader release</text>
+</g>
+<g class="card">
+<rect x="490" y="2040" width="930" height="90" rx="10" fill="#fff" stroke="#8099aa"/>
+<text x="508" y="2072" class="title">Owned Linux resources</text>
+<path d="M508,2087 H1402" stroke="#c4d0d9"/>
+<text x="508" y="2115" class="body">_TcBpfRuntimeRealization + _PrivilegedHelper: netns FDs, sockets, veths, qdiscs, BPF maps / programs</text>
+</g>
+<polyline points="1050,1600 1050,1680" fill="none" stroke="#176a9d" stroke-width="2.2" marker-end="url(#data)"/>
+<text x="1065" y="1645" class="label">sealed immutable paths</text>
+<polyline points="435,2090 470,2090" fill="none" stroke="#176a9d" stroke-width="2.2" marker-end="url(#data)"/>
+<polyline points="782,1900 804,1900" fill="none" stroke="#176a9d" stroke-width="2.2" marker-end="url(#data)"/>
+<polyline points="1118,1940 1096,1940" fill="none" stroke="#176a9d" stroke-width="2.2" marker-end="url(#data)"/>
+<g class="card">
+<rect x="40" y="2240" width="440" height="285" rx="10" fill="#fff" stroke="#8099aa"/>
+<text x="58" y="2272" class="title">Calculated evidence — results/</text>
+<path d="M58,2287 H462" stroke="#c4d0d9"/>
+<text x="58" y="2315" class="body">PhysicalWorld frames / candidates</text>
+<text x="58" y="2341" class="body">Planner history; Compiler history / materials</text>
+<text x="58" y="2367" class="body">Traffic probe plans are execution inputs</text>
+<text x="58" y="2393" class="body">Experiment status / completed publication</text>
+<text x="58" y="2419" class="body">Tools read one completed byte prefix</text>
+<text x="58" y="2445" class="body">A published request does not terminate</text>
+<text x="58" y="2471" class="body">the retained computation process</text>
+</g>
+<g class="card">
+<rect x="520" y="2240" width="440" height="285" rx="10" fill="#fff" stroke="#8099aa"/>
+<text x="538" y="2272" class="title">Optional Tools — visualizations/</text>
+<path d="M538,2287 H942" stroke="#c4d0d9"/>
+<text x="538" y="2315" class="body">PhysicalWorld / Zone / Planner / Compiler</text>
+<text x="538" y="2341" class="body">Runner / Traffic / Performance views</text>
+<text x="538" y="2367" class="body">Relative browser assets, no Model replay</text>
+<text x="538" y="2393" class="body">Runtime reads wait for completed invocation</text>
+<text x="538" y="2419" class="body">Presentation can lag; failure preserves facts</text>
+<text x="538" y="2445" class="body">inputs/: captured sources / effective config</text>
+<text x="538" y="2471" class="body">.control/: internal requests and ownership</text>
+</g>
+<g class="card">
+<rect x="1000" y="2240" width="440" height="285" rx="10" fill="#fff" stroke="#8099aa"/>
+<text x="1018" y="2272" class="title">Active Traffic + observed runs/</text>
+<path d="M1018,2287 H1422" stroke="#c4d0d9"/>
+<text x="1018" y="2315" class="body">Active tool owns probes and telemetry</text>
+<text x="1018" y="2341" class="body">Runner owns network state and ACTIVE time</text>
+<text x="1018" y="2367" class="body">runs/&lt;id&gt;/runner, traffic, performance</text>
+<text x="1018" y="2393" class="body">Actual outcomes / resource measurements</text>
+<text x="1018" y="2419" class="body">Reachable, unserved and loss stay distinct</text>
+<text x="1018" y="2445" class="body">Stop Traffic → drain Runner → Deployer</text>
+<text x="1018" y="2471" class="body">Reset: new Runner invocation, same Compose</text>
+</g>
+<polyline points="480,2355 520,2355" fill="none" stroke="#176a9d" stroke-width="2.2" marker-end="url(#data)"/>
+<polyline points="1000,2355 960,2355" fill="none" stroke="#176a9d" stroke-width="2.2" marker-end="url(#data)"/>
+<polyline points="1230,2155 1230,2240" fill="none" stroke="#176a9d" stroke-width="2.2" marker-end="url(#data)"/>
+<polyline points="1430,2315 1460,2315 1460,2090 1420,2090" fill="none" stroke="#7952a3" stroke-width="2.2" marker-end="url(#call)" stroke-dasharray="8 5"/>
+<polyline points="520,1520 452,1520 452,2200 255,2200 255,2240" fill="none" stroke="#176a9d" stroke-width="2.2" marker-end="url(#data)"/>
+<text x="40" y="2580" class="caption">Construction is inert. Explicit operations start tasks and acquire resources; cancellation waits for their actual exit.</text>
+</svg>

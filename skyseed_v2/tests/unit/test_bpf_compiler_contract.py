@@ -5,19 +5,17 @@ import inspect
 
 import pytest
 
-from examples.complete_static_emulator.emu import build_emulator
-from examples.complete_static_emulator.simu import (
-    create_complete_static_simulator,
-    run_complete_static_chain,
-)
+from examples.Sky00_tiny_network.tiny_network import build_emulator
+from examples.Sky00_tiny_network.tiny_network import create_simulator as create_complete_static_simulator
+from tests._support import drain_simulator as run_complete_static_chain
 from skyseed_v2.backend.bpf import (
     BpfCompiledActivationBoundary,
-    BpfCompiledRealization,
+    BpfCompilationResult,
     compile_bpf,
 )
-from skyseed_v2.backend.bpf.compiled_realization import _ZoneEdgePhase
+from skyseed_v2.backend.bpf.execution_materials.actions import _ZoneEdgePhase
 from skyseed_v2.backend.bpf.compiler import _compile_bpf_observed
-from skyseed_v2.shared._execution_observation import _ExecutionObserver
+from skyseed_v2.experiment.output.observation import _ExecutionObserver
 from skyseed_v2.shared import NodeId
 from skyseed_v2.simulator import (
     PlanTransition,
@@ -30,7 +28,7 @@ from skyseed_v2.simulator import (
     apply_plan,
     plan_transition_fingerprint,
 )
-from skyseed_v2.simulator.planning import create_plan
+from skyseed_v2.simulator.planner import create_plan
 
 
 @pytest.fixture(scope="module")
@@ -48,11 +46,8 @@ def complete_chain():
             physical_world_fingerprint=simulator.get_physical_world().semantic_fingerprint(),
             observation_interval=simulator.get_timeline().observation_interval,
             start_timestamp=transitions[start].timestamp, transitions=batch,
-            semantic_event_precedences=tuple(
-                precedence for published in generated
-                for precedence in published.semantic_event_precedences
-                if precedence.predecessor.timestamp in timestamps
-                and precedence.successor.timestamp in timestamps))
+        )
+
         realization = compile_bpf(plan, simulator.get_physical_world(), None if not realizations else realizations[-1])
         plans.append(plan)
         realizations.append(realization)
@@ -66,7 +61,7 @@ def test_compile_bpf_has_the_only_round_b_signature() -> None:
     assert tuple(parameters) == (
         "plan",
         "physical_world",
-        "previous_realization",
+        "previous_result",
     )
     assert all(
         value.default is inspect.Parameter.empty
@@ -95,7 +90,7 @@ def test_observed_compile_records_real_stage_and_total_durations(
         "event-and-world-indexing",
         "transition-lowering",
         "constraint-folding-and-materialization",
-        "backend-state-validation-and-freeze",
+        "backend-state-freeze",
         "semantic-to-bpf-lowering",
         "compile-total",
     )
@@ -115,7 +110,7 @@ def test_compiler_lowers_plan_lineage_and_complete_semantic_output(
     previous = None
     previous_state = None
     for plan, realization in zip(plans, realizations):
-        assert isinstance(realization, BpfCompiledRealization)
+        assert isinstance(realization, BpfCompilationResult)
         assert realization.source_plan_id == plan.plan_id
         assert realization.source_previous_plan_id == plan.previous_plan_id
         assert (
@@ -127,7 +122,7 @@ def test_compiler_lowers_plan_lineage_and_complete_semantic_output(
         assert realization.observation_interval == plan.observation_interval
         assert sum(
             count for _, count in realization.semantic_precedence_folding
-        ) == len(plan.semantic_event_precedences)
+        ) == sum(len(t.semantic_event_precedences) for t in plan.transitions)
         assert all(
             value.reason != "plan-semantic-precedence"
             for value in realization.constraints
@@ -223,7 +218,7 @@ def test_unreachable_route_demand_must_belong_to_physical_world(
     )
     outcome = UnreachableRouteOutcome(
         demand,
-        RouteUnreachableReason.NO_OPERATIONAL_PATH,
+        RouteUnreachableReason.NO_ELIGIBLE_PATH,
     )
     transition = PlanTransition(
         timestamp,
@@ -263,7 +258,7 @@ def test_unreachable_reason_must_match_explicit_zone_service(
             and isinstance(value.demand.target, ZoneRouteDemandTarget)
             and assignments[value.demand.target.zone_id] is None
         )
-        reason = RouteUnreachableReason.NO_OPERATIONAL_PATH
+        reason = RouteUnreachableReason.NO_ELIGIBLE_PATH
     else:
         prior = next(
             value
@@ -319,12 +314,12 @@ def test_zone_readiness_precedes_forwarding(
         if value.phase is _ZoneEdgePhase.READINESS
     }
     assert readiness_indexes
-    assert any(
-        constraint.predecessor.domain == "zone-edge"
-        and constraint.predecessor.index in readiness_indexes
-        and constraint.successor.domain == "forwarding"
-        for constraint in first.constraints
-    )
+    from skyseed_v2.backend.bpf.execution_materials.boundaries import _resolve_nominal_boundaries
+    from skyseed_v2.backend.bpf.execution_materials.actions import _intent_phase
+    for boundary in _resolve_nominal_boundaries((first,)):
+        phases = [_intent_phase(op.intent) for op in boundary.operations]
+        assert phases == sorted(phases)
+    assert "runner-phase" in dict(first.semantic_precedence_folding)
 
 
 def test_compiler_is_deterministic_and_checks_previous_lineage(

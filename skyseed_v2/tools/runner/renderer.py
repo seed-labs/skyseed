@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from tools._html import json_for_script, standalone_page
+from tools._presentation.html import json_for_script, standalone_page
 
 
 def render_runner_page(data: dict[str, Any]) -> str:
@@ -197,7 +197,7 @@ _SCRIPT = r"""
 const DATA=__RUNNER_DATA__;
 const STRINGS={
   zh:{
-    lang:"zh-CN",title:"BPF Runner 检查工具",eyebrow:"运行后 · 离线 · 只读",footer:"Skyseed v2 仓库内离线检查 artifact",
+    lang:"zh-CN",title:"BPF Runner 检查工具",eyebrow:"运行后 · 离线 · 只读",footer:"SkySEED 仓库内离线检查 artifact",
     introTitle:"Runner 生命周期运行后证据",introCopy:"本静态页面组合了 detached 的最终/最后已知 Runner 摘要与完整记录事件历史；它不是实时视图，也不具有控制行为。",cleanedNote:"cleanup 完成后，frontier 值是历史事实：“Last active” 不表示网络当前仍处于 active 状态。",
     guideTitle:"如何阅读 / How to read",guideIntro:"普通用户建议依次阅读 Overview、图形执行时间轴、Timing 和 Cleanup；raw JSON 与深层 evidence 主要用于 debugging。",
     guideTerms:[
@@ -239,7 +239,7 @@ const STRINGS={
     enums:{completed:"已完成",interrupted:"已中断",failed:"失败","cleanup-failed":"cleanup 失败",cleaned:"已清理",prepared:"已准备",automatic:"automatic",manual:"manual","sealed-precomputed-only":"sealed precomputed only","exact-next-safe":"exact-next safe"}
   },
   en:{
-    lang:"en",title:"BPF Runner Inspection Tool",eyebrow:"Post-run · offline · read-only",footer:"Skyseed v2 repository-local offline inspection artifact",
+    lang:"en",title:"BPF Runner Inspection Tool",eyebrow:"Post-run · offline · read-only",footer:"SkySEED repository-local offline inspection artifact",
     introTitle:"Post-run Runner lifecycle evidence",introCopy:"This static page combines a detached final/last-known Runner summary with its complete recorded event history. It is not live and has no controller behavior.",cleanedNote:"After cleanup, frontier values are historical: “Last active” never means that the network is still active.",
     guideTitle:"How to read / 如何阅读",guideIntro:"Most users should read Overview, the graphical timeline, Timing, and Cleanup first. Raw JSON and deep evidence are mainly for debugging.",
     guideTerms:[
@@ -432,6 +432,7 @@ function renderScaleSafety(){
   const value=DATA.scale_safety||{};
   const entries=[
     ["Compose startup / 部署启动",value.deployment_startup],
+    ...(value.deployment_startup_recording ? [["Startup recording / 启动记录",value.deployment_startup_recording]] : []),
     ["Preparation breakdown / 准备分解",value.preparation_breakdown],
     ["Main subphases / Main 子阶段",value.main_subphases],
     ["Amplification / 放大关系",value.amplification],

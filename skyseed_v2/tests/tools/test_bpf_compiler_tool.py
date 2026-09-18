@@ -1,4 +1,7 @@
 from __future__ import annotations
+from tests._support import timedelta
+
+from skyseed_v2.simulator import PlannerConfiguration
 
 from hashlib import sha256
 import json
@@ -7,12 +10,9 @@ import shutil
 
 import pytest
 
-from examples.complete_static_emulator.emu import build_emulator
-from examples.complete_static_emulator.simu import (
-    create_complete_static_simulator,
-    create_complete_static_planner,
-    run_complete_static_chain,
-)
+from examples.Sky00_tiny_network.tiny_network import build_emulator
+from examples.Sky00_tiny_network.tiny_network import create_simulator as create_complete_static_simulator
+from tests._support import drain_simulator as run_complete_static_chain
 from tools.bpf_compiler import (
     collect_bpf_compiler_data,
     read_bpf_compiler_history,
@@ -31,8 +31,8 @@ def complete_chain(tmp_path_factory):
     root = tmp_path_factory.mktemp("compiler-tool")
     simulator = create_complete_static_simulator(build_emulator())
     # This focused lineage fixture deliberately crosses a batch boundary.
-    planner = create_complete_static_planner(simulator)
-    planner._frames_per_batch = 3
+    planner = simulator.get_planner()
+    planner._configuration = PlannerConfiguration(frames_per_batch=3, inter_satellite_acquisition_duration=timedelta(0), ground_station_acquisition_duration=timedelta(0))
     plans, realizations, snapshot = run_complete_static_chain(
         simulator, planner=planner, evidence_path=root / "history"
     )
@@ -63,7 +63,8 @@ def test_projection_preserves_lineage_and_compact_compiler_statistics(
         )
         assert record["summary"]["planned_routes_reachable"] == 2
         assert record["summary"]["planned_routes_unreachable"] == 1
-    assert data["realizations"][0]["summary"]["constraints"] > 0
+    assert data["realizations"][0]["summary"]["constraints"] == len(realizations[0].constraints) == 0
+    assert dict(realizations[0].semantic_precedence_folding)["runner-phase"] > 0
     assert data["realizations"][0]["operation_counts"]
     assert data["format_version"] == 5
     assert "source_plan" not in data["realizations"][0]
@@ -100,7 +101,7 @@ def test_reader_rejects_misaligned_source_plan(complete_chain) -> None:
 
 def test_compact_producer_history_is_continuous(complete_chain) -> None:
     root, plans, _, _ = complete_chain
-    history = read_bpf_compiler_history(root / "history/compiler.jsonl")
+    history = read_bpf_compiler_history(root / "history/compiler/compiler.jsonl")
     assert len(history["realizations"]) == len(plans)
     assert tuple(
         value["realization_index"] for value in history["realizations"]
@@ -116,10 +117,10 @@ def test_compact_history_reader_rejects_state_lineage_drift(
     )
     rows = [
         json.loads(line)
-        for line in (history / "compiler.jsonl").read_text().splitlines()
+        for line in (history / "compiler/compiler.jsonl").read_text().splitlines()
     ]
     rows[2]["input_state_fingerprint"] = "wrong"
-    path = history / "compiler.jsonl"
+    path = history / "compiler/compiler.jsonl"
     path.write_text(
         "".join(
             json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n"
@@ -127,7 +128,7 @@ def test_compact_history_reader_rejects_state_lineage_drift(
         ),
         encoding="utf-8",
     )
-    manifest_path = history / "domain-history-manifest.json"
+    manifest_path = history / "experiment/domain-history-manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     payload = path.read_bytes()
     manifest["streams"]["compiler"].update(
@@ -150,10 +151,10 @@ def test_compiler_reader_requires_compiler_terminal_seal(
 ) -> None:
     root, _, _, _ = complete_chain
     history = Path(shutil.copytree(root / "history", tmp_path / "planner-only"))
-    compiler_path = history / "compiler.jsonl"
+    compiler_path = history / "compiler/compiler.jsonl"
     header = compiler_path.read_text(encoding="utf-8").splitlines()[0]
     compiler_path.write_text(header + "\n", encoding="utf-8")
-    manifest_path = history / "domain-history-manifest.json"
+    manifest_path = history / "experiment/domain-history-manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     payload = compiler_path.read_bytes()
     manifest["through"] = "planner"

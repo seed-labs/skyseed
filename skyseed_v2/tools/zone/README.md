@@ -1,33 +1,20 @@
 # Zone Tool
 
-Legend: `A --> B` means stage A supplies the only input accepted by stage B.
+Browse the static Zone layout on globe/map views. Select a region to inspect its
+identifier and declared boundaries; colors distinguish regions. Display outlines
+are sampled geography, not a replacement for the membership Model. There is no
+calculation time cursor because the layout is static.
 
-```mermaid
-flowchart LR
-    T["formal PhysicalWorld"] --> R["formal read: detached snapshot"]
-    R --> P["Tool projection"]
-    P --> A["display-only analysis"]
-    A --> U["render final view"]
-    U --> W["write files"]
-```
+To generate/check a layout, use `python -m tools.zone.generate --output zones.yaml`
+or `python -m tools.zone.generate --check data/global_zones.yaml`. Band count,
+equatorial cell count and alignment options are shown by `--help`. Normal examples
+load their chosen layout without regenerating it.
 
-The reader copies the formal static Zone layout into a detached Tool-owned
-snapshot. It does not choose coordinates, query membership, execute the
-membership Model, or include GroundStations. Rectangle boundary sampling and
-layout summaries live in `display_analysis.py`. The globe and map use those
-existing fields for display-only direct selection; browser hit testing is not
-a formal membership result. Projection never receives PhysicalWorld.
-The Tool facade composes the responsibilities; rendering accepts final view
-data and artifact writing only writes files. The current files may remain
-separate, but their count and names are not the contract.
+[Open the interactive Zone demo](../../docs/demos/s5/zone/index.html).
+Its [provenance](../../docs/demos/README.md) identifies the scenario, interval and
+historical evidence; it does not validate current live execution.
 
-The renderer uses one subdued Zone color family, labels only the selected
-Zone, and draws its 3D view on a DPR-scaled backing canvas. The shared
-Tool-private Natural Earth coastline reference supplies offline orientation
-only and never enters the Zone reader payload or formal membership semantics.
-
-Tests: `tests/tools/test_zone_tool.py` and
-`tests/integration/test_tooling_boundaries.py`.
-
-Contracts: `docs/codex-reference/inspection-tools.md` and
-`docs/codex-reference/physical-world-zone-contracts.md`.
+To browse your own output, run a maintained example with Tools enabled and open
+`output/visualizations/index.html` after a completed request. `--operation generate`
+selects finite generation. Runner/Traffic views additionally require actual execution
+records. See [outputs and Tools](../../docs/user-guides/outputs-and-tools.md).

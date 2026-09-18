@@ -535,7 +535,7 @@ def test_tool_reads_complete_durable_history_without_runner_materialization(
         {
             "record_type": "history_header",
             "format_version": 1,
-            "owner": "BpfRunner",
+            "owner": "Runner",
         },
         *(
             {"record_type": "runner_event", **event}
@@ -583,7 +583,7 @@ def test_tool_rejects_incomplete_bounded_event_history(tmp_path: Path) -> None:
                     {
                         "record_type": "history_header",
                         "format_version": 2,
-                        "owner": "BpfRunner",
+                        "owner": "Runner",
                         "capture": "bounded-nonblocking",
                     }
                 ),
@@ -675,7 +675,7 @@ def test_tool_owned_cli_consumes_detached_generated_execution_handoff(
             {
                 "record_type": "history_header",
                 "format_version": 1,
-                "owner": "BpfRunner",
+                "owner": "Runner",
             }
         )
         + "\n"

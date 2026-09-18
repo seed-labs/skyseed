@@ -4,7 +4,7 @@ import ast
 import json
 from pathlib import Path
 
-from tools._html import finalize_runtime_aggregate_index, write_aggregate_index
+from tools._presentation.html import finalize_runtime_aggregate_index, write_aggregate_index
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -15,7 +15,7 @@ CURRENT_TOOL_PACKAGES = {
     "planner",
     "bpf_compiler",
     "runner",
-    "observation",
+    "performance",
     "traffic",
 }
 RETIRED_SYMBOLS = (
@@ -33,7 +33,7 @@ def _python_source(directory: Path) -> str:
     return "\n".join(
         path.read_text(encoding="utf-8")
         for path in sorted(directory.rglob("*.py"))
-        if "__pycache__" not in path.parts
+        if "__pycache__" not in path.parts and "active" not in path.relative_to(directory).parts
     )
 
 
@@ -56,7 +56,7 @@ def test_tools_are_repository_local_and_slice_tool_is_absent() -> None:
         path.name
         for path in TOOLS_ROOT.iterdir()
         if path.is_dir()
-        and path.name not in {"__pycache__", "_assets"}
+        and path.name not in {"__pycache__", "_presentation"}
         and (path / "__init__.py").is_file()
     } == CURRENT_TOOL_PACKAGES
     assert not (TOOLS_ROOT / "slice").exists()
@@ -94,7 +94,7 @@ def test_planner_and_compiler_tools_read_public_detached_values() -> None:
     assert "PublishedPlanningEvidence" in planner
     assert "read_planner_history" in planner
     assert "Plan" in compiler
-    assert "BpfCompiledRealization" in compiler
+    assert "BpfCompilationResult" in compiler
     assert "read_bpf_compiler_history" in compiler
     for private in (
         "_selected_by_pair",
@@ -107,7 +107,7 @@ def test_planner_and_compiler_tools_read_public_detached_values() -> None:
 
 
 def test_observation_groups_describe_the_actual_round_b_pipeline() -> None:
-    source = _python_source(TOOLS_ROOT / "observation")
+    source = _python_source(TOOLS_ROOT / "performance")
     lowered = source.lower()
     for required in (
         "physical projection",
@@ -131,7 +131,7 @@ def test_aggregate_index_links_only_current_tools(tmp_path: Path) -> None:
         "physical-world": {"status": "PASS"},
         "zone": {"status": "PASS"},
         "planner": {"status": "PASS"},
-        "observation": {"status": "PASS"},
+        "performance": {"status": "PASS"},
         "bpf-compiler": {"status": "PASS"},
         "runner": {"status": "PASS"},
         "traffic": {"status": "PASS"},
@@ -142,7 +142,7 @@ def test_aggregate_index_links_only_current_tools(tmp_path: Path) -> None:
         "physical-world/index.html",
         "zone/index.html",
         "planner/index.html",
-        "observation/index.html",
+        "performance/index.html",
         "bpf-compiler/index.html",
         "runner/index.html",
         "traffic/index.html",
@@ -173,7 +173,7 @@ def test_detached_executor_supports_only_semantic_side_work() -> None:
     source = (TOOLS_ROOT / "_detached_inspection.py").read_text(
         encoding="utf-8"
     )
-    assert '_SUPPORTED_TASKS = frozenset({"planner", "compiler", "observation"})' in source
+    assert '_SUPPORTED_TASKS = frozenset({"planner", "compiler", "performance"})' in source
     for forbidden in ("physical-world", "physical-frame", "zone", "traffic", "slice"):
         assert f'"{forbidden}"' not in source.split("_SUPPORTED_TASKS", 1)[1].split(")", 1)[0]
 
@@ -188,3 +188,21 @@ def test_tool_readmes_describe_observation_not_domain_ownership() -> None:
         )
         for retired in RETIRED_SYMBOLS:
             assert retired not in readme
+
+
+def test_concise_namespace_reexports_canonical_capabilities():
+    import tools
+    from tools.planner.export import write_network_export
+    from tools.traffic.export import write_traffic_export
+    from tools.experiment import write_experiment_tools
+    assert tools.write_network_export is write_network_export
+    assert tools.write_traffic_export is write_traffic_export
+    assert tools.write_experiment_tools is write_experiment_tools
+    assert tools.finalize_runtime_aggregate_index is finalize_runtime_aggregate_index
+    for name in CURRENT_TOOL_PACKAGES:
+        assert getattr(tools, name).__name__ == 'tools.' + name
+
+
+def test_active_traffic_consumes_existing_facts_without_computation():
+    source = _python_source(TOOLS_ROOT / "traffic/active")
+    assert not (_called_names(source) & {"frame_at", "compute_observation", "observe", "compile_bpf"})

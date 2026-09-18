@@ -2,7 +2,7 @@
 from bisect import bisect_right
 import json
 from pathlib import Path
-from tools._html import json_for_script
+from tools._presentation.html import json_for_script
 
 _TRANSACTION_CHUNK_SIZE = 25
 _VALID_IDENTITIES = {'exact-generation', 'in-flight-boundary'}
@@ -86,7 +86,7 @@ def _browser_index(data):
             'flows': _flow_index(data, rows),
             'times': [f['timestamp'] for f in data['physical_evidence']['frames']],
             'chunk_size': _TRANSACTION_CHUNK_SIZE,
-            'frame_sampling': 'latest retained formal PhysicalFrame at or before the observation; no continuous position measurement or interpolation'}
+            'frame_sampling': 'latest retained formal PhysicalPositionSnapshot at or before the observation; no continuous position measurement or interpolation'}
 
 
 def _evidence_time(transaction, packets):

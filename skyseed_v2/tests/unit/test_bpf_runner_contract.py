@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from skyseed_v2.backend.bpf.runner import deployment as deployment_module
+
 from datetime import datetime, timedelta, timezone
 import inspect
 import json
@@ -12,19 +14,16 @@ from types import SimpleNamespace
 import pytest
 
 from skyseed_v2.backend import bpf
-from skyseed_v2.backend.bpf import runner as runner_module
-from skyseed_v2.backend.bpf._runner.event_history import _NonBlockingEventHistory
-from skyseed_v2.backend.bpf._runner import process_incarnation
-from skyseed_v2.backend.bpf._runner.runtime_realization import (
-    _IncompleteActivationError,
-)
-from skyseed_v2.backend.bpf.compiled_realization import _PhysicalWorldProjection
-from skyseed_v2.backend.bpf.runner import (
-    BpfRunner,
-    _NominalBoundary,
-    _PrivilegedRuntimeCommandError,
-    _RuntimeBinding,
-)
+from skyseed_v2.backend.bpf.runner import lifecycle as runner_module
+from skyseed_v2.backend.bpf.runner import command_channel as channel_module
+from skyseed_v2.backend.bpf.runner.event_history import _NonBlockingEventHistory
+from skyseed_v2.backend.bpf.runner import process_incarnation
+from skyseed_v2.backend.bpf.runner.runtime_realization import _IncompleteActivationError
+from skyseed_v2.backend.bpf.execution_materials.actions import _PhysicalWorldProjection
+from skyseed_v2.backend.bpf.runner import Runner
+from skyseed_v2.backend.bpf.runner.deployment import _RunnerRuntimeBinding
+from skyseed_v2.backend.bpf.execution_materials.boundaries import _NominalBoundary
+from skyseed_v2.backend.bpf.runner.command_channel import _PrivilegedRuntimeCommandError
 from skyseed_v2.shared import NodeId
 
 
@@ -138,32 +137,38 @@ def test_public_runner_surface_and_constructor_validation_remain_closed(
 ) -> None:
     assert bpf.__all__ == [
         "BpfCompiledActivationBoundary",
-        "BpfCompiledRealization",
-        "BpfRunner",
+        "BpfCompilationResult",
+        "Runner",
         "compile_bpf",
+        "compiler",
+        "runner",
     ]
-    assert {name for name in vars(BpfRunner) if not name.startswith("_")} == {
+    assert {name for name in vars(Runner) if not name.startswith("_")} == {
         "prepare",
         "append_batch",
         "activate_next",
         "run",
         "cleanup",
         "inspection_snapshot",
+        "pause",
+        "resume",
+        "cancel_runtime",
+        "status",
     }
     monkeypatch.setattr(runner_module, "_open_runner_artifact", lambda path: _Artifact())
     with pytest.raises(TypeError, match="must be a string"):
-        BpfRunner(compose_project_name=object(), runtime_artifact=Path("/tmp/a"))
+        Runner(compose_project_name=object(), runtime_artifact=Path("/tmp/a"))
     with pytest.raises(ValueError, match="single line"):
-        BpfRunner(compose_project_name="runner\nother", runtime_artifact=Path("/tmp/a"))
+        Runner(compose_project_name="runner\nother", runtime_artifact=Path("/tmp/a"))
     with pytest.raises(TypeError, match="pathlib.Path"):
-        BpfRunner(compose_project_name="runner", runtime_artifact="/tmp/a")
+        Runner(compose_project_name="runner", runtime_artifact="/tmp/a")
 
 def test_runner_discovers_project_nodes_with_one_privileged_incarnation_batch(
     monkeypatch,
 ) -> None:
     artifact = _Artifact()
     monkeypatch.setattr(runner_module, "_open_runner_artifact", lambda path: artifact)
-    runner = BpfRunner(
+    runner = Runner(
         compose_project_name="runner-project",
         runtime_artifact=Path("/tmp/a"),
     )
@@ -172,7 +177,7 @@ def test_runner_discovers_project_nodes_with_one_privileged_incarnation_batch(
             "Id": "auxiliary",
             "Name": "/auxiliary",
             "Image": "aux-image",
-            "Config": {"Labels": {runner_module._PROJECT_LABEL: "runner-project"}},
+            "Config": {"Labels": {channel_module._PROJECT_LABEL: "runner-project"}},
             "State": {"Running": False, "Pid": 0, "StartedAt": ""},
         },
         {
@@ -180,11 +185,11 @@ def test_runner_discovers_project_nodes_with_one_privileged_incarnation_batch(
             "Name": "/satellite",
             "Image": "node-image",
             "Config": {"Labels": {
-                runner_module._PROJECT_LABEL: "runner-project",
-                runner_module._SERVICE_LABEL: "satellite",
-                runner_module._ENTITY_TYPE_LABEL: "Satellite",
-                runner_module._ASN_LABEL: "65001",
-                runner_module._SATELLITE_ID_LABEL: "satellite-0",
+                channel_module._PROJECT_LABEL: "runner-project",
+                channel_module._SERVICE_LABEL: "satellite",
+                deployment_module._ENTITY_TYPE_LABEL: "Satellite",
+                deployment_module._ASN_LABEL: "65001",
+                deployment_module._SATELLITE_ID_LABEL: "satellite-0",
             }},
             "State": {"Running": True, "Pid": 123, "StartedAt": "now"},
         },
@@ -196,17 +201,17 @@ def test_runner_discovers_project_nodes_with_one_privileged_incarnation_batch(
         assert "exec" not in command
         return subprocess.CompletedProcess(command, 0, "auxiliary\ncontainer-1\n", "")
 
-    monkeypatch.setattr(runner_module, "_execute", execute)
-    monkeypatch.setattr(BpfRunner, "_inspect", lambda self, ids: inspected)
+    monkeypatch.setattr(deployment_module, "_execute", execute)
+    monkeypatch.setattr(deployment_module._Deployment, "_inspect", lambda self, ids: inspected)
     captures = []
     monkeypatch.setattr(
-        BpfRunner,
+        deployment_module._Deployment,
         "_capture_privileged_incarnations",
         lambda self, *, image_id, pids: (
             captures.append((image_id, pids)) or [(77, 456)]
         ),
     )
-    bindings = runner._discover_runtime_bindings(PROJECTION)
+    bindings = runner._deployment.discover(PROJECTION)
     assert set(bindings) == {SATELLITE}
     assert bindings[SATELLITE].process_start_time_ticks == 77
     assert bindings[SATELLITE].netns_inode == 456
@@ -217,30 +222,30 @@ def test_runner_rejects_incomplete_physical_world_binding_set(monkeypatch) -> No
     second = NodeId(65001, "satellite", "satellite-1")
     artifact = _Artifact()
     monkeypatch.setattr(runner_module, "_open_runner_artifact", lambda path: artifact)
-    runner = BpfRunner(compose_project_name="runner", runtime_artifact=Path("/tmp/a"))
+    runner = Runner(compose_project_name="runner", runtime_artifact=Path("/tmp/a"))
     monkeypatch.setattr(
-        runner_module,
+        deployment_module,
         "_execute",
         lambda command, **facts: subprocess.CompletedProcess(command, 0, "container\n", ""),
     )
-    monkeypatch.setattr(BpfRunner, "_inspect", lambda self, ids: [{
+    monkeypatch.setattr(deployment_module._Deployment, "_inspect", lambda self, ids: [{
         "Id": "container", "Name": "/satellite", "Image": "image",
         "Config": {"Labels": {
-            runner_module._PROJECT_LABEL: "runner",
-            runner_module._SERVICE_LABEL: "satellite",
-            runner_module._ENTITY_TYPE_LABEL: "Satellite",
-            runner_module._ASN_LABEL: "65001",
-            runner_module._SATELLITE_ID_LABEL: "satellite-0",
+            channel_module._PROJECT_LABEL: "runner",
+            channel_module._SERVICE_LABEL: "satellite",
+            deployment_module._ENTITY_TYPE_LABEL: "Satellite",
+            deployment_module._ASN_LABEL: "65001",
+            deployment_module._SATELLITE_ID_LABEL: "satellite-0",
         }},
         "State": {"Running": True, "Pid": 123, "StartedAt": "now"},
     }])
     with pytest.raises(RuntimeError, match="missing="):
-        runner._discover_runtime_bindings(_PhysicalWorldProjection((SATELLITE, second), ()))
+        runner._deployment.discover(_PhysicalWorldProjection((SATELLITE, second), ()))
 
 def test_privileged_incarnation_capture_is_one_bounded_docker_run(monkeypatch) -> None:
     artifact = _Artifact()
     monkeypatch.setattr(runner_module, "_open_runner_artifact", lambda path: artifact)
-    runner = BpfRunner(compose_project_name="runner", runtime_artifact=Path("/tmp/a"))
+    runner = Runner(compose_project_name="runner", runtime_artifact=Path("/tmp/a"))
     calls = []
 
     def execute(command, **facts):
@@ -259,8 +264,8 @@ def test_privileged_incarnation_capture_is_one_bounded_docker_run(monkeypatch) -
         }
         return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
 
-    monkeypatch.setattr(runner_module, "_execute", execute)
-    assert runner._capture_privileged_incarnations(
+    monkeypatch.setattr(deployment_module, "_execute", execute)
+    assert runner._deployment._capture_privileged_incarnations(
         image_id="node-image", pids=(101, 102)
     ) == [(11, 21), (12, 22)]
     assert len(calls) == 1
@@ -275,7 +280,7 @@ def test_privileged_incarnation_capture_is_one_bounded_docker_run(monkeypatch) -
 def test_parent_rejects_duplicate_privileged_netns_evidence(monkeypatch) -> None:
     artifact = _Artifact()
     monkeypatch.setattr(runner_module, "_open_runner_artifact", lambda path: artifact)
-    runner = BpfRunner(compose_project_name="runner", runtime_artifact=Path("/tmp/a"))
+    runner = Runner(compose_project_name="runner", runtime_artifact=Path("/tmp/a"))
     payload = {
         "status": "ok",
         "result": {
@@ -289,14 +294,14 @@ def test_parent_rejects_duplicate_privileged_netns_evidence(monkeypatch) -> None
         },
     }
     monkeypatch.setattr(
-        runner_module,
+        deployment_module,
         "_execute",
         lambda command, **facts: subprocess.CompletedProcess(
             command, 0, json.dumps(payload), ""
         ),
     )
     with pytest.raises(RuntimeError, match="netns evidence is duplicated"):
-        runner._capture_privileged_incarnations(
+        runner._deployment._capture_privileged_incarnations(
             image_id="node-image", pids=(101, 102)
         )
 
@@ -372,14 +377,14 @@ def test_privileged_helper_has_private_ownership_labels(monkeypatch) -> None:
             command, 1 if command[1] == "inspect" else 0, "", ""
         )
 
-    monkeypatch.setattr(runner_module, "_execute", execute)
+    monkeypatch.setattr(channel_module, "_execute", execute)
     helper = runner_module._PrivilegedHelper(
         docker_executable="docker",
         name="runner-helper",
         foundation_token="foundation-token",
         image_id="node-image",
     )
-    monkeypatch.setattr(runner_module.subprocess, "Popen", lambda *args, **kwargs: SimpleNamespace())
+    monkeypatch.setattr(channel_module.subprocess, "Popen", lambda *args, **kwargs: SimpleNamespace())
     helper.start()
     run_command = commands[1]
     assert "org.skyseed.runner.foundation=foundation-token" in run_command
@@ -392,7 +397,6 @@ def test_runner_depends_on_opaque_runtime_realization_seam() -> None:
         "_MaterializedDataplaneState",
         "_ReadyDataplaneBoundary",
         "_empty_state",
-        "_materialize_boundary",
         "_NO_ACTIVE_GENERATION",
     ):
         assert implementation_symbol not in source
@@ -402,7 +406,7 @@ def test_durable_history_and_recent_snapshot_preserve_detached_evidence(
 ) -> None:
     artifact = _Artifact()
     monkeypatch.setattr(runner_module, "_open_runner_artifact", lambda path: artifact)
-    runner = BpfRunner(compose_project_name="runner", runtime_artifact=Path("/tmp/a"))
+    runner = Runner(compose_project_name="runner", runtime_artifact=Path("/tmp/a"))
     history_path = tmp_path / "events.jsonl"
     runner._enable_event_history(history_path)
     nested = {"capacity": {"per_node": [{"key": "a"}]}}
@@ -452,7 +456,7 @@ def _finite_runner(monkeypatch, *, one_boundary=False):
             return _capacity_demand(projection, boundaries)
         @property
         def logical_ports(self):
-            from skyseed_v2.backend.bpf.compiled_realization import _ResourceIntent
+            from skyseed_v2.backend.bpf.execution_materials.actions import _ResourceIntent
             connections = tuple(dict.fromkeys(op.intent.connection_id for boundary in boundaries for op in boundary.operations
                                              if isinstance(op.intent, _ResourceIntent)))
             return {connection: (2 * index + 1, 2 * index + 2) for index, connection in enumerate(connections)}
@@ -461,13 +465,13 @@ def _finite_runner(monkeypatch, *, one_boundary=False):
     artifact.zone_prefixes = ("198.18.0.1/32",)
     opens = []
     monkeypatch.setattr(runner_module, "_open_runner_artifact", lambda path: opens.append(path) or artifact)
-    bindings = {node: _RuntimeBinding(node, "service", "container", "name", "image", i + 100, i + 200, i + 300, "now")
+    bindings = {node: _RunnerRuntimeBinding(node, "service", "container", "name", "image", i + 100, i + 200, i + 300, "now")
                 for i, node in enumerate(projection.node_ids)}
-    monkeypatch.setattr(BpfRunner, "_discover_runtime_bindings", lambda self, projection: bindings)
+    monkeypatch.setattr(deployment_module._Deployment, "discover", lambda self, projection: bindings)
     monkeypatch.setattr(runner_module._PrivilegedHelper, "start", lambda self: None)
     monkeypatch.setattr(runner_module._PrivilegedHelper, "stop", lambda self: None)
     monkeypatch.setattr(runner_module._PrivilegedHelper, "execute", lambda self, action, request: kernel.execute(action, request))
-    runner = BpfRunner(compose_project_name="finite", runtime_artifact=Path("/artifact"))
+    runner = Runner(compose_project_name="finite", runtime_artifact=Path("/artifact"))
     return runner, artifact, kernel, opens
 
 
@@ -494,16 +498,16 @@ def test_formal_run_begins_at_one_without_decode_or_ready_wait(monkeypatch):
     runner.prepare()
     def forbidden(*args, **kwargs): raise AssertionError("runtime called Preparation/decode/discovery")
     monkeypatch.setattr(artifact, "boundaries", forbidden)
-    monkeypatch.setattr(BpfRunner, "_discover_runtime_bindings", forbidden)
+    monkeypatch.setattr(deployment_module._Deployment, "discover", forbidden)
     monkeypatch.setattr(runner._runtime_realization, "prepare_all", forbidden)
-    monkeypatch.setattr(runner._condition, "wait", forbidden)
     clock = [100.0]
     monkeypatch.setattr(runner_module, "monotonic", lambda: clock[0])
-    monkeypatch.setattr(runner_module, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+    monkeypatch.setattr(runner._condition, "wait", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
     runner.run()
     formal = [event for event in runner._events if event["event"] == "activation_end" and not event["preparation"]]
     assert [event["boundary_timestamp"] for event in formal] == [boundary.nominal_time.isoformat() for boundary in artifact._boundaries[1:]]
     assert runner._active_count == 5
+    assert not any(event["event"] == "material_wait_start" for event in runner._events)
     assert all(action == "activate_boundary" for action, _ in kernel.actions[5:])
     runner.cleanup()
     assert artifact.closed
@@ -529,20 +533,22 @@ def test_fixed_origin_absorbs_encoding_and_wake_delays_and_reports_overrun(monke
     runner._prepared_plans = tuple(replace(plan, nominal_time=origin + timedelta(seconds=offset))
                                    for plan, offset in zip(runner._prepared_plans, (0, 1, 3, 7, 8)))
     clock = [100.0]
-    sleeps = []
+    delayed_wake = [False]
     durations = iter((0.6, 0.3, 2.0, 0.1))
     monkeypatch.setattr(runner_module, "monotonic", lambda: clock[0])
     monkeypatch.setattr(runner_module, "monotonic_ns", lambda: round(clock[0] * 1e9))
-    def sleep(seconds):
-        sleeps.append(seconds)
-        clock[0] += seconds + (0.4 if len(sleeps) == 1 else 0)
+    def wait(seconds):
+        clock[0] = round(clock[0] + seconds, 9)
+        if clock[0] >= 101 and not delayed_wake[0]:
+            delayed_wake[0] = True
+            clock[0] += 0.4
     def activate(plan):
         # Parent encoding/helper-arrival delay is elapsed Main work; its
         # observed anchor must never become the next scheduling origin.
         anchor = clock[0] + 0.2
         clock[0] += next(durations)
         return {"activation_anchor_monotonic_ns": round(anchor * 1e9)}
-    monkeypatch.setattr(runner_module, "sleep", sleep)
+    monkeypatch.setattr(runner._condition, "wait", wait)
     monkeypatch.setattr(runner._runtime_realization, "activate", activate)
     runner.run()
     events = [event for event in runner._events if event["event"] == "activation_end" and not event["preparation"]]
@@ -574,8 +580,8 @@ def test_persistent_helper_reuses_one_command_stream_without_inspection(monkeypa
     replies = io.StringIO('{"status":"ok","result":{"count":1}}\n{"status":"ok","result":{"count":2}}\n')
     helper._process = SimpleNamespace(stdin=requests, stdout=replies, poll=lambda: None)
     def forbidden(*args, **kwargs): raise AssertionError("per-action process or Docker inspection")
-    monkeypatch.setattr(runner_module, "_execute", forbidden)
-    monkeypatch.setattr(runner_module.subprocess, "Popen", forbidden)
+    monkeypatch.setattr(channel_module, "_execute", forbidden)
+    monkeypatch.setattr(channel_module.subprocess, "Popen", forbidden)
     monkeypatch.setattr(helper, "assert_current", forbidden)
     for generation in (1, 2):
         result = helper.execute("activate_boundary", {"generation": generation})
@@ -592,7 +598,7 @@ def test_persistent_helper_reuses_one_command_stream_without_inspection(monkeypa
     ("[]\n", AttributeError),
     ('{"status":"error","error":"mutation failed","error_type":"OSError",'
      '"evidence":{"cleanup_ownership_retained":true},'
-     '"helper_timing":{"dispatch_seconds":0.25}}\n', runner_module._PrivilegedRuntimeCommandError),
+     '"helper_timing":{"dispatch_seconds":0.25}}\n', channel_module._PrivilegedRuntimeCommandError),
 ])
 def test_command_failure_keeps_original_error_and_partial_timing(reply, error_type):
     import io
@@ -604,7 +610,7 @@ def test_command_failure_keeps_original_error_and_partial_timing(reply, error_ty
     timing = failure.value.command_timing
     assert timing["command_seconds"] >= timing["json_encode_seconds"] >= 0
     assert timing["channel_wait_seconds"] >= 0
-    if error_type is runner_module._PrivilegedRuntimeCommandError:
+    if error_type is channel_module._PrivilegedRuntimeCommandError:
         assert failure.value.remote_evidence == {"cleanup_ownership_retained": True}
         assert timing["helper"]["dispatch_seconds"] == .25
     elif error_type is not AttributeError:
@@ -620,7 +626,6 @@ def test_main_enqueues_prebuilt_telemetry_templates_without_build_or_flush(monke
         def enqueue_generation_identity(self, templates, installed, withdrawn, boundary):
             queued.append((templates, installed, withdrawn))
         def record_failure(self, error): raise AssertionError(str(error))
-        def write_generation_identity(self, *args): raise AssertionError("synchronous bulk telemetry")
     monkeypatch.setattr(runner_module, "_TrafficTelemetryRecorder", Recorder)
     runner, _, _, _ = _finite_runner(monkeypatch)
     runner._enable_traffic_telemetry(tmp_path)

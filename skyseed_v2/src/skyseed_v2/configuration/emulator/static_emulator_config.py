@@ -13,12 +13,12 @@ from .ground_network import (
     OrdinaryAutonomousSystemConfig,
 )
 from .ground_station import GroundStationConfig, _derive_ground_station_id
-from .satellite import ShellConfig
+from skyseed_v2.configuration.emulator.satellite_layout import ShellConfig
 
 
 @dataclass(frozen=True, slots=True)
 class SkyseedAutonomousSystemConfig:
-    """Group Shell and GroundStation inputs for one future Skyseed AS.
+    """Group Shell and GroundStation inputs for one future SkySEED AS.
 
     Layer: immutable Config. Input callers create it and the
     `create_static_emulator` creates the real AS and owned entities. It is not
@@ -44,7 +44,7 @@ class SkyseedAutonomousSystemConfig:
             )
         if not shells and not stations:
             raise ValueError(
-                "Skyseed AS must contain at least one Shell or GroundStation"
+                "SkySEED AS must contain at least one Shell or GroundStation"
             )
         if len({item.shell_id for item in shells}) != len(shells):
             raise ValueError("shells contains a duplicate shell_id")

@@ -11,20 +11,15 @@ import time
 
 import pytest
 
-from examples.complete_static_emulator.emu import build_emulator
-from examples.complete_static_emulator.simu import (
-    create_complete_static_simulator,
-    create_complete_static_planner,
-    run_complete_static_chain,
-)
+from examples.Sky00_tiny_network.tiny_network import build_emulator
+from examples.Sky00_tiny_network.tiny_network import create_simulator as create_complete_static_simulator
+from tests._support import drain_simulator as run_complete_static_chain
 from skyseed_v2.shared import NodeId
-from skyseed_v2.backend.bpf import BpfRunner
-from skyseed_v2.backend.bpf.compiled_realization import (
-    _ForwardingBinding,
-    _ForwardingKey,
-)
-from skyseed_v2.experiment.traffic.probe_execution import TrafficProbeExecutor
+from skyseed_v2.backend.bpf import Runner
+from skyseed_v2.backend.bpf.execution_materials.actions import _ForwardingBinding, _ForwardingKey
+from tools.traffic.active.probe_execution import TrafficProbeExecutor
 from skyseed_v2.simulator import (
+    PlannerConfiguration,
     GroundStationRouteDemandTarget,
     OperationalConnectionId,
     OperationalConnectionKind,
@@ -34,8 +29,7 @@ from skyseed_v2.simulator import (
     UnreachableRouteOutcome,
     ZoneRouteDemandTarget,
 )
-from skyseed_v2.experiment.traffic.probe_plan import (
-    IncrementalTrafficProbePlanBuilder,
+from tools.traffic.active.probe_plan import (
     TrafficProbePlanBuilder,
     _BoundaryProjection,
     _DIRECTION_GROUND_TO_ZONE,
@@ -56,8 +50,8 @@ START = datetime(2026, 1, 1, tzinfo=timezone.utc)
 def complete_chain():
     simulator = create_complete_static_simulator(build_emulator())
     # This focused lineage fixture deliberately crosses a batch boundary.
-    planner = create_complete_static_planner(simulator)
-    planner._frames_per_batch = 3
+    planner = simulator.get_planner()
+    planner._configuration = PlannerConfiguration(frames_per_batch=3, inter_satellite_acquisition_duration=timedelta(0), ground_station_acquisition_duration=timedelta(0))
     plans, realizations, snapshot = run_complete_static_chain(simulator, planner=planner)
     return simulator, plans, realizations, snapshot
 
@@ -84,7 +78,7 @@ def test_probe_selection_is_deterministic_and_round_trips(
     _, plans, realizations, _ = complete_chain
     builder = TrafficProbePlanBuilder()
     first = builder.build(plans, realizations)
-    second = builder.build(plans, realizations)
+    second = TrafficProbePlanBuilder().build(plans, realizations)
     assert first.revision_id == second.revision_id
     assert first.probe_identities == second.probe_identities
     assert first.episodes == second.episodes
@@ -100,7 +94,7 @@ def test_incremental_probe_projection_exactly_matches_batch_builder(
 ) -> None:
     _, plans, realizations, _ = complete_chain
     expected = TrafficProbePlanBuilder().build(plans, realizations).artifact()
-    builder = IncrementalTrafficProbePlanBuilder()
+    builder = TrafficProbePlanBuilder()
     for plan, realization in zip(plans, realizations, strict=True):
         builder.append(plan, realization)
     actual = builder.finalize().artifact()
@@ -121,7 +115,7 @@ def test_incremental_probe_duration_counts_work_not_interleaved_wait(
     _, plans, realizations, _ = complete_chain
     ticks = iter(float(value) for value in range(0, 10_000, 2))
     monkeypatch.setattr(time, "monotonic", lambda: next(ticks))
-    builder = IncrementalTrafficProbePlanBuilder()
+    builder = TrafficProbePlanBuilder()
     for plan, realization in zip(plans, realizations, strict=True):
         builder.append(plan, realization)
 
@@ -183,10 +177,10 @@ def test_probe_selection_discards_candidate_without_full_route_horizon(
     monkeypatch: pytest.MonkeyPatch,
     complete_chain,
 ) -> None:
-    from skyseed_v2.experiment.traffic import probe_plan as probe_plan_module
+    from tools.traffic.active import probe_plan as probe_plan_module
 
     _, plans, realizations, _ = complete_chain
-    original_candidates = probe_plan_module._candidate_pairs
+    original_candidates = probe_plan_module._candidate_pairs_from_deltas
     invalid_ground = NodeId(65001, "ground-station", "000-missing-demand")
     invalid_key = (
         _DIRECTION_GROUND_TO_ZONE,
@@ -205,7 +199,7 @@ def test_probe_selection_discards_candidate_without_full_route_horizon(
             *original_candidates(plan_values, values, nominal_boundaries),
         )
 
-    monkeypatch.setattr(probe_plan_module, "_candidate_pairs", candidates)
+    monkeypatch.setattr(probe_plan_module, "_candidate_pairs_from_deltas", candidates)
     result = TrafficProbePlanBuilder().build(plans, realizations)
 
     assert invalid_key not in {
@@ -221,7 +215,7 @@ def test_explicit_unreachable_reason_is_preserved() -> None:
     demand = RouteDemand(ground, ZoneRouteDemandTarget("zone-a"))
     outcome = UnreachableRouteOutcome(
         demand,
-        RouteUnreachableReason.NO_OPERATIONAL_PATH,
+        RouteUnreachableReason.NO_ELIGIBLE_PATH,
     )
     projection = _BoundaryProjection(
         nominal_time=complete_time(),
@@ -244,7 +238,7 @@ def test_explicit_unreachable_reason_is_preserved() -> None:
     assert reachable is False
     assert path == ()
     assert service == satellite
-    assert reason == RouteUnreachableReason.NO_OPERATIONAL_PATH.value
+    assert reason == RouteUnreachableReason.NO_ELIGIBLE_PATH.value
 
 
 def test_probe_planning_rejects_broken_realization_lineage(
@@ -269,7 +263,7 @@ def test_probe_plan_selection_is_deterministic_bounded_and_horizon_scoped(
     builder = TrafficProbePlanBuilder()
 
     first = builder.build(plans, realizations)
-    second = builder.build(plans, realizations)
+    second = TrafficProbePlanBuilder().build(plans, realizations)
     artifact = first.artifact()
 
     assert first.revision_id == second.revision_id
@@ -315,14 +309,17 @@ def test_probe_plan_resolves_paths_only_after_bounded_coverage_selection(
     monkeypatch: pytest.MonkeyPatch,
     complete_chain,
 ) -> None:
-    from skyseed_v2.experiment.traffic import probe_plan as probe_plan_module
+    from tools.traffic.active import probe_plan as probe_plan_module
 
     _, plans, realizations, _ = complete_chain
-    original_candidates = probe_plan_module._candidate_pairs
+    original_candidates = probe_plan_module._candidate_pairs_from_deltas
     original_resolve = probe_plan_module._resolve_path
+    builder = TrafficProbePlanBuilder()
+    for source_plan, realization in zip(plans, realizations):
+        builder.append(source_plan, realization)
     base_candidates = original_candidates(
-        tuple(plans),
-        tuple(realizations),
+        tuple(builder._deltas),
+        builder._zone_prefixes,
         tuple(
             timestamp
             for realization in realizations
@@ -357,10 +354,10 @@ def test_probe_plan_resolves_paths_only_after_bounded_coverage_selection(
     def count_resolve(seed, projection):
         resolved.append(seed.key)
         if seed.ground_station.entity_id.startswith("bounded-background-"):
-            return False, (), None, RouteUnreachableReason.NO_OPERATIONAL_PATH.value
+            return False, (), None, RouteUnreachableReason.NO_ELIGIBLE_PATH.value
         return original_resolve(seed, projection)
 
-    monkeypatch.setattr(probe_plan_module, "_candidate_pairs", many_candidates)
+    monkeypatch.setattr(probe_plan_module, "_candidate_pairs_from_deltas", many_candidates)
     monkeypatch.setattr(probe_plan_module, "_resolve_path", count_resolve)
 
     plan = TrafficProbePlanBuilder().build(plans, realizations)
@@ -377,7 +374,7 @@ def test_windowed_probe_reconstruction_is_event_local(
     monkeypatch: pytest.MonkeyPatch,
     complete_chain,
 ) -> None:
-    from skyseed_v2.experiment.traffic import probe_plan as probe_plan_module
+    from tools.traffic.active import probe_plan as probe_plan_module
 
     _, plans, realizations, _ = complete_chain
     original = probe_plan_module._resolve_path
@@ -547,7 +544,7 @@ def test_probe_plan_fails_closed_on_forwarding_loop() -> None:
 def test_probe_plan_does_not_claim_complete_experiment(
     complete_chain,
 ) -> None:
-    from skyseed_v2.experiment.traffic.probe_plan import TrafficProbePlan
+    from tools.traffic.active.probe_plan import TrafficProbePlan
 
     _, plans, realizations, _ = complete_chain
     artifact = TrafficProbePlanBuilder().build(plans, realizations).artifact()
@@ -563,7 +560,7 @@ def test_probe_identity_and_episode_identity_survive_horizon_extension(
     _, plans, realizations, _ = complete_chain
     builder = TrafficProbePlanBuilder()
     prefix = builder.build(plans[:1], realizations[:1])
-    extended = builder.build(plans, realizations)
+    extended = TrafficProbePlanBuilder().build(plans, realizations)
 
     assert prefix.revision_id != extended.revision_id
     assert {value.probe_id for value in prefix.probe_identities} <= {
@@ -591,7 +588,7 @@ def test_unserved_zone_preserves_explicit_route_outcome_reason() -> None:
     demand = RouteDemand(ground, ZoneRouteDemandTarget("zone-a"))
     outcome = UnreachableRouteOutcome(
         demand,
-        RouteUnreachableReason.NO_OPERATIONAL_PATH,
+        RouteUnreachableReason.NO_ELIGIBLE_PATH,
     )
     projection = _BoundaryProjection(
         nominal_time=START,
@@ -618,7 +615,7 @@ def test_unserved_zone_preserves_explicit_route_outcome_reason() -> None:
     assert reachable is False
     assert path == ()
     assert service is None
-    assert reason == RouteUnreachableReason.NO_OPERATIONAL_PATH.value
+    assert reason == RouteUnreachableReason.NO_ELIGIBLE_PATH.value
 
 
 def _runner_snapshot(
@@ -663,7 +660,7 @@ def _runner_snapshot(
     }
 
 
-class _OriginRunner(BpfRunner):
+class _OriginRunner(Runner):
     def __init__(self, plan) -> None:
         self._test_plan = plan
         self._test_origin = time.monotonic()
@@ -683,6 +680,13 @@ class _OriginRunner(BpfRunner):
                 },
             ),
         }
+
+    def status(self):
+        snapshot = self.inspection_snapshot()
+        return {"active_frontier": snapshot["runner"]["frontiers"]["last_active"],
+                "paused": False, "wait_reasons": [],
+                "clock": {"nominal_origin": self._test_plan.coverage_start.isoformat(),
+                          "wall_origin": self._test_origin, "held_since": None, "revision": 0}}
 
 
 class _JumpedOriginRunner(_OriginRunner):
@@ -705,7 +709,7 @@ def _install_fake_docker_processes(
     *,
     ignore_term: bool = False,
 ):
-    from skyseed_v2.experiment.traffic import probe_execution as execution_module
+    from tools.traffic.active import probe_execution as execution_module
 
     real_popen = subprocess.Popen
     processes = {}
@@ -771,42 +775,27 @@ def _install_fake_docker_processes(
     return processes
 
 
-@pytest.mark.parametrize('second', ['active', 'timeout', 'identity-mismatch'])
-def test_generator_control_timeout_retries_same_identity_and_fails_closed(monkeypatch, second):
-    from types import SimpleNamespace
-    import subprocess
-    from skyseed_v2.experiment.traffic import probe_execution as module
-
+@pytest.mark.parametrize('state', ['active', 'identity-mismatch'])
+def test_generator_control_uses_one_owned_operation_without_elapsed_deadline(monkeypatch, state):
+    from tools.traffic.active import probe_execution as module
     executor = TrafficProbeExecutor.__new__(TrafficProbeExecutor)
     executor._docker = 'docker'
-    records = []
-    executor._record = lambda kind, **facts: records.append((kind, facts))
-    executor._drain_io = lambda timeout: None
-    generator = SimpleNamespace(
-        episode=SimpleNamespace(episode_id='episode'), identity=SimpleNamespace(probe_id='probe'),
-        segment_index=2, binding=SimpleNamespace(container_id='immutable-container-id'),
+    generator = SimpleNamespace(episode=SimpleNamespace(episode_id='episode'),
+        binding=SimpleNamespace(container_id='immutable-container-id'),
         pid_file='/tmp/owned-unique-generator.pid', runtime_identity='owned-unique-generator')
     calls = []
-
     def invoke(command, **kwargs):
-        calls.append((command, kwargs['timeout']))
-        if len(calls) == 1 or second == 'timeout':
-            raise subprocess.TimeoutExpired(command, kwargs['timeout'])
-        return SimpleNamespace(returncode=0, stdout=second+'\n', stderr='')
-
+        calls.append((command, kwargs))
+        return SimpleNamespace(returncode=0, stdout=state, stderr='')
     monkeypatch.setattr(module.subprocess, 'run', invoke)
-    if second == 'active':
-        assert executor._generator_control(generator, 'status', expected='active') == 'active'
+    if state == 'active':
+        assert executor._generator_control(generator, 'state', expected='active') == 'active'
     else:
-        with pytest.raises(subprocess.TimeoutExpired if second == 'timeout' else RuntimeError):
-            executor._generator_control(generator, 'status', expected='active')
-    assert len(calls) == 2 and calls[0][0] == calls[1][0]
-    assert calls[0][0][-2:] == (generator.pid_file, generator.runtime_identity)
-    assert [call[1] for call in calls] == [2.0, 8.0]
-    assert all(kind == 'generator_control_timeout' for kind, _ in records)
-    assert records[0][1]['retrying'] is True
-    if second == 'timeout':
-        assert len(records) == 2 and records[-1][1]['retrying'] is False
+        with pytest.raises(RuntimeError, match='identity-mismatch'):
+            executor._generator_control(generator, 'state', expected='active')
+    assert len(calls) == 1
+    assert 'timeout' not in calls[0][1]
+    assert calls[0][0][-1] == 'owned-unique-generator'
 
 
 def test_probe_executor_resolves_bindings_parses_ping_and_cleans_every_process(
@@ -879,16 +868,22 @@ def test_slow_runner_frontier_remains_authority_for_due_traffic_actions(
         runner_snapshot=_runner_snapshot(plan),
         evidence_path=tmp_path / "slowed-runner.jsonl",
     )
-    from skyseed_v2.experiment.traffic import probe_execution as execution_module
+    from tools.traffic.active import probe_execution as execution_module
 
     monkeypatch.setattr(execution_module, "monotonic", lambda: 10_000.0)
     executor._await_runner_origin = lambda: 100.0
+    executor._runner = _OriginRunner(plan)
+    executor._runner._test_origin = 100.0
+    runner_status = executor._runner.status()
+    monkeypatch.setattr(executor._runner, "status", lambda: runner_status)
     observed_actions = []
     frontier_waits = []
 
     def await_frontier(required):
         frontier_waits.append(required)
         executor._published_frontier = required
+        runner_status["active_frontier"] = required.isoformat()
+        return True
 
     def start_episode(episode):
         observed_actions.append(("start", episode, executor._published_frontier))
@@ -897,6 +892,8 @@ def test_slow_runner_frontier_remains_authority_for_due_traffic_actions(
     def complete_episode(episode):
         observed_actions.append(("complete", episode, executor._published_frontier))
         executor._completed_episodes.add(episode.episode_id)
+        if len(executor._completed_episodes) == len(plan.episodes):
+            executor._stop.set()
 
     executor._await_published_frontier = await_frontier
     executor._start_episode = start_episode
@@ -938,6 +935,8 @@ def test_traffic_never_observes_failed_target_as_formal_active(
     target = plan.nominal_boundaries[1]
 
     class FailedTargetRunner:
+        def status(self):
+            return {"active_frontier": prior.isoformat()}
         def inspection_snapshot(self):
             return {
                 "runner": {"frontiers": {"last_active": prior.isoformat()}},
@@ -971,7 +970,7 @@ def test_cancelled_episode_can_rearm_under_a_revised_lookahead(
     _, plans, realizations, _ = complete_chain
     builder = TrafficProbePlanBuilder()
     first = builder.build(plans[:1], realizations[:1])
-    revised = builder.build(plans, realizations)
+    revised = TrafficProbePlanBuilder().build(plans, realizations)
     processes = _install_fake_docker_processes(monkeypatch)
     evidence_sets = []
 
@@ -1032,7 +1031,7 @@ def test_frontier_jump_does_not_reconcile_one_episode_twice(
 
     executor.start(_JumpedOriginRunner(plan))
     deadline = time.monotonic() + 5
-    while executor._thread is not None and executor._thread.is_alive():
+    while len(executor._completed_episodes) < len(plan.episodes):
         if time.monotonic() >= deadline:
             pytest.fail("frontier-jump executor did not finish")
         time.sleep(0.01)
@@ -1040,6 +1039,166 @@ def test_frontier_jump_does_not_reconcile_one_episode_twice(
 
     assert snapshot["complete"] is True
     assert snapshot["duplicate_same_boundary_reconciliations"] == 0
+    assert all(process.poll() is not None for process in processes.values())
+
+
+@pytest.mark.parametrize("resuming", [False, True])
+def test_slow_launch_refreshes_frontier_before_the_next_episode(
+    tmp_path, monkeypatch, complete_chain, resuming,
+):
+    _, plans, realizations, _ = complete_chain
+    original = TrafficProbePlanBuilder().build(plans, realizations)
+    identities = {value.probe_id: value for value in original.probe_identities}
+    ground, zone = (
+        next(episode for episode in original.episodes
+             if episode.mode == "persistent"
+             and identities[episode.probe_id].direction == direction)
+        for direction in (_DIRECTION_GROUND_TO_ZONE, _DIRECTION_ZONE_TO_GROUND)
+    )
+    migration_time = original.nominal_boundaries[1]
+    new_source = NodeId(65001, "satellite", "slow-launch-target").value
+    first = zone.state_intervals[0]
+    ground = replace(ground, episode_id="traffic-episode-00-ground")
+    zone = replace(zone, episode_id="traffic-episode-01-zone", state_intervals=(
+        replace(first, end_time=migration_time),
+        replace(first, start_time=migration_time, end_time=original.coverage_end,
+                service_satellite_id=new_source,
+                path_node_ids=(new_source, identities[zone.probe_id].ground_station_id)),
+    ))
+    plan = replace(original, episodes=(ground, zone),
+                   probe_identities=tuple(identities[e.probe_id] for e in (ground, zone)))
+    processes = _install_fake_docker_processes(monkeypatch)
+    evidence = tmp_path / "slow-launch.jsonl"
+    executor = TrafficProbeExecutor(docker_executable="docker", plan=plan,
+        runner_snapshot=_runner_snapshot(plan), evidence_path=evidence)
+    runner = _OriginRunner(plan)
+    status = runner.status()
+    monkeypatch.setattr(runner, "status", lambda: status)
+    executor._runner = runner
+    launch = executor._launch_generator
+    sources = []
+
+    def launch_across_boundary(episode, identity, desired_node):
+        sources.append(desired_node)
+        generator = launch(episode, identity, desired_node)
+        if len(sources) == 1:
+            # Docker registration returns after Runner has advanced independently.
+            status["active_frontier"] = migration_time.isoformat()
+        else:
+            executor._stop.set()
+        return generator
+
+    monkeypatch.setattr(executor, "_launch_generator", launch_across_boundary)
+    if resuming:
+        executor._logical_hold = True
+        executor._armed_episodes.update((ground.episode_id, zone.episode_id))
+        executor._published_frontier = plan.coverage_start
+        try:
+            executor._handle_logical_hold(status)
+        finally:
+            executor._terminate_all("test-finalization")
+            executor._selector.close()
+    else:
+        executor._run()
+        assert executor.snapshot()["complete"] is True
+    assert sources == [identities[ground.probe_id].ground_station_id, new_source]
+    assert executor.snapshot()["failure"] is None
+    assert executor.snapshot()["duplicate_same_boundary_reconciliations"] == 0
+    assert all(process.poll() is not None for process in processes.values())
+
+
+@pytest.mark.parametrize("after_stop", ["superseded", "returned", "unserved", "completed", "held", "cancelled"])
+def test_slow_migration_stop_reconsiders_current_active_state(
+    tmp_path, monkeypatch, complete_chain, after_stop,
+):
+    _, plans, realizations, _ = complete_chain
+    original = TrafficProbePlanBuilder().build(plans, realizations)
+    identities = {value.probe_id: value for value in original.probe_identities}
+    episode = next(value for value in original.episodes
+                   if value.mode == "persistent"
+                   and identities[value.probe_id].direction == _DIRECTION_ZONE_TO_GROUND)
+    identity = identities[episode.probe_id]
+    first = episode.state_intervals[0]
+    at_ten = original.coverage_start + timedelta(seconds=10)
+    at_twenty = original.coverage_start + timedelta(seconds=20)
+    source_b = NodeId(65001, "satellite", "superseded-b").value
+    source_c = (first.service_satellite_id if after_stop == "returned"
+                else NodeId(65001, "satellite", "current-c").value)
+    episode = replace(episode, state_intervals=(
+        replace(first, end_time=at_ten),
+        replace(first, start_time=at_ten, end_time=at_twenty,
+                service_satellite_id=source_b,
+                path_node_ids=(source_b, identity.ground_station_id)),
+        replace(first, start_time=at_twenty, end_time=episode.end_time,
+                service_satellite_id=None if after_stop == "unserved" else source_c,
+                expected_reachable=after_stop != "unserved",
+                unreachable_reason="ZONE_UNSERVED" if after_stop == "unserved" else None,
+                path_length_hops=None if after_stop == "unserved" else 1,
+                path_node_ids=() if after_stop == "unserved" else (source_c, identity.ground_station_id)),
+    ))
+    plan = replace(original, episodes=(episode,), probe_identities=(identity,))
+    processes = _install_fake_docker_processes(monkeypatch)
+    evidence = tmp_path / "slow-stop.jsonl"
+    executor = TrafficProbeExecutor(docker_executable="docker", plan=plan,
+        runner_snapshot=_runner_snapshot(plan), evidence_path=evidence)
+    runner = _OriginRunner(plan)
+    status = runner.status()
+    monkeypatch.setattr(runner, "status", lambda: status)
+    executor._runner = runner
+    stop = executor._stop_generator
+
+    def stop_across_boundary(generator, reason):
+        if reason == "zone-source-migration":
+            # Runner advances while the old source's process is still draining.
+            status["active_frontier"] = (
+                episode.end_time if after_stop == "completed" else at_twenty
+            ).isoformat()
+            if after_stop == "held":
+                status["paused"] = True
+                status["wait_reasons"] = ["user"]
+            elif after_stop == "cancelled":
+                executor._stop.set()
+        stop(generator, reason)
+
+    monkeypatch.setattr(executor, "_stop_generator", stop_across_boundary)
+    try:
+        executor._start_episode(episode)
+        executor._observe_published_frontier()
+        executor._reconcile_episode(episode)
+        status["active_frontier"] = at_ten.isoformat()
+        executor._observe_published_frontier()
+        executor._reconcile_episode(episode)
+        assert executor._published_frontier == datetime.fromisoformat(status["active_frontier"])
+        if after_stop in {"superseded", "returned"}:
+            assert executor._active[episode.episode_id].binding.node_id == source_c
+            assert (episode.episode_id, at_twenty) in executor._reconciliation_keys
+        else:
+            assert not executor._active
+        if after_stop == "completed":
+            # The queued scheduler completion must remain idempotent.
+            executor._complete_episode(episode)
+            assert episode.episode_id in executor._completed_episodes
+        assert executor.snapshot()["duplicate_same_boundary_reconciliations"] == 0
+        assert executor.snapshot()["reconciliations"] == (
+            2 if after_stop in {"held", "cancelled"} else 3)
+    finally:
+        executor._terminate_all("test-finalization")
+        executor._selector.close()
+    records = [json.loads(line) for line in evidence.read_text().splitlines()]
+    launches = [r for r in records if r["record_type"] == "generator_launched"]
+    assert [r["physical_source_node_id"] for r in launches] == (
+        [first.service_satellite_id, source_c] if after_stop in {"superseded", "returned"} else [first.service_satellite_id])
+    migrations = [r for r in records if r["record_type"] == "zone_source_migration"]
+    assert len(migrations) == executor.snapshot()["zone_source_migrations"] == (after_stop == "superseded")
+    if migrations:
+        assert migrations[0]["previous_source_node_id"] == first.service_satellite_id
+        assert migrations[0]["current_source_node_id"] == source_c
+        assert launches[-1]["published_active_frontier"] == at_twenty.isoformat()
+    if after_stop == "unserved":
+        assert any(r["record_type"] == "episode_paused" and r["reason"] == "expected-zone-unserved" for r in records)
+    if after_stop == "completed":
+        assert sum(r["record_type"] == "episode_completed" for r in records) == 1
+    assert executor.snapshot()["generators_launched"] == executor.snapshot()["generators_stopped"] == len(launches)
     assert all(process.poll() is not None for process in processes.values())
 
 
@@ -1113,7 +1272,11 @@ def test_zone_to_ground_probe_migrates_its_physical_source(
     assert executor._active[migrated_episode.episode_id].source_ipv4 == (
         identity.zone_ipv4
     )
-    executor._published_frontier = migration_time
+    executor._runner = _OriginRunner(plan)
+    status = executor._runner.status()
+    status["active_frontier"] = migration_time.isoformat()
+    monkeypatch.setattr(executor._runner, "status", lambda: status)
+    executor._observe_published_frontier()
     executor._reconcile_episode(migrated_episode)
     assert executor._active[migrated_episode.episode_id].binding.node_id == (
         second_service
@@ -1133,7 +1296,7 @@ def test_zone_to_ground_probe_migrates_its_physical_source(
     assert all(process.poll() is not None for process in processes.values())
 
 
-def test_probe_stop_escalates_from_term_to_kill(
+def test_probe_stop_waits_for_actual_completion_without_escalation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     complete_chain,
@@ -1165,7 +1328,17 @@ def test_probe_stop_escalates_from_term_to_kill(
     executor._start_episode(episode)
     executor._published_frontier = plan.coverage_start
     executor._reconcile_episode(episode)
-    executor._terminate_all("test-finalization")
+    from threading import Thread
+    cleanup = Thread(target=lambda: executor._terminate_all("test-finalization"))
+    cleanup.start()
+    time.sleep(0.05)
+    assert cleanup.is_alive()
+    assert all(process.poll() is None for process in processes.values())
+    # The fake deliberately ignores TERM. The test supplies completion explicitly;
+    # elapsed time is never a production reason to escalate.
+    for process in processes.values():
+        process.kill()
+    cleanup.join()
     executor._selector.close()
 
     records = [json.loads(line) for line in evidence.read_text().splitlines()]
@@ -1173,9 +1346,48 @@ def test_probe_stop_escalates_from_term_to_kill(
         value for value in records if value["record_type"] == "generator_stopped"
     ]
     assert len(stopped) == 1
-    assert stopped[0]["stop_signal"] == "KILL"
+    assert stopped[0]["stop_signal"] == "TERM"
     assert stopped[0]["cleanup_result"] == "cleaned"
     assert all(process.poll() is not None for process in processes.values())
+
+
+def test_controlled_traffic_interrupts_and_rearms_without_catch_up(tmp_path, monkeypatch, complete_chain):
+    _, plans, realizations, _ = complete_chain
+    plan = TrafficProbePlanBuilder().build(plans, realizations)
+    _install_fake_docker_processes(monkeypatch)
+    path = tmp_path / "pause.jsonl"
+    executor = TrafficProbeExecutor(docker_executable="docker", plan=plan,
+        runner_snapshot=_runner_snapshot(plan), evidence_path=path)
+    runner = _OriginRunner(plan)
+    status = runner.status()
+    monkeypatch.setattr(runner, "status", lambda: status)
+    executor.start(runner)
+    def await_fact(predicate):
+        deadline = time.monotonic() + 5
+        while not predicate():
+            assert time.monotonic() < deadline
+            time.sleep(0.005)
+    try:
+        await_fact(lambda: executor.snapshot()["active_generators"] > 0)
+        armed = set(executor._armed_episodes)
+        status["paused"] = True
+        status["wait_reasons"] = ["user-pause", "material"]
+        status["clock"]["held_since"] = time.monotonic()
+        await_fact(lambda: executor.snapshot()["logical_hold"] and not executor.snapshot()["active_generators"])
+        status["paused"] = False
+        status["wait_reasons"] = ["material"]
+        time.sleep(0.02)
+        assert not executor.snapshot()["active_generators"]
+        status["wait_reasons"] = []
+        status["clock"].update(held_since=None, wall_origin=time.monotonic(), revision=1)
+        await_fact(lambda: not executor.snapshot()["logical_hold"] and executor.snapshot()["active_generators"] > 0)
+        assert executor._armed_episodes == armed
+    finally:
+        executor.stop()
+    records = [json.loads(line) for line in path.read_text().splitlines()]
+    assert any(row["record_type"] == "controlled_traffic_interrupted" for row in records)
+    assert any(row["record_type"] == "controlled_traffic_rearmed" and row["catch_up"] is False for row in records)
+    assert any(row["record_type"] == "generator_launched" and row["segment_index"] == 2 for row in records)
 
 
 def test_probe_executor_fails_closed_when_required_binding_is_missing(
@@ -1204,7 +1416,7 @@ def test_shell_metadata_coverage_and_global_budget_match_incremental(complete_ch
     simulator, plans, realizations, _ = complete_chain
     world = simulator.get_physical_world()
     expected = TrafficProbePlanBuilder(physical_world=world).build(plans, realizations)
-    incremental = IncrementalTrafficProbePlanBuilder(physical_world=world)
+    incremental = TrafficProbePlanBuilder(physical_world=world)
     for plan, realization in zip(plans, realizations, strict=True):
         incremental.append(plan, realization)
     actual = incremental.finalize()
@@ -1216,7 +1428,7 @@ def test_shell_metadata_coverage_and_global_budget_match_incremental(complete_ch
     assert left['planning']['maximum_concurrent_episode_bound'] <= 8
     assert left['planning']['estimated_echo_requests'] <= 3600
     assert read_traffic_probe_plan  # artifact round trip is also checked directly
-    from skyseed_v2.experiment.traffic.probe_plan import TrafficProbePlan
+    from tools.traffic.active.probe_plan import TrafficProbePlan
     assert TrafficProbePlan.from_artifact(left).artifact() == left
     membership = dict(expected.shell_metadata)
     for coverage in left['shell_coverage']:
@@ -1229,7 +1441,7 @@ def test_shell_metadata_coverage_and_global_budget_match_incremental(complete_ch
 
 
 def test_global_selection_covers_five_shells_without_multiplying_workload():
-    from skyseed_v2.experiment.traffic.probe_plan import _budgeted_requests
+    from tools.traffic.active.probe_plan import _budgeted_requests
     seeds = []
     for i in range(5):
         for direction in (_DIRECTION_GROUND_TO_ZONE, _DIRECTION_ZONE_TO_GROUND):
@@ -1248,7 +1460,7 @@ def test_global_selection_covers_five_shells_without_multiplying_workload():
 
 @pytest.mark.parametrize('incremental', [False, True])
 def test_shell_eligibility_scan_does_not_resolve_unselected_paths(monkeypatch, complete_chain, incremental):
-    from skyseed_v2.experiment.traffic import probe_plan as module
+    from tools.traffic.active import probe_plan as module
     simulator, plans, realizations, _ = complete_chain
     original = module._resolve_path
     calls = []
@@ -1257,7 +1469,7 @@ def test_shell_eligibility_scan_does_not_resolve_unselected_paths(monkeypatch, c
         return original(seed, projection)
     monkeypatch.setattr(module, '_resolve_path', resolve)
     if incremental:
-        builder = IncrementalTrafficProbePlanBuilder(physical_world=simulator.get_physical_world())
+        builder = TrafficProbePlanBuilder(physical_world=simulator.get_physical_world())
         for plan, realization in zip(plans, realizations, strict=True):
             builder.append(plan, realization)
         result = builder.finalize()
@@ -1273,7 +1485,7 @@ def test_shell_eligibility_scan_does_not_resolve_unselected_paths(monkeypatch, c
 def test_long_controls_credit_only_eligible_windows_within_shared_budget():
     from types import SimpleNamespace
     from datetime import datetime, timezone, timedelta
-    from skyseed_v2.experiment.traffic.probe_plan import _budgeted_requests, _PERSISTENT
+    from tools.traffic.active.probe_plan import _budgeted_requests, _PERSISTENT
     origin = datetime(2026, 1, 1, tzinfo=timezone.utc)
     seeds = []
     for shell in range(5):
@@ -1296,7 +1508,7 @@ def test_long_controls_credit_only_eligible_windows_within_shared_budget():
 
 
 def test_long_control_outside_reservoir_gets_only_reachable_window_credit():
-    from skyseed_v2.experiment.traffic.probe_plan import _complete_control_coverage
+    from tools.traffic.active.probe_plan import _complete_control_coverage
     ground = NodeId(65001, 'ground-station', 'g')
     satellites = [NodeId(65001, 'satellite', f's{i}') for i in range(2)]
     seed = _PairSeed(_DIRECTION_ZONE_TO_GROUND, ground, ("", 'zone'), {
@@ -1323,7 +1535,7 @@ def test_long_control_outside_reservoir_gets_only_reachable_window_credit():
 
 
 def test_same_path_access_change_retains_its_transition_boundary():
-    from skyseed_v2.experiment.traffic.probe_plan import _append_state_interval
+    from tools.traffic.active.probe_plan import _append_state_interval
     first = _ProbeStateInterval(START, START+timedelta(seconds=5), True, None,
                                 'sat', ('ground', 'sat'), 1, ())
     second = replace(first, start_time=first.end_time, end_time=START+timedelta(seconds=10),
@@ -1331,3 +1543,118 @@ def test_same_path_access_change_retains_its_transition_boundary():
     intervals = [first]
     _append_state_interval(intervals, second)
     assert intervals == [first, second]
+
+
+def test_empty_workload_is_valid_and_does_not_reconstruct_paths(monkeypatch):
+    from tools.traffic.active import probe_plan as module
+    simulation = create_complete_static_simulator(build_emulator(), zone_layout_path=None)
+    plans, realizations, _ = run_complete_static_chain(simulation)
+    monkeypatch.setattr(module, '_resolve_path', lambda *a: pytest.fail('empty selection reconstructed paths'))
+    finite = TrafficProbePlanBuilder(maximum_echo_requests=1).build(plans, realizations)
+    builder = TrafficProbePlanBuilder(maximum_echo_requests=1)
+    for plan, realization in zip(plans, realizations):
+        builder.append(plan, realization)
+    incremental = builder.finalize()
+    assert finite.episodes == incremental.episodes == ()
+    assert finite.artifact()['planning']['workload_status'] == 'empty'
+    assert finite.artifact()['planning']['empty_reason']
+    assert finite.nominal_boundaries == incremental.nominal_boundaries
+    assert builder.snapshot()['boundary_delta_count'] == 0
+    assert builder._initial_projection is not None
+
+
+def test_failed_flush_retains_accepted_delivery(complete_chain):
+    _, plans, realizations, _ = complete_chain
+    builder = TrafficProbePlanBuilder()
+    builder.append(plans[0], realizations[0])
+    before = builder.snapshot()
+    with pytest.raises(ValueError, match='cannot precede'):
+        builder.flush(end_time=plans[0].start_timestamp-timedelta(seconds=1))
+    assert builder.snapshot() == before
+    first = builder.flush()
+    assert not builder.snapshot()['finalized']
+    assert builder.snapshot()['boundary_delta_count'] == 0
+    for plan, realization in zip(plans[1:], realizations[1:]):
+        builder.append(plan, realization)
+    suffix = builder.finalize()
+    assert suffix.coverage_start > first.coverage_end
+    assert suffix.nominal_boundaries == realizations[-1].activation_timestamps
+    assert suffix.artifact()['planning']['workload_status'] == 'empty'
+
+
+def _owned_stopped_generator(executor, plan, index=0):
+    import os
+    import selectors
+    from tools.traffic.active.probe_execution import _RunningGenerator
+    episode = plan.episodes[index]
+    identity = executor._identities[episode.probe_id]
+    streams = []
+    for _ in range(2):
+        reader, writer = os.pipe()
+        os.close(writer)
+        streams.append(os.fdopen(reader, 'rb'))
+    process = SimpleNamespace(stdout=streams[0], stderr=streams[1], returncode=0,
+                              poll=lambda: 0, wait=lambda: 0)
+    generator = _RunningGenerator(episode, identity, next(iter(executor._bindings.values())),
+        'test-process', '/tmp/fake-process', '1.1.1.1', '2.2.2.2', 1, 1, process, 0)
+    executor._all_generators.append(generator)
+    executor._active[episode.episode_id] = generator
+    for name, stream in zip(('stdout', 'stderr'), streams):
+        executor._selector.register(stream, selectors.EVENT_READ, (generator, name))
+        executor._buffers[id(generator), name] = b''
+    return generator
+
+
+@pytest.mark.parametrize('failure_at', ['drain', 'record'])
+@pytest.mark.parametrize('release_fails', [False, True])
+def test_stopped_generator_releases_all_local_resources_after_recording_failure(tmp_path, complete_chain, monkeypatch, failure_at, release_fails):
+    _, plans, realizations, _ = complete_chain
+    plan = TrafficProbePlanBuilder().build(plans, realizations)
+    executor = TrafficProbeExecutor(docker_executable='docker', plan=plan,
+        runner_snapshot=_runner_snapshot(plan), evidence_path=tmp_path/'traffic.jsonl')
+    generator = _owned_stopped_generator(executor, plan)
+    monkeypatch.setattr(executor, '_stable_generator_state', lambda g: 'stale')
+    monkeypatch.setattr(executor, '_generator_control', lambda *a, **k: 'cleaned')
+    failure = OSError('evidence unavailable')
+    def fail(*a, **k): raise failure
+    monkeypatch.setattr(executor, '_drain_generator_io' if failure_at == 'drain' else '_record', fail)
+    if release_fails:
+        if failure_at == 'record':
+            monkeypatch.setattr(executor, '_drain_generator_io', lambda g: None)
+        unregister = executor._selector.unregister
+        def failed_unregister(stream):
+            unregister(stream)
+            raise OSError('secondary selector-release failure')
+        monkeypatch.setattr(executor._selector, 'unregister', failed_unregister)
+    executor._terminate_all('requested-stop')
+    assert executor._failure is failure
+    assert executor.snapshot()['cleanup_complete']
+    assert not executor._active and not executor._all_generators and not executor._buffers
+    assert not executor._selector.get_map()
+    assert generator.process.stdout.closed and generator.process.stderr.closed
+    executor._selector.close()
+
+
+def test_generator_stop_failure_remains_owned_while_other_generators_clean(tmp_path, complete_chain, monkeypatch):
+    _, plans, realizations, _ = complete_chain
+    plan = TrafficProbePlanBuilder().build(plans, realizations)
+    executor = TrafficProbeExecutor(docker_executable='docker', plan=plan,
+        runner_snapshot=_runner_snapshot(plan), evidence_path=tmp_path/'traffic.jsonl')
+    first = _owned_stopped_generator(executor, plan, 0)
+    second = _owned_stopped_generator(executor, plan, 1)
+    failure = RuntimeError('actual identity failure')
+    def state(g):
+        if g is first: raise failure
+        return 'stale'
+    monkeypatch.setattr(executor, '_stable_generator_state', state)
+    monkeypatch.setattr(executor, '_generator_control', lambda *a, **k: 'cleaned')
+    executor._terminate_all('requested-stop')
+    assert executor._failure is failure
+    assert not executor.snapshot()['cleanup_complete']
+    assert executor._all_generators == [first]
+    assert not first.process.stdout.closed and second.process.stdout.closed
+    monkeypatch.setattr(executor, '_stable_generator_state', lambda g: 'stale')
+    executor._terminate_all('confirmed-afterward')
+    assert executor.snapshot()['cleanup_complete']
+    assert executor._failure is failure
+    executor._selector.close()

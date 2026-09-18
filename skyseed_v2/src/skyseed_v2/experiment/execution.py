@@ -1,131 +1,145 @@
-"""Validate and execute one generated Skyseed experiment runtime package."""
+"""Validate and execute one generated SkySEED experiment runtime package."""
 
 from __future__ import annotations
 
 import argparse
 from collections.abc import Mapping
-from datetime import datetime, timedelta
-from hashlib import sha256
-from importlib import metadata, util
+from datetime import datetime
+from importlib import metadata
 import json
 import os
 from pathlib import Path
 import platform
 import re
 from shlex import quote
+import signal
+import subprocess
 import sys
 from time import perf_counter
+from threading import Event, Thread
+from uuid import uuid4
 from typing import Any
 
-from skyseed_v2.shared._durable_evidence import _semantic_value
-from skyseed_v2.shared._execution_observation import _ExecutionObserver
+from skyseed_v2.shared._durable_evidence import _append_jsonl
+from skyseed_v2.shared.recording import record_performance
+from skyseed_v2.experiment.output.observation import _ExecutionObserver, _semantic_value
 
-from ..backend.bpf.runner import BpfRunner
-from ..backend.bpf._runner_artifact import (
-    _read_runner_artifact_manifest_snapshot,
-)
-from .traffic.probe_execution import TrafficProbeExecutor
-from .traffic.probe_plan import read_traffic_probe_plan
+from skyseed_v2.backend.bpf.runner.lifecycle import Runner, _runtime_worker_count
+from .output.occupancy import claim_output, claim_runtime
+from ._control import _ControlUnavailable, _request, _serve_control
 
 
-_FORMAT_VERSION = 3
+_FORMAT_VERSION = 4
 _KIND = "skyseed-v2-generated-bpf-execution"
-_PROJECT_NAME_FILE = "runtime/compose-project-name"
+_PROJECT_NAME_FILE = "deployment/compose-project-name"
 _PROJECT_NAME_PATTERN = re.compile(r"[a-z0-9][a-z0-9_-]*")
 
 
-def _write_execution_definition(
-    output_directory: Path,
-    *,
-    generated_output_identity: str,
-    timeline_start: datetime,
-    timeline_end: datetime,
-    observation_interval: timedelta,
-    project_root: Path,
-    example_root: Path,
-    runner_artifact: str,
-    realization_producer: str,
-    runner_batches: tuple[str, ...] = (),
-    batch_lead_fraction: float = 0.75,
-    batch_capacity_factor: int = 2,
-) -> Path:
-    """Write the persisted-only generated BPF execution definition."""
+def _run_generated_control(script: Path) -> None:
+    """Join one existing control, including its interrupted shutdown, before returning."""
+    # A separate process group lets the caller forward Ctrl-C exactly once to
+    # the shell and its foreground child, while subsequent Ctrl-C cannot cut
+    # short Runner cleanup or leave the control running during Compose teardown.
+    process = subprocess.Popen([str(script)], start_new_session=True)
+    try:
+        returncode = process.wait()
+    except KeyboardInterrupt:
+        previous_handler = signal.signal(signal.SIGINT, signal.SIG_IGN)
+        try:
+            try:
+                os.killpg(process.pid, signal.SIGINT)
+            except ProcessLookupError:
+                pass
+            # Completion, not elapsed time, permits outer project teardown.
+            # Forced termination remains an explicit executor action.
+            process.wait()
+        finally:
+            signal.signal(signal.SIGINT, previous_handler)
+        raise
+    if returncode:
+        raise subprocess.CalledProcessError(returncode, process.args)
 
-    if not isinstance(timeline_end, datetime):
-        raise TypeError("timeline_end must be a datetime")
-    if not isinstance(observation_interval, timedelta) or (
-        observation_interval <= timedelta(0)
-    ):
-        raise ValueError("observation_interval must be a positive timedelta")
-    if not isinstance(realization_producer, str) or not realization_producer:
-        raise ValueError("realization_producer must be a non-empty identity")
-    relative_manifest = _safe_relative_path(
-        runner_artifact,
-        "Runner artifact manifest",
-    )
-    manifest_path = Path(output_directory).resolve() / relative_manifest
-    artifact_snapshot = _read_runner_artifact_manifest_snapshot(
-        manifest_path
-    )
-    manifest_sha256 = sha256(manifest_path.read_bytes()).hexdigest()
-    fingerprint = _build_source_fingerprint(project_root, example_root)
-    generated_inputs = _build_generated_input_fingerprint(output_directory)
+
+def run_generated_experiment(output: Path, *, cleanup: bool = True) -> None:
+    """Start and run generated controls, then tear down their Compose project.
+
+    Layer: finite experiment orchestration. Callers use this operation on an
+    already generated output. It creates no Simulator, Producer or materials;
+    the existing scripts own startup, Runner/Traffic execution and verification.
+    Environment, standard streams and generated interpreter selection are inherited.
+    By default teardown follows every startup attempt, after the active control
+    exits. With ``cleanup=False``, the caller owns project teardown. Primary errors
+    and interruptions propagate, with any secondary teardown failure attached.
+    """
+    if not isinstance(output, Path):
+        raise TypeError("output must be a pathlib.Path")
+    if type(cleanup) is not bool:
+        raise TypeError("cleanup must be a bool")
+    output = output.expanduser().resolve()
+    names = ("deploy.sh", "run.sh", "cleanup.sh") if cleanup else ("deploy.sh", "run.sh")
+    with claim_output(output):
+        for name in names:
+            script = output / name
+            if not script.is_file():
+                raise FileNotFoundError(f"generated control is missing: {script}")
+            if not os.access(script, os.X_OK):
+                raise PermissionError(f"generated control is not executable: {script}")
+
+        primary_error = None
+        try:
+            _run_generated_control(output / "deploy.sh")
+            try:
+                session = _request(output, "computation", "status")
+            except _ControlUnavailable:
+                session = {}
+            if not (session.get("runtime_managed") and session["shutdown_requested"]):
+                # This avoids a needless child after deployment cancellation. The
+                # runtime claim below closes the check-to-launch race itself.
+                _run_generated_control(output / "run.sh")
+        except BaseException as error:
+            primary_error = error
+            raise
+        finally:
+            if cleanup:
+                try:
+                    _run_generated_control(output / "cleanup.sh")
+                except BaseException as teardown_error:
+                    if primary_error is None:
+                        raise
+                    primary_error.add_note(
+                        f"generated project teardown also failed: "
+                        f"{type(teardown_error).__name__}: {teardown_error}"
+                    )
+
+
+def _write_execution_definition(output_directory, *, generated_output_identity,
+        timeline_start, timeline_end, observation_interval,
+        runner_artifact, realization_producer, sealed_metadata, runner_batches=(),
+        batch_lead_fraction=0.75, batch_capacity_factor=2, keep_alive=False, traffic_enabled=True):
+    """Publish facts already sealed by the backend writer; never rescan its bytes."""
+    manifest = sealed_metadata["manifest"]
     value = {
-        "format_version": _FORMAT_VERSION,
-        "kind": _KIND,
-        "backend": "bpf",
+        "format_version": _FORMAT_VERSION, "kind": _KIND, "backend": "bpf",
         "generated_output_identity": generated_output_identity,
-        "progression": {
-            "strategy": "sealed-precomputed-runner-artifact",
-            "producer": realization_producer,
-        },
-        "runner_artifact": {
-            "manifest": relative_manifest,
-            "format_version": artifact_snapshot["format_version"],
-            "encoding": artifact_snapshot["encoding"],
-            "realization_count": artifact_snapshot["realization_count"],
-            "boundary_count": artifact_snapshot["boundary_count"],
-            "sequence_sha256": artifact_snapshot["sequence_sha256"],
-            "manifest_sha256": manifest_sha256,
-        },
-        "simulation": {
-            "start_time": timeline_start.isoformat(),
-            "end_time": timeline_end.isoformat(),
-            "observation_interval_seconds": (
-                observation_interval.total_seconds()
-            ),
-            "bounded": True,
-        },
-        "runner": {"execution_contract": "sealed-precomputed-only"},
-        "source_fingerprint": fingerprint,
-        "generated_inputs": generated_inputs,
-        "environment": {
-            "python_implementation": platform.python_implementation(),
-            "python_version": platform.python_version(),
-            "seedemu_distribution_version": metadata.version("seedemu"),
-        },
+        "progression": {"strategy": "sealed-precomputed-runner-artifact", "producer": realization_producer},
+        "runner_artifact": {"manifest": runner_artifact,
+            "manifest_sha256": sealed_metadata["manifest_sha256"],
+            "boundary_count": manifest["timeline"]["boundary_count"],
+            "physical_world_fingerprint": manifest["physical_world"]["fingerprint"],
+            **{key: manifest[key] for key in ("format_version", "encoding", "realization_count", "sequence_sha256", "timeline")}},
+        "simulation": {"start_time": timeline_start.isoformat(), "end_time": timeline_end.isoformat(),
+            "observation_interval_seconds": observation_interval.total_seconds(), "bounded": True},
+        "runner": {"execution_contract": "sealed-precomputed-only", "keep_alive": keep_alive},
+        "traffic_enabled": traffic_enabled,
+        "environment": {"python_implementation": platform.python_implementation(),
+            "python_version": platform.python_version(), "seedemu_distribution_version": metadata.version("seedemu")},
     }
-    destination = Path(output_directory) / "runtime/execution.json"
+    if keep_alive or runner_batches:
+        value["runner"].update(batch_lead_fraction=batch_lead_fraction, batch_capacity_factor=batch_capacity_factor)
     if runner_batches:
-        if len(runner_batches) != 1:
-            raise ValueError("generated controls currently deliver one initial and one continued batch")
-        value["runner_batches"] = []
-        for relative in runner_batches:
-            relative = _safe_relative_path(relative, "continued Runner artifact")
-            path = Path(output_directory).resolve() / relative
-            snapshot = _read_runner_artifact_manifest_snapshot(path)
-            value["runner_batches"].append({"manifest": relative,
-                "manifest_sha256": snapshot["manifest_sha256"],
-                "boundary_count": snapshot["boundary_count"],
-                "realization_count": snapshot["realization_count"],
-                "timeline": snapshot["timeline"], "delivery": snapshot["delivery"]})
-        value["runner"].update(batch_lead_fraction=batch_lead_fraction,
-                               batch_capacity_factor=batch_capacity_factor)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text(
-        json.dumps(value, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+        value["runner_batches"] = list(runner_batches)
+    destination = Path(output_directory) / "results/compiler/execution.json"
+    _write_json_file_atomic(destination, value)
     return destination
 
 
@@ -133,50 +147,26 @@ def _write_generated_run_script(
     output_directory: Path,
     *,
     python_executable: str,
-    compiler_tool_directory: str,
     tool_package_parent: Path,
-    required_input_paths: Sequence[str] = (
-        "inputs/scenario.yaml",
-        "inputs/shells.yaml",
-        "inputs/ground_stations.yaml",
-        "inputs/zones.yaml",
-    ),
-    traffic_workload_path: str | None = None,
+    runtime_workers: int | None = None,
 ) -> Path:
-    """Write generated runtime execution plus start-then-run convenience."""
+    """Write the generated Runner/Traffic execution control."""
 
     output = Path(output_directory)
-    compiler_directory = _safe_relative_path(
-        compiler_tool_directory,
-        "Compiler Tool directory",
-    )
     tool_parent = quote(str(Path(tool_package_parent).resolve()))
-    if isinstance(required_input_paths, (str, bytes)):
-        raise TypeError("required_input_paths must be a sequence of paths")
-    required_inputs = tuple(
-        _safe_relative_path(value, "generated runtime input")
-        for value in required_input_paths
-    )
-    if not required_inputs or len(set(required_inputs)) != len(required_inputs):
-        raise ValueError("generated runtime inputs must be non-empty and unique")
     required_paths = (
-        "runtime/compose-project-name",
-        "runtime/execution.json",
-        "runtime/runner-artifact/manifest.json",
-        "runtime/runner-artifact/runner-runtime.bin",
-        "runtime/docker-compose.yml",
-        *required_inputs,
+        "deployment/compose-project-name",
+        "results/compiler/execution.json",
+        "results/compiler/runner-artifact/manifest.json",
+        "results/compiler/runner-artifact/runner-runtime.bin",
+        "deployment/docker-compose.yml",
     )
     required_lines = " \\\n".join(
         f'    "$SCRIPT_DIR/{value}"' for value in required_paths
     )
-    workload_argument = ""
-    if traffic_workload_path is not None:
-        workload = _safe_relative_path(
-            traffic_workload_path,
-            "generated Traffic workload",
-        )
-        workload_argument = f'    --workload "$SCRIPT_DIR/{workload}" \\\n'
+    if runtime_workers is not None:
+        runtime_workers = _runtime_worker_count(runtime_workers)
+    runtime_environment = "" if runtime_workers is None else f'export SKYSEED_BPF_RUNTIME_WORKERS="${{SKYSEED_BPF_RUNTIME_WORKERS:-{runtime_workers}}}"\n'
     script = output / "run.sh"
     script.write_text(
         f"""#!/usr/bin/env bash
@@ -189,8 +179,8 @@ fi
 SCRIPT_DIR="$(cd -- "$(dirname -- "${{BASH_SOURCE[0]}}")" && pwd)"
 PYTHON={quote(python_executable)}
 TOOL_PACKAGE_PARENT={tool_parent}
-PROJECT_FILE="$SCRIPT_DIR/runtime/compose-project-name"
-STARTUP_EVIDENCE="$SCRIPT_DIR/runtime/deployment-startup.json"
+{runtime_environment}PROJECT_FILE="$SCRIPT_DIR/deployment/compose-project-name"
+STARTUP_EVIDENCE="$SCRIPT_DIR/deployment/deployment-startup.json"
 for required in \\
 {required_lines}; do
     if [[ ! -f "$required" ]]; then
@@ -203,60 +193,61 @@ if [[ ! "$PROJECT_NAME" =~ ^[a-z0-9][a-z0-9_-]*$ ]]; then
     echo "generated Compose project identity is invalid" >&2
     exit 1
 fi
-if [[ ! -f "$TOOL_PACKAGE_PARENT/tools/__init__.py" ]]; then
-    echo "configured Skyseed Tool package is missing: $TOOL_PACKAGE_PARENT/tools" >&2
-    exit 1
-fi
 INVOCATION_ID="$(date -u +%Y%m%dT%H%M%S.%NZ)-${{BASHPID}}"
-INVOCATION_DIR="$SCRIPT_DIR/inspection/runtime-runs/$INVOCATION_ID"
-mkdir -p "$INVOCATION_DIR/runner" "$INVOCATION_DIR/traffic" "$INVOCATION_DIR/observation"
+INVOCATION_DIR="$SCRIPT_DIR/runs/$INVOCATION_ID"
+mkdir -p "$INVOCATION_DIR/runner" "$INVOCATION_DIR/traffic" "$INVOCATION_DIR/performance"
 TOOL_PYTHONPATH="$TOOL_PACKAGE_PARENT${{PYTHONPATH:+:$PYTHONPATH}}"
 
 execution_status=0
-$PYTHON -m skyseed_v2.experiment.execution "$SCRIPT_DIR" \\
+PYTHONPATH="$TOOL_PYTHONPATH" $PYTHON -m skyseed_v2.experiment.execution "$SCRIPT_DIR" \\
     --invocation-directory "$INVOCATION_DIR" \\
     || execution_status=$?
 
-runner_tool_status=0
-runner_startup_arguments=()
-if [[ -f "$STARTUP_EVIDENCE" ]]; then
-    runner_startup_arguments=(--deployment-startup "$STARTUP_EVIDENCE")
+# Raw invocation evidence is drained. Retained calculation may still be live;
+# Traffic pins its latest completed request across all domain readers.
+if [[ "${{SKYSEED_NO_TOOLS:-0}}" == "1" || ! -f "$SCRIPT_DIR/results/experiment/completed.json" || ! -f "$TOOL_PACKAGE_PARENT/tools/__init__.py" ]]; then
+    exit "$execution_status"
 fi
+
+runner_tool_status=0
 PYTHONPATH="$TOOL_PYTHONPATH" $PYTHON -m tools.runner \\
     --handoff "$INVOCATION_DIR/runner/runner-invocation.json" \\
     --events "$INVOCATION_DIR/runner/runner-events.jsonl" \\
-    "${{runner_startup_arguments[@]}}" \\
-    --output "$SCRIPT_DIR/inspection/runner" \\
+    --deployment-startup "$STARTUP_EVIDENCE" \\
+    --output "$SCRIPT_DIR/visualizations/runner" \\
     || runner_tool_status=$?
 
 traffic_tool_status=0
+if [[ -f "$SCRIPT_DIR/results/traffic/probe-plan.json" ]]; then
 PYTHONPATH="$TOOL_PYTHONPATH" $PYTHON -m tools.traffic \\
     --telemetry "$INVOCATION_DIR/traffic/traffic-telemetry.jsonl" \\
-    --physical-frames "$SCRIPT_DIR/domain-history/physical-frames.jsonl" \\
-    --physical-links "$SCRIPT_DIR/inspection-evidence/physical-link-observations.jsonl.gz" \\
-    --planning "$SCRIPT_DIR/domain-history/planning.jsonl.gz" \\
-    --bpf-compiler "$SCRIPT_DIR/inspection/{compiler_directory}/bpf-compiler-inspection.json" \\
-{workload_argument}    --probe-plan "$SCRIPT_DIR/inspection/traffic/probe-plan.json" \\
+    --physical-frames "$SCRIPT_DIR/results/physical-world/physical-frames.jsonl" \\
+    --physical-links "$SCRIPT_DIR/results/physical-world/candidates/physical-link-observations.jsonl.gz" \\
+    --planning "$SCRIPT_DIR/results/planner/planning.jsonl.gz" \\
+    --bpf-compiler "$SCRIPT_DIR/results/compiler/compiler.jsonl" \\
+    --probe-plan "$SCRIPT_DIR/results/traffic/probe-plan.json" \\
     --probe-execution "$INVOCATION_DIR/traffic/probe-execution.jsonl" \\
     --runner-events "$INVOCATION_DIR/runner/runner-events.jsonl" \\
-    --output "$SCRIPT_DIR/inspection/traffic" \\
+    --output "$SCRIPT_DIR/visualizations/traffic" \\
     || traffic_tool_status=$?
+fi
 
-observation_tool_status=0
-PYTHONPATH="$TOOL_PYTHONPATH" $PYTHON -c 'import sys; from pathlib import Path; from tools.observation import write_observation_tool; write_observation_tool(Path(sys.argv[1]), Path(sys.argv[2]))' \
-    "$INVOCATION_DIR/observation/execution-observations.jsonl" \
-    "$SCRIPT_DIR/inspection/observation" \
-    || observation_tool_status=$?
+performance_tool_status=0
+PYTHONPATH="$TOOL_PYTHONPATH" $PYTHON -m tools.performance \
+    --generated "$SCRIPT_DIR" \
+    --observations "$INVOCATION_DIR/performance/execution-observations.jsonl" \
+    --output "$SCRIPT_DIR/visualizations/performance" \
+    || performance_tool_status=$?
 
 aggregate_status=0
-PYTHONPATH="$TOOL_PYTHONPATH" $PYTHON -c 'import importlib,sys; from pathlib import Path; importlib.import_module("tools._html").finalize_runtime_aggregate_index(Path(sys.argv[1]))' \\
-    "$SCRIPT_DIR/inspection" \\
+PYTHONPATH="$TOOL_PYTHONPATH" $PYTHON -c 'import importlib,sys; from pathlib import Path; importlib.import_module("tools._presentation.html").finalize_runtime_aggregate_index(Path(sys.argv[1]))' \\
+    "$SCRIPT_DIR/visualizations" \\
     || aggregate_status=$?
 
 if (( execution_status != 0 )); then
     exit "$execution_status"
 fi
-if (( runner_tool_status != 0 || traffic_tool_status != 0 || observation_tool_status != 0 || aggregate_status != 0 )); then
+if (( runner_tool_status != 0 || traffic_tool_status != 0 || performance_tool_status != 0 || aggregate_status != 0 )); then
     echo "runtime completed; one or more detached inspection Tools failed" >&2
 fi
 exit 0
@@ -264,22 +255,6 @@ exit 0
         encoding="utf-8",
     )
     script.chmod(0o755)
-    launch = output / "launch.sh"
-    launch.write_text(
-        """#!/usr/bin/env bash
-set -euo pipefail
-
-if (( $# != 0 )); then
-    echo "launch.sh does not accept arguments" >&2
-    exit 2
-fi
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-"$SCRIPT_DIR/start.sh"
-exec "$SCRIPT_DIR/run.sh"
-""",
-        encoding="utf-8",
-    )
-    launch.chmod(0o755)
     return script
 
 
@@ -288,55 +263,151 @@ def _run_generated_bpf_experiment(
     *,
     invocation_directory: Path | None = None,
 ) -> None:
+    """Run fresh invocations over retained references; reset never tears down Compose."""
+    output = Path(output_directory).resolve()
+    controls = {"runner": None, "traffic": None, "reset": Event(), "cancel": Event(),
+                "pause": False, "invocation_id": None, "delivery_count": 1, "delivery_error": None}
+
+    def dispatch(request):
+        command = request["command"]
+        if command in {"reset", "cancel-runtime"}:
+            controls["cancel" if command == "cancel-runtime" else command].set()
+        # Publish cancellation before reading the Runner reference. Construction
+        # publishes that reference before checking the flag, so one side sees it.
+        runner = controls["runner"]
+        if command in {"reset", "cancel-runtime"}:
+            if runner is not None:
+                runner.cancel_runtime()
+        elif command == "pause":
+            controls["pause"] = True
+            if runner is not None:
+                runner.pause()
+        elif command == "resume":
+            controls["pause"] = False
+            if runner is not None:
+                runner.resume()
+        elif command != "status":
+            raise ValueError(f"unsupported runtime command: {command}")
+        return {"invocation_id": controls["invocation_id"],
+            "reset_pending": controls["reset"].is_set(), "cancel_requested": controls["cancel"].is_set(),
+            "delivered_batches": controls["delivery_count"],
+            "delivery_error": controls["delivery_error"],
+            "runner": None if runner is None else runner.status(),
+            "traffic": None if controls["traffic"] is None else controls["traffic"].snapshot()}
+
+    previous = None
+    if invocation_directory is None:
+        invocation_directory = output / "runs" / f"run-{uuid4().hex}"
+    with claim_output(output), claim_runtime(output), _serve_control(output, "runtime", dispatch):
+        verified = _read_and_verify_execution(output)
+        try:
+            session = _request(output, "computation", "runtime_claim")
+        except _ControlUnavailable:
+            session = {}
+        managed = session.get("runtime_managed", False)
+        if managed and session["shutdown_requested"]:
+            return  # No Runner/Traffic construction before an accepted handoff.
+        primary_error = None
+        try:
+            while not controls["cancel"].is_set():
+                controls["reset"].clear()
+                controls["delivery_count"] = 1
+                controls["delivery_error"] = None
+                _run_runtime_invocation(output, invocation_directory=invocation_directory,
+                                        verified=verified, controls=controls, reset_from=previous)
+                if controls["cancel"].is_set() or not controls["reset"].is_set():
+                    break
+                previous = controls["invocation_id"]
+                invocation_directory = output / "runs" / f"reset-{uuid4().hex}"
+        except BaseException as error:
+            primary_error = error
+            raise
+        finally:
+            if managed:
+                try:
+                    # Cleanup/evidence have settled; serialize release before
+                    # closing this endpoint, which may still receive shutdown.
+                    _request(output, "computation", "runtime_release")
+                except BaseException as error:
+                    if primary_error is None:
+                        raise
+                    primary_error.add_note(f"runtime handoff release also failed: {error}")
+
+
+def _run_runtime_invocation(
+    output_directory: Path, *, invocation_directory: Path | None,
+    verified, controls, reset_from,
+) -> None:
     """Verify, restore, and own prepare/run/cleanup for generated BPF output."""
 
     output = Path(output_directory).resolve()
-    if invocation_directory is None:
-        runner_evidence = output / "inspection/runner"
-        traffic_evidence = output / "inspection/traffic"
-        invocation_id = None
-    else:
-        invocation = Path(invocation_directory).resolve()
-        invocation_root = (output / "inspection/runtime-runs").resolve()
-        if invocation.parent != invocation_root or not invocation.name:
-            raise ValueError("runtime invocation directory must be one owned run root")
-        runner_evidence = invocation / "runner"
-        traffic_evidence = invocation / "traffic"
-        runner_evidence.mkdir(parents=True, exist_ok=True)
-        traffic_evidence.mkdir(parents=True, exist_ok=True)
-        invocation_id = invocation.name
-        try:
-            _write_runtime_invocation_index(
-                invocation_root,
-                invocation_id=invocation_id,
-                status="running",
-            )
-        except BaseException as error:
-            print(
-                "runtime invocation index side work failed without replacing "
-                f"domain execution: {error}",
-                file=sys.stderr,
-            )
-    definition, artifact_path, artifact_snapshot = _read_and_verify_execution(output)
-    probe_plan_path = output / "inspection/traffic/probe-plan.json"
-    if not probe_plan_path.is_file():
-        raise RuntimeError(
-            "generated Traffic probe plan is missing; rerun main.py"
+    invocation = (output / "runs" / f"run-{uuid4().hex}" if invocation_directory is None
+                  else Path(invocation_directory).resolve())
+    invocation_root = (output / "runs").resolve()
+    if invocation.parent != invocation_root or not invocation.name:
+        raise ValueError("runtime invocation directory must be one owned run root")
+    runner_evidence = invocation / "runner"
+    traffic_evidence = invocation / "traffic"
+    runner_evidence.mkdir(parents=True, exist_ok=True)
+    traffic_evidence.mkdir(parents=True, exist_ok=True)
+    invocation_id = invocation.name
+    try:
+        _write_runtime_invocation_index(
+            invocation_root,
+            invocation_id=invocation_id,
+            status="running",
         )
-    probe_plan = read_traffic_probe_plan(probe_plan_path)
+    except BaseException as error:
+        print(
+            "runtime invocation index side work failed without replacing "
+            f"domain execution: {error}",
+            file=sys.stderr,
+        )
+    controls["invocation_id"] = invocation_id
+    (output / ".control").mkdir(exist_ok=True)
+    def lifecycle(event, **facts):
+        _append_jsonl(output / ".control/runtime-events.jsonl",
+            {"event": event, "invocation_id": invocation_id, "reset_from": reset_from,
+             "monotonic_seconds": perf_counter(), **facts})
+    lifecycle("runtime_invocation_start")
+    definition, artifact_path, artifact_snapshot = verified
+    traffic_enabled = definition.get("traffic_enabled", True)
+    TrafficProbeExecutor = read_traffic_probe_plan = None
+    probe_plan = None
+    if traffic_enabled:
+        try:
+            from tools.traffic.active.probe_execution import TrafficProbeExecutor
+            from tools.traffic.active.probe_plan import read_traffic_probe_plan
+        except ImportError as error:
+            raise RuntimeError("Traffic is enabled but its Tool is unavailable") from error
+        probe_plan_path = output / "results/traffic/probe-plan.json"
+        if not probe_plan_path.is_file():
+            raise RuntimeError("generated Traffic probe plan is missing")
+        probe_plan = read_traffic_probe_plan(probe_plan_path)
     project_name = str(definition["generated_output_identity"])
-    runner = BpfRunner(
+    runner = Runner(
         compose_project_name=project_name,
         runtime_artifact=artifact_path,
-        **{key: definition["runner"][key] for key in ("batch_lead_fraction", "batch_capacity_factor")
+        **{key: definition["runner"][key] for key in ("batch_lead_fraction", "batch_capacity_factor", "keep_alive")
            if key in definition["runner"]},
     )
+    if definition["format_version"] >= 4:
+        runner._bind_execution_input(physical_world_fingerprint=artifact_snapshot["physical_world_fingerprint"],
+            start_time=artifact_snapshot["timeline"]["start"], end_time=artifact_snapshot["timeline"]["end"])
     runner._enable_event_history(
         runner_evidence / "runner-events.jsonl"
     )
-    runner._enable_traffic_telemetry(traffic_evidence)
-    for batch in definition.get("runner_batches", ()):
-        runner.append_batch(output / batch["manifest"])
+    if traffic_enabled:
+        runner._enable_traffic_telemetry(traffic_evidence)
+    controls["runner"] = runner
+    if controls.get("pause", False):
+        runner.pause()
+    controls["traffic"] = None
+    if controls["cancel"].is_set() or controls["reset"].is_set():
+        runner.cancel_runtime()
+    if reset_from is not None:
+        runner._record("runtime_reset", invocation_id=invocation_id, reset_from=reset_from,
+                       replay_from=definition["simulation"]["start_time"], deployment_reused=True)
     runtime_observer = _ExecutionObserver(
         {
             "scope": "generated-runtime",
@@ -352,20 +423,69 @@ def _run_generated_bpf_experiment(
     traffic_executor: TrafficProbeExecutor | None = None
     runner_started = perf_counter()
     traffic_started: float | None = None
+    delivery_stop = Event()
+    delivery_thread = None
+    delivery_failures = []
+
+    def deliver():
+        # Experiment owns the future references. Read an append-only catalog
+        # cursor, keeping just the next reference decoded; Runner has one successor.
+        stream = None
+        try:
+            rolling = definition["runner"].get("keep_alive", False)
+            pending = None
+            finite = iter(definition.get("runner_batches", ()))
+            if rolling:
+                stream = (output / "results/compiler/materials.jsonl").open()
+                stream.readline()  # Initial materials were prepared above.
+            while not delivery_stop.is_set():
+                if pending is None:
+                    if rolling:
+                        line = stream.readline()
+                        pending = json.loads(line) if line else None
+                    else:
+                        pending = next(finite, None)
+                        if pending is None:
+                            return
+                if pending is not None and runner.status()["accepts_batch"]:
+                    if traffic_executor is not None and "traffic" in pending:
+                        if not traffic_executor.snapshot()["accepts_plan"]:
+                            delivery_stop.wait(0.05)
+                            continue
+                        traffic_executor.append_plan(read_traffic_probe_plan(output / pending["traffic"]))
+                    if not runner.append_batch(output / pending["manifest"]):
+                        return
+                    controls["delivery_count"] += 1
+                    pending = None
+                delivery_stop.wait(0.05)
+        except BaseException as error:
+            delivery_failures.append(error)
+            controls["delivery_error"] = f"{type(error).__name__}: {error}"
+            runner.cancel_runtime()
+        finally:
+            if stream is not None:
+                stream.close()
     try:
         if invocation_id is not None:
-            _record_container_checkpoint(output, runner_evidence / "containers-before-preparation.json", project_name)
+            try:
+                _record_container_checkpoint(output, runner_evidence / "containers-before-preparation.json", project_name)
+            except Exception as error:
+                print(f"container observation degraded: {error}", file=sys.stderr)
         runner.prepare()
-        traffic_started = perf_counter()
-        traffic_executor = TrafficProbeExecutor(
-            docker_executable="docker",
-            plan=probe_plan,
-            runner_snapshot=runner.inspection_snapshot(),
-            evidence_path=(
-                traffic_evidence / "probe-execution.jsonl"
-            ),
-        )
-        traffic_executor.start(runner)
+        if traffic_enabled:
+            traffic_started = perf_counter()
+            traffic_executor = TrafficProbeExecutor(
+                docker_executable="docker",
+                plan=probe_plan,
+                runner_snapshot=runner.inspection_snapshot(),
+                evidence_path=(
+                    traffic_evidence / "probe-execution.jsonl"
+                ),
+            )
+            traffic_executor.start(runner)
+            controls["traffic"] = traffic_executor
+        delivery_thread = Thread(target=deliver, name="skyseed-experiment-delivery")
+        delivery_thread.start()
         raw_activation_limit = os.environ.get(
             "SKYSEED_RUNNER_ACTIVATION_LIMIT"
         )
@@ -381,9 +501,15 @@ def _run_generated_bpf_experiment(
             runner._run_bounded(activation_limit)
     except BaseException as error:
         primary_error = error
+    delivery_stop.set()
+    if delivery_thread is not None:
+        delivery_thread.join()
+    if delivery_failures and primary_error is None:
+        primary_error = delivery_failures[0]
     if traffic_executor is not None:
         try:
             traffic_executor.stop()
+            lifecycle("traffic_shutdown_complete")
         except BaseException as error:
             traffic_error = error
             if primary_error is None:
@@ -394,7 +520,7 @@ def _run_generated_bpf_experiment(
                     f"{type(error).__name__}: {error}"
                 )
     if traffic_started is not None:
-        runtime_observer.record(
+        record_performance(runtime_observer,
             component="traffic",
             stage="traffic-total",
             phase="one-shot",
@@ -410,16 +536,16 @@ def _run_generated_bpf_experiment(
     try:
         if invocation_id is not None:
             _record_container_checkpoint(output, runner_evidence / "containers-before-cleanup.json", project_name)
-    except BaseException as error:
-        if primary_error is None:
-            primary_error = error
-        else:
-            primary_error.add_note(f"container checkpoint failed: {type(error).__name__}: {error}")
+    except Exception as error:
+        print(f"container observation degraded: {error}", file=sys.stderr)
+        if primary_error is not None:
+            primary_error.add_note(f"container checkpoint also failed: {type(error).__name__}: {error}")
     try:
         runner.cleanup()
+        lifecycle("runner_cleanup_complete")
     except BaseException as error:
         cleanup_error = error
-    runtime_observer.record(
+    record_performance(runtime_observer,
         component="runner",
         stage="runner-total",
         phase="one-shot",
@@ -438,7 +564,7 @@ def _run_generated_bpf_experiment(
         _write_runtime_execution_observations(
             output,
             runner_evidence.parent
-            / "observation/execution-observations.jsonl",
+            / "performance/execution-observations.jsonl",
             runtime_observer,
         )
     except BaseException as error:
@@ -468,7 +594,7 @@ def _run_generated_bpf_experiment(
     if invocation_id is not None:
         try:
             _write_runtime_invocation_index(
-                (output / "inspection/runtime-runs").resolve(),
+                (output / "runs").resolve(),
                 invocation_id=invocation_id,
                 status=(
                     "completed"
@@ -483,6 +609,8 @@ def _run_generated_bpf_experiment(
                 file=sys.stderr,
             )
     if primary_error is not None:
+        if cleanup_error is not None:
+            primary_error.add_note(f"Runner cleanup also failed: {type(cleanup_error).__name__}: {cleanup_error}")
         raise primary_error
     if cleanup_error is not None:
         raise cleanup_error
@@ -491,10 +619,10 @@ def _run_generated_bpf_experiment(
 def _record_container_checkpoint(output, destination, project):
     """Capture bounded terminal identity evidence before Runner reclamation."""
     from yaml import safe_load
-    from skyseed_v2.compose.launcher import _inspect_startup_services
+    from skyseed_v2.deployment.deployer import _inspect_startup_services
     started = perf_counter()
     try:
-        services = safe_load((output / "runtime/docker-compose.yml").read_text())["services"]
+        services = safe_load((output / "deployment/docker-compose.yml").read_text())["services"]
         containers = _inspect_startup_services(project, services, tuple(services))
         data = {"status": "COMPLETE", "project": project, "containers": [
             {"id": c["Id"], "service": c["Config"]["Labels"]["com.docker.compose.service"],
@@ -506,75 +634,11 @@ def _record_container_checkpoint(output, destination, project):
     destination.write_text(json.dumps(data, sort_keys=True) + "\n")
 
 
-def _write_runtime_execution_observations(
-    output: Path,
-    destination: Path,
-    runtime_observer: _ExecutionObserver,
-) -> None:
-    """Combine generation and runtime observations as detached side work."""
-
-    generation_path = (
-        output / "inspection/observation/execution-observations.jsonl"
-    )
-    generation_header: dict[str, object] | None = None
-    generation_records: list[dict[str, object]] = []
-    if generation_path.is_file():
-        values = [
-            json.loads(line)
-            for line in generation_path.read_text(encoding="utf-8").splitlines()
-            if line.strip()
-        ]
-        if not values or not isinstance(values[0], dict):
-            raise ValueError("generation Observation stream is invalid")
-        generation_header = values[0]
-        for index, value in enumerate(values[1:]):
-            if (
-                not isinstance(value, dict)
-                or value.get("record_type") != "execution_observation"
-                or value.get("sequence") != index
-            ):
-                raise ValueError(
-                    "generation Observation records are not continuous"
-                )
-            generation_records.append(value)
-    runtime = runtime_observer.snapshot()
-    runtime_header = runtime["header"]
-    runtime_records = runtime["records"]
-    assert isinstance(runtime_header, dict)
-    assert isinstance(runtime_records, tuple)
-    header = {
-        "record_type": "execution_observation_header",
-        "format_version": 2,
-        "metadata": {
-            "scope": "combined-generation-runtime",
-            "generation": (
-                None
-                if generation_header is None
-                else generation_header.get("metadata", {})
-            ),
-            "runtime": runtime_header.get("metadata", {}),
-        },
-    }
-    records = []
-    for value in (*generation_records, *runtime_records):
-        copied = dict(value)
-        copied["sequence"] = len(records)
-        records.append(copied)
-    target = Path(destination)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(
-        "".join(
-            json.dumps(
-                value,
-                ensure_ascii=False,
-                separators=(",", ":"),
-                sort_keys=True,
-            )
-            + "\n"
-            for value in (header, *records)
-        ),
-        encoding="utf-8",
-    )
+def _write_runtime_execution_observations(output, destination, runtime_observer):
+    """Each invocation owns only its records and references generation once."""
+    generation = Path(output) / "results/experiment/generation-performance.jsonl"
+    runtime_observer._metadata["generation_reference"] = os.path.relpath(generation, Path(destination).parent)
+    return runtime_observer.write_jsonl(destination)
 
 
 def _write_runner_inspection_handoff(
@@ -671,7 +735,7 @@ def _write_json_file_atomic(path: Path, value: Mapping[str, object]) -> None:
 def _read_and_verify_execution(
     output: Path,
 ) -> tuple[dict[str, Any], Path, dict[str, Any]]:
-    path = output / "runtime/execution.json"
+    path = output / "results/compiler/execution.json"
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
@@ -680,7 +744,7 @@ def _read_and_verify_execution(
         ) from error
     if not isinstance(value, dict):
         raise RuntimeError("generated BPF execution definition must be an object")
-    if value.get("format_version") != _FORMAT_VERSION or value.get("kind") != _KIND:
+    if value.get("format_version") not in {3, _FORMAT_VERSION} or value.get("kind") != _KIND:
         raise RuntimeError("generated BPF execution definition is unsupported")
     if value.get("backend") != "bpf":
         raise RuntimeError("generated execution backend is not BPF")
@@ -696,7 +760,7 @@ def _read_and_verify_execution(
         raise RuntimeError("generated execution observation interval is invalid")
     runner = _mapping(value.get("runner"), "runner")
     if (runner.get("execution_contract") != "sealed-precomputed-only"
-        or set(runner) - {"execution_contract", "batch_lead_fraction", "batch_capacity_factor"}):
+        or set(runner) - {"execution_contract", "batch_lead_fraction", "batch_capacity_factor", "keep_alive"}):
         raise RuntimeError("generated Runner execution contract is unsupported")
     progression = _mapping(value.get("progression"), "progression")
     if (
@@ -710,58 +774,12 @@ def _read_and_verify_execution(
         handoff.get("manifest"), "Runner artifact manifest"
     )
     manifest_path = output / relative_manifest
-    snapshot = _read_runner_artifact_manifest_snapshot(manifest_path)
-    if (
-        handoff.get("format_version") != snapshot["format_version"]
-        or handoff.get("encoding") != snapshot["encoding"]
-        or handoff.get("realization_count") != snapshot["realization_count"]
-        or handoff.get("boundary_count") != snapshot["boundary_count"]
-        or handoff.get("sequence_sha256") != snapshot["sequence_sha256"]
-        or handoff.get("manifest_sha256")
-        != sha256(manifest_path.read_bytes()).hexdigest()
-    ):
-        raise RuntimeError("generated Runner artifact changed; rerun main.py")
-    timeline = snapshot["timeline"]
-    batches = value.get("runner_batches", ())
-    if batches:
-        if not isinstance(batches, list) or len(batches) != 1:
-            raise RuntimeError("generated delivery chain must have exactly one continued batch")
-        verifier = BpfRunner(compose_project_name=str(value["generated_output_identity"]), runtime_artifact=manifest_path,
-                             **{key: runner[key] for key in ("batch_lead_fraction", "batch_capacity_factor") if key in runner})
-        for batch in batches:
-            batch_path = output / _safe_relative_path(batch.get("manifest"), "continued Runner artifact")
-            next_snapshot = _read_runner_artifact_manifest_snapshot(batch_path)
-            if any(batch.get(key) != next_snapshot[key] for key in
-                   ("manifest_sha256", "boundary_count", "realization_count", "timeline", "delivery")):
-                raise RuntimeError("generated continued Runner artifact changed; rerun main.py")
-            verifier.append_batch(batch_path)
-            if not next_snapshot["delivery"]["final"]:
-                raise RuntimeError("generated finite session lacks a terminal delivery")
-            snapshot = {**snapshot,
-                "boundary_count": snapshot["boundary_count"] + next_snapshot["boundary_count"],
-                "realization_count": snapshot["realization_count"] + next_snapshot["realization_count"]}
-            timeline = {**timeline, "end": next_snapshot["timeline"]["end"]}
-    if (
-        timeline.get("start") != start_time.isoformat()
-        or timeline.get("end") != end_time.isoformat()
-    ):
-        raise RuntimeError("generated Runner artifact Timeline differs")
+    # Runner's real reader validates material format, binary seals, nodes and
+    # lineage during admission. These are reference facts, not a second reader.
+    snapshot = dict(handoff)
     project_name = _read_compose_project_name(output)
     if value.get("generated_output_identity") != project_name:
         raise RuntimeError("generated output identity does not match Compose controls")
-    _verify_source_fingerprint(
-        _mapping(value.get("source_fingerprint"), "source_fingerprint")
-    )
-    _verify_generated_input_fingerprint(
-        output, _mapping(value.get("generated_inputs"), "generated_inputs")
-    )
-    environment = _mapping(value.get("environment"), "environment")
-    if environment.get("python_implementation") != platform.python_implementation():
-        raise RuntimeError("generated output Python implementation differs; rerun main.py")
-    if environment.get("python_version") != platform.python_version():
-        raise RuntimeError("generated output Python version differs; rerun main.py")
-    if environment.get("seedemu_distribution_version") != metadata.version("seedemu"):
-        raise RuntimeError("generated output SEED version differs; rerun main.py")
     return value, manifest_path, snapshot
 
 
@@ -770,226 +788,6 @@ def _read_and_verify_execution_definition(output: Path) -> dict[str, Any]:
 
     definition, _, _ = _read_and_verify_execution(output)
     return definition
-
-def _build_source_fingerprint(
-    project_root: Path, example_root: Path
-) -> dict[str, object]:
-    project = Path(project_root).resolve()
-    example = Path(example_root).resolve()
-    seed_spec = util.find_spec("seedemu")
-    if seed_spec is None or not seed_spec.submodule_search_locations:
-        raise RuntimeError("cannot locate installed SEED source")
-    seed_root = Path(next(iter(seed_spec.submodule_search_locations))).resolve()
-    scopes = [
-        _source_scope("skyseed", project / "src/skyseed_v2"),
-        _source_scope(
-            "example-progression",
-            example,
-            includes=("emu.py", "simu.py"),
-        ),
-        _source_scope("seedemu", seed_root),
-    ]
-    return {
-        "algorithm": "sha256",
-        "digest": _scope_records_digest(scopes),
-        "scopes": scopes,
-    }
-
-
-def _verify_source_fingerprint(value: Mapping[str, object]) -> None:
-    if value.get("algorithm") != "sha256":
-        raise RuntimeError("generated source fingerprint algorithm is unsupported")
-    raw_scopes = value.get("scopes")
-    if not isinstance(raw_scopes, list) or not raw_scopes:
-        raise RuntimeError("generated source fingerprint scopes are missing")
-    actual = []
-    for raw in raw_scopes:
-        scope = _mapping(raw, "source fingerprint scope")
-        label = _single_line(scope.get("label"), "source scope label")
-        root = Path(_single_line(scope.get("root"), "source scope root"))
-        raw_includes = scope.get("includes")
-        includes = _scope_includes(raw_includes, label=label)
-        try:
-            current = _source_scope(label, root, includes=includes)
-        except RuntimeError as error:
-            raise RuntimeError(
-                f"generated execution source changed; rerun main.py: {label}"
-            ) from error
-        if (
-            current["file_count"] != scope.get("file_count")
-            or current["sha256"] != scope.get("sha256")
-        ):
-            raise RuntimeError(
-                f"generated execution source changed; rerun main.py: {label}"
-            )
-        actual.append(current)
-    if value.get("digest") != _scope_records_digest(actual):
-        raise RuntimeError("generated source fingerprint is inconsistent; rerun main.py")
-
-
-def _source_scope(
-    label: str,
-    root: Path,
-    *,
-    includes: tuple[str, ...] | None = None,
-) -> dict[str, object]:
-    source_root = Path(root).resolve()
-    if not source_root.is_dir():
-        raise RuntimeError(f"source fingerprint root is unavailable: {source_root}")
-    paths = (
-        tuple(source_root / relative for relative in includes)
-        if includes is not None
-        else tuple(
-            path
-            for path in sorted(source_root.rglob("*.py"))
-            if not any(
-                part in {"__pycache__", "output", "build"}
-                for part in path.relative_to(source_root).parts
-            )
-        )
-    )
-    digest = _file_set_digest(source_root, paths)
-    return {
-        "label": label,
-        "root": str(source_root),
-        **({} if includes is None else {"includes": list(includes)}),
-        "file_count": len(paths),
-        "sha256": digest,
-    }
-
-
-def _build_generated_input_fingerprint(output_directory: Path) -> dict[str, object]:
-    output = Path(output_directory).resolve()
-    scopes = [
-        _generated_input_scope(
-            output,
-            label="input-snapshots",
-            relative_root="inputs",
-            excludes=("traffic-workload.json",),
-        ),
-        _generated_input_scope(
-            output,
-            label="docker-compose",
-            relative_root="runtime",
-            includes=("docker-compose.yml",),
-        ),
-    ]
-    return {
-        "algorithm": "sha256",
-        "digest": _scope_records_digest(scopes),
-        "scopes": scopes,
-    }
-
-
-def _verify_generated_input_fingerprint(
-    output: Path, value: Mapping[str, object]
-) -> None:
-    if value.get("algorithm") != "sha256":
-        raise RuntimeError("generated input fingerprint algorithm is unsupported")
-    raw_scopes = value.get("scopes")
-    if not isinstance(raw_scopes, list) or not raw_scopes:
-        raise RuntimeError("generated input fingerprint scopes are missing")
-    actual = []
-    for raw in raw_scopes:
-        scope = _mapping(raw, "generated input scope")
-        label = _single_line(scope.get("label"), "generated input scope label")
-        relative_root = _safe_relative_path(
-            scope.get("path"), "generated input scope path"
-        )
-        includes = _scope_includes(scope.get("includes"), label=label)
-        excludes = _scope_includes(
-            scope.get("excludes"), label=label, allow_none=True
-        )
-        try:
-            current = _generated_input_scope(
-                output,
-                label=label,
-                relative_root=relative_root,
-                includes=includes,
-                excludes=() if excludes is None else excludes,
-            )
-        except RuntimeError as error:
-            raise RuntimeError(
-                f"generated runtime input changed; rerun main.py: {label}"
-            ) from error
-        if (
-            current["file_count"] != scope.get("file_count")
-            or current["sha256"] != scope.get("sha256")
-        ):
-            raise RuntimeError(
-                f"generated runtime input changed; rerun main.py: {label}"
-            )
-        actual.append(current)
-    if value.get("digest") != _scope_records_digest(actual):
-        raise RuntimeError("generated input fingerprint is inconsistent; rerun main.py")
-
-
-def _generated_input_scope(
-    output: Path,
-    *,
-    label: str,
-    relative_root: str,
-    includes: tuple[str, ...] | None = None,
-    excludes: tuple[str, ...] = (),
-) -> dict[str, object]:
-    root = Path(output).resolve() / relative_root
-    if not root.is_dir():
-        raise RuntimeError(f"generated input root is unavailable: {root}")
-    paths = (
-        tuple(root / relative for relative in includes)
-        if includes is not None
-        else tuple(
-            path
-            for path in sorted(root.rglob("*"))
-            if path.is_file()
-            and path.relative_to(root).as_posix() not in excludes
-        )
-    )
-    return {
-        "label": label,
-        "path": relative_root,
-        **({} if includes is None else {"includes": list(includes)}),
-        **({} if not excludes else {"excludes": list(excludes)}),
-        "file_count": len(paths),
-        "sha256": _file_set_digest(root, paths),
-    }
-
-
-def _file_set_digest(root: Path, paths: tuple[Path, ...]) -> str:
-    records = []
-    for path in paths:
-        if not path.is_file():
-            raise RuntimeError(f"fingerprinted file is unavailable: {path}")
-        records.append(
-            f"{path.relative_to(root).as_posix()}\0{sha256(path.read_bytes()).hexdigest()}"
-        )
-    return sha256("\n".join(records).encode("utf-8")).hexdigest()
-
-
-def _scope_records_digest(scopes: list[Mapping[str, object]]) -> str:
-    payload = "\n".join(
-        f"{scope['label']}\0{scope.get('root', scope.get('path'))}\0"
-        f"{scope['file_count']}\0{scope['sha256']}"
-        for scope in scopes
-    )
-    return sha256(payload.encode("utf-8")).hexdigest()
-
-
-def _scope_includes(
-    value: object,
-    *,
-    label: str,
-    allow_none: bool = True,
-) -> tuple[str, ...] | None:
-    if value is None and allow_none:
-        return None
-    if not isinstance(value, list) or not value:
-        raise RuntimeError(f"generated fingerprint includes are invalid: {label}")
-    return tuple(
-        _safe_relative_path(item, f"generated fingerprint include: {label}")
-        for item in value
-    )
-
 
 def _safe_relative_path(value: object, label: str) -> str:
     raw = _single_line(value, label)

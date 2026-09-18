@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from seedemu.core import Node
 
-from skyseed_v2.emulator.entities import OrbitParameters, Satellite, Shell
+from skyseed_v2.emulator.entities import OrbitParameters, EmulatorSatellite, EmulatorShell
 
 
 def parameters() -> OrbitParameters:
@@ -16,7 +16,7 @@ def parameters() -> OrbitParameters:
 
 
 def test_shell_creates_and_queries_owned_orbit() -> None:
-    shell = Shell("shell-1", asn=65000)
+    shell = EmulatorShell("shell-1", asn=65000)
     orbit = shell.create_orbit("orbit-1", parameters=parameters())
 
     assert shell.get_orbit("orbit-1") is orbit
@@ -26,7 +26,7 @@ def test_shell_creates_and_queries_owned_orbit() -> None:
 
 
 def test_shell_rejects_duplicate_orbit_id() -> None:
-    shell = Shell("shell-1", asn=65000)
+    shell = EmulatorShell("shell-1", asn=65000)
     shell.create_orbit("orbit-1", parameters=parameters())
 
     with pytest.raises(ValueError, match="orbit_id"):
@@ -34,7 +34,7 @@ def test_shell_rejects_duplicate_orbit_id() -> None:
 
 
 def test_orbit_creates_and_queries_satellite() -> None:
-    orbit = Shell("shell-1", asn=65000).create_orbit(
+    orbit = EmulatorShell("shell-1", asn=65000).create_orbit(
         "orbit-1", parameters=parameters()
     )
     satellite = orbit.create_satellite(
@@ -56,7 +56,7 @@ def test_orbit_creates_and_queries_satellite() -> None:
     assert satellite.payload == {"profile": "test"}
     assert satellite.max_simultaneous_ground_station_accesses == 2
     assert satellite.maximum_simultaneous_inter_satellite_links == 4
-    assert isinstance(satellite, Satellite)
+    assert isinstance(satellite, EmulatorSatellite)
     assert isinstance(satellite, Node)
     assert satellite.getName() == satellite.satellite_id
     assert satellite.getInterfaces() == []
@@ -87,7 +87,7 @@ def test_orbit_creates_and_queries_satellite() -> None:
 
 
 def test_batch_creation_is_deterministic_and_evenly_spaced() -> None:
-    orbit = Shell("shell-1", asn=65000).create_orbit(
+    orbit = EmulatorShell("shell-1", asn=65000).create_orbit(
         "orbit-1", parameters=parameters()
     )
 
@@ -113,7 +113,7 @@ def test_batch_creation_is_deterministic_and_evenly_spaced() -> None:
 
 
 def test_satellite_ids_are_unique_across_orbits_of_one_owner() -> None:
-    shell = Shell("shell-1", asn=65000)
+    shell = EmulatorShell("shell-1", asn=65000)
     first = shell.create_orbit("orbit-1", parameters=parameters())
     second = shell.create_orbit("orbit-2", parameters=parameters())
     first.create_satellite(
@@ -127,7 +127,7 @@ def test_satellite_ids_are_unique_across_orbits_of_one_owner() -> None:
 
 
 def test_orbit_rejects_duplicate_index_without_partial_batch() -> None:
-    orbit = Shell("shell-1", asn=65000).create_orbit(
+    orbit = EmulatorShell("shell-1", asn=65000).create_orbit(
         "orbit-1", parameters=parameters()
     )
     orbit.create_satellite(

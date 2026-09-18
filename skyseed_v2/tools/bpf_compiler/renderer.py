@@ -5,7 +5,7 @@ from __future__ import annotations
 from html import escape
 from typing import Any
 
-from tools._html import json_for_script, standalone_page
+from tools._presentation.html import json_for_script, standalone_page
 
 
 def render_bpf_compiler_page(data: dict[str, Any]) -> str:

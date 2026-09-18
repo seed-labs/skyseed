@@ -20,7 +20,7 @@ from skyseed_v2.simulator import (
     plan_transition_fingerprint,
     planned_operational_state_fingerprint,
 )
-from skyseed_v2.simulator.planning import (
+from skyseed_v2.simulator.planner import (
     plan_transition_from_data,
     planned_operational_state_to_data,
 )
@@ -148,6 +148,7 @@ def _project_traffic_replay(observation, *, reader_validated=False):
             "nodes": telemetry["nodes"],
             "interfaces": telemetry["interfaces"],
             "boundaries": telemetry["boundaries"],
+            "clock_segments": telemetry.get("clock_segments", ()),
             "packets": telemetry["packets"],
             "loss_records": telemetry["loss_records"],
             "recorder_end": telemetry["recorder_end"],

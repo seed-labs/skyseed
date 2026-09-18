@@ -22,9 +22,9 @@ from skyseed_v2.configuration.emulator import (
     SkyseedAutonomousSystemConfig,
     StaticEmulatorConfig,
 )
-from skyseed_v2.emulator.entities import Orbit, Shell
-from skyseed_v2.emulator.seedemu import SkyseedAutonomousSystem
-from skyseed_v2.emulator_to_simulator import create_simulator_static_input
+from skyseed_v2.emulator.entities import EmulatorOrbit, EmulatorShell
+from skyseed_v2.emulator.seedemu import EmulatorAutonomousSystem
+from skyseed_v2.adapters.emulator_to_simulator import create_simulator_static_input
 
 
 def explicit_shell(shell_id: str, satellite_id: str) -> ShellConfig:
@@ -99,14 +99,14 @@ def base_for(emulator: Emulator) -> Base:
 
 def skyseed_autonomous_systems_for(
     emulator: Emulator,
-) -> tuple[SkyseedAutonomousSystem, ...]:
+) -> tuple[EmulatorAutonomousSystem, ...]:
     base = base_for(emulator)
     return tuple(
         autonomous_system
         for asn in sorted(base.getAsns())
         if isinstance(
             (autonomous_system := base.getAutonomousSystem(asn)),
-            SkyseedAutonomousSystem,
+            EmulatorAutonomousSystem,
         )
     )
 
@@ -249,10 +249,10 @@ def test_creation_calls_the_approved_public_entity_creation_methods(
 
         monkeypatch.setattr(cls, method_name, wrapper)
 
-    record(SkyseedAutonomousSystem, "create_shell")
-    record(Shell, "create_orbit")
-    record(Orbit, "create_satellite")
-    record(SkyseedAutonomousSystem, "create_ground_station")
+    record(EmulatorAutonomousSystem, "create_shell")
+    record(EmulatorShell, "create_orbit")
+    record(EmulatorOrbit, "create_satellite")
+    record(EmulatorAutonomousSystem, "create_ground_station")
 
     config = StaticEmulatorConfig(
         skyseed_autonomous_systems=(
@@ -266,10 +266,10 @@ def test_creation_calls_the_approved_public_entity_creation_methods(
     create_static_emulator(config)
 
     assert calls == [
-        "SkyseedAutonomousSystem.create_shell",
-        "Shell.create_orbit",
-        "Orbit.create_satellite",
-        "SkyseedAutonomousSystem.create_ground_station",
+        "EmulatorAutonomousSystem.create_shell",
+        "EmulatorShell.create_orbit",
+        "EmulatorOrbit.create_satellite",
+        "EmulatorAutonomousSystem.create_ground_station",
     ]
 
 

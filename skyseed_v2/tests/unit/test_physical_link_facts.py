@@ -10,7 +10,7 @@ from skyseed_v2.configuration.simulator import (
     ZoneLayoutDefinition,
 )
 from skyseed_v2.shared import NodeId
-from skyseed_v2.shared._execution_observation import _ExecutionObserver
+from skyseed_v2.experiment.output.observation import _ExecutionObserver
 from skyseed_v2.simulator import (
     EarthFixedPosition,
     SimulationDefinition,
@@ -23,16 +23,16 @@ from skyseed_v2.simulator.input import (
     SatelliteSimulationInput,
     SimulatorStaticInput,
 )
-from skyseed_v2.simulator.models import GeometricPhysicalLinkModel
-from skyseed_v2.simulator.physical.physical_link import (
+from skyseed_v2.simulator.physical.models import GeometricPhysicalLinkModel
+from skyseed_v2.simulator.physical.queries.physical_link import (
     GroundStationAccessCandidate,
     InterSatelliteLinkCandidate,
-    PhysicalLinkModel,
-    PhysicalLinkObservation,
+    PhysicalLinkQueryResult,
     PhysicalLinkRequest,
     PhysicalLinkWorkCounts,
     ZoneServiceCandidate,
 )
+from skyseed_v2.simulator.physical.models.links import PhysicalLinkModel
 
 
 EPOCH = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -401,22 +401,22 @@ def test_physical_observation_has_no_operational_or_slicer_contract() -> None:
         InterSatelliteLinkCandidate,
         GroundStationAccessCandidate,
         ZoneServiceCandidate,
-        PhysicalLinkObservation,
+        PhysicalLinkQueryResult,
     ):
         assert prohibited.isdisjoint(field.name for field in fields(value_type))
 
     repository = Path(__file__).parents[2]
     contract_source = (
         repository
-        / "src/skyseed_v2/simulator/physical/physical_link.py"
+        / "src/skyseed_v2/simulator/physical/queries/physical_link.py"
     ).read_text(encoding="utf-8")
     core_source = (
         repository
-        / "src/skyseed_v2/simulator/models/_geometric_physical.py"
+        / "src/skyseed_v2/simulator/physical/models/links/_geometry.py"
     ).read_text(encoding="utf-8")
     model_source = (
         repository
-        / "src/skyseed_v2/simulator/models/geometric_physical_link.py"
+        / "src/skyseed_v2/simulator/physical/models/links/geometric.py"
     ).read_text(encoding="utf-8")
     assert "simulator.slicing" not in contract_source + core_source + model_source
     assert "..slicing" not in contract_source + core_source + model_source
@@ -448,7 +448,7 @@ def test_geometric_physical_configuration_fails_at_construction(
 
 
 def test_models_package_exports_geometric_physical_link_model() -> None:
-    from skyseed_v2.simulator import models
+    from skyseed_v2.simulator.physical import models
 
     assert models.GeometricPhysicalLinkModel is GeometricPhysicalLinkModel
     assert "GeometricPhysicalLinkModel" in models.__all__
@@ -462,7 +462,7 @@ def test_physical_link_contracts_are_exported_by_their_owner_facades() -> None:
         "GroundStationAccessCandidate": GroundStationAccessCandidate,
         "InterSatelliteLinkCandidate": InterSatelliteLinkCandidate,
         "PhysicalLinkModel": PhysicalLinkModel,
-        "PhysicalLinkObservation": PhysicalLinkObservation,
+        "PhysicalLinkQueryResult": PhysicalLinkQueryResult,
         "PhysicalLinkRequest": PhysicalLinkRequest,
         "PhysicalLinkWorkCounts": PhysicalLinkWorkCounts,
         "ZoneServiceCandidate": ZoneServiceCandidate,
@@ -492,7 +492,7 @@ def test_query_rank_changes_keep_retained_pairs_and_distinguish_not_returned():
 
 
 def test_contact_proof_keys_survive_changed_pair_query_order():
-    from skyseed_v2.simulator.models._contact_prediction import _ContactPrediction
+    from skyseed_v2.simulator.physical.models.links._contact_prediction import _ContactPrediction
     from skyseed_v2.simulator.physical import PhysicalContactWindow
     world, satellites, _ = _physical_world_fixture()
     first=(satellites[0].node_id,satellites[1].node_id)

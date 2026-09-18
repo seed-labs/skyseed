@@ -6,7 +6,7 @@ from pathlib import Path
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-from skyseed_v2.backend.bpf import BpfCompiledRealization
+from skyseed_v2.backend.bpf import BpfCompilationResult
 from skyseed_v2.simulator import Plan
 
 from .artifact_writer import write_bpf_compiler_artifacts
@@ -16,13 +16,13 @@ from .renderer import render_bpf_compiler_page
 
 
 def _compiler_observation_timing(path: Path) -> dict[str, object]:
-    from tools.observation import (
+    from tools.performance import (
         read_execution_observations,
     )
 
-    from tools.observation.projection import project_observations
+    from tools.performance.projection import project_performance
     read = read_execution_observations(Path(path))
-    observations = project_observations(read)
+    observations = project_performance(read)
     component = next(
         (
             value
@@ -46,7 +46,7 @@ def _compiler_observation_timing(path: Path) -> dict[str, object]:
         and value["scope"].get("compile_index") is not None
     )
     return {
-        "source": "System Observation detached execution records",
+        "source": "Performance detached execution records",
         "stages": () if component is None else component["stages"],
         "compile_samples": samples,
         "note": (
@@ -57,7 +57,7 @@ def _compiler_observation_timing(path: Path) -> dict[str, object]:
 
 def collect_bpf_compiler_data(
     plans: tuple[Plan, ...],
-    realizations: tuple[BpfCompiledRealization, ...],
+    realizations: tuple[BpfCompilationResult, ...],
     *,
     compile_evidence: Iterable[Mapping[str, object]] = (),
     observation_path: Path | None = None,
@@ -77,7 +77,7 @@ def collect_bpf_compiler_data(
 
 def write_bpf_compiler_tool(
     plans: tuple[Plan, ...],
-    realizations: tuple[BpfCompiledRealization, ...],
+    realizations: tuple[BpfCompilationResult, ...],
     directory: Path,
     *,
     compile_evidence: Iterable[Mapping[str, object]] = (),

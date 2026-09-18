@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from skyseed_v2.backend.bpf.runner import deployment as deployment_module
+
 import os
 import json
 import subprocess
@@ -7,8 +9,8 @@ from uuid import uuid4
 
 import pytest
 
-from skyseed_v2.backend.bpf.runner import BpfRunner, _PrivilegedHelper
-from skyseed_v2.backend.bpf._runner.kernel_netlink import _RETIREMENT_GROUP_BASE
+from skyseed_v2.backend.bpf.runner.command_channel import _PrivilegedHelper
+from skyseed_v2.backend.bpf.runner.kernel_netlink import _RETIREMENT_GROUP_BASE
 
 
 def _run(*command: str, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -68,9 +70,8 @@ def test_main_boundary_owns_live_veth_establish_withdraw_and_recreate(continued)
             _run("docker", "inspect", *containers).stdout
         )
         pids = tuple(int(value["State"]["Pid"]) for value in inspected)
-        capture_runner = object.__new__(BpfRunner)
-        capture_runner._docker = "docker"
-        incarnations = capture_runner._capture_privileged_incarnations(
+        deployment = deployment_module._Deployment("docker", f"live-observability-{token}")
+        incarnations = deployment._capture_privileged_incarnations(
             image_id=image,
             pids=pids,
         )
@@ -97,7 +98,8 @@ def test_main_boundary_owns_live_veth_establish_withdraw_and_recreate(continued)
                 "zone_prefixes": ["198.51.100.0/24"],
                 "worker_count": 2,
                 "retirement_group_end": _RETIREMENT_GROUP_BASE + 4,
-                **({"continuation_enabled": True, "resident_generation_capacity": 2} if continued else {}),
+                "continuation_enabled": continued,
+                "resident_generation_capacity": 2 if continued else 3,
             },
         )
         initialized = True
@@ -136,7 +138,7 @@ def test_main_boundary_owns_live_veth_establish_withdraw_and_recreate(continued)
                 records.append({"key": key, "active_ports": [port] if present and not reused else [],
                     "routes": [] if reused else [{"destination": local, "logical_port_id": 0}]
                     + ([{"destination": remote, "logical_port_id": port}] if present else []),
-                    **({"version": versions[key]} if continued else {})})
+                    "version": versions[key]})
             result = helper.execute("prewrite_generation", {
                 "pin_root": pin_root, "generation": generation, "generation_nodes": records,
                 "bpf_batch_update_supported": False, "seal": True,

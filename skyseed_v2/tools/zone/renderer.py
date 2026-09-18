@@ -5,8 +5,8 @@ from __future__ import annotations
 from html import escape
 from typing import Any
 
-from .._earth_reference import _natural_earth_coastline_lines
-from .._html import json_for_script, standalone_page
+from .._presentation.earth_reference import _natural_earth_coastline_lines
+from .._presentation.html import json_for_script, standalone_page
 
 
 def render_zone_page(data: dict[str, Any]) -> str:

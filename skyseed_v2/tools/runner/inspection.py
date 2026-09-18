@@ -5,9 +5,11 @@ from __future__ import annotations
 from hashlib import sha256
 from pathlib import Path
 import json
+from math import isfinite
+import sys
 from typing import Any, Mapping
 
-from tools._html import write_json, write_text
+from tools._presentation.html import write_json, write_text
 
 from .projection import project_runner_inspection
 from .reader import read_runner_event_history
@@ -49,16 +51,26 @@ def collect_runner_data(
             ),
             "exact_source_path": str(Path(event_history_path).resolve()),
         }
-    deployment_startup = (
-        None
-        if deployment_startup_path is None
-        else _read_deployment_startup(deployment_startup_path)
-    )
-    return project_runner_inspection(
+    deployment_startup = None
+    recording = None
+    if deployment_startup_path is not None:
+        try:
+            deployment_startup = _read_deployment_startup(deployment_startup_path)
+        except (OSError, ValueError, OverflowError) as error:
+            recording = {'status': 'unavailable', 'path': str(deployment_startup_path),
+                         'error': str(error)}
+            try:
+                print(f'optional deployment startup evidence unavailable: {error}', file=sys.stderr)
+            except Exception:
+                pass
+    data = project_runner_inspection(
         snapshot,
         runtime_outcome,
         deployment_startup=deployment_startup,
     )
+    if recording is not None:
+        data['scale_safety']['deployment_startup_recording'] = recording
+    return data
 
 
 def write_runner_tool(
@@ -155,11 +167,14 @@ def _read_deployment_startup(path: Path) -> dict[str, object]:
         not isinstance(value, dict)
         or value.get("artifact_type") != "compose-startup-evidence"
         or value.get("format_version") != 1
-        or value.get("status") not in {"completed", "failed"}
+        or value.get("status") not in ("completed", "failed")
         or not isinstance(value.get("duration_seconds"), (int, float))
+        or isinstance(value.get("duration_seconds"), bool)
+        or not isfinite(value["duration_seconds"])
         or float(value["duration_seconds"]) < 0
         or isinstance(value.get("exit_code"), bool)
         or not isinstance(value.get("exit_code"), int)
+        or (value.get("status") == "completed") != (value.get("exit_code") == 0)
     ):
         raise ValueError("Compose startup evidence is invalid")
     return value

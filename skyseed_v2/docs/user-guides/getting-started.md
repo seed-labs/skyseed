@@ -1,115 +1,140 @@
-# Getting started
+# Install and generate your first result
 
-Use the repository's `skyseed_dev` Conda environment or another Python 3.12
-environment with the project and upstream SEED dependency installed.
+The official SkySEED source is [seed-labs/skyseed](https://github.com/seed-labs/skyseed),
+branch `main`. This repository is private: your GitHub account and SSH key must have
+access. Install Git, configure that SSH access, then clone from your workspace directory:
 
 ```bash
-scripts/setup_dev_environment.sh
+git clone --branch main --single-branch git@github.com:seed-labs/skyseed.git
+```
+
+Commands below use `skyseed/` and `seed-emulator/` side by side. You can use other
+directories explicitly. The development backup is separate from this official source.
+
+## Python and the required SEED source
+
+Install a Conda distribution using the [official Conda installation guide](https://docs.conda.io/projects/conda/en/latest/user-guide/install/index.html),
+then initialize its shell as that guide describes. The setup uses Python 3.12 and pip
+from conda-forge. [Package metadata](../../pyproject.toml) declares Astropy 8, PyYAML,
+SEED and the optional pytest test dependency. pip installs their transitive dependencies.
+No Docker or privileged execution is needed for calculation or local browser viewing.
+
+SkySEED requires **ExtensionNode support** from
+[`EMLionHeart/seed-emulator`, branch `development`](https://github.com/EMLionHeart/seed-emulator/tree/development).
+An arbitrary upstream checkout or the metadata version `seedemu==0.0.7` does not
+establish that capability. The tested dependency commit is
+[`05ad40bd22374496691d4b4fd516b4ee9b36eb4b`](https://github.com/EMLionHeart/seed-emulator/commit/05ad40bd22374496691d4b4fd516b4ee9b36eb4b):
+one generic ExtensionNode commit on upstream `seed-labs/seed-emulator` development
+[`97ead673aaaa4cd65f28cebc6719390913e8fdb7`](https://github.com/seed-labs/seed-emulator/commit/97ead673aaaa4cd65f28cebc6719390913e8fdb7).
+Upstream was rechecked on 18 September 2026 without a newer development commit.
+
+```bash
+# From your workspace directory, alongside the cloned skyseed source tree:
+git clone --branch development --single-branch https://github.com/EMLionHeart/seed-emulator.git
+cd skyseed/skyseed_v2
+bash scripts/setup_dev_environment.sh
 conda activate skyseed_dev
 python scripts/check_dev_environment.py
+python -m pip check
 ```
 
-For the mechanisms behind the maintained execution choices, read
-[已采用优化与宿主机配置](../human-readable/optimization-decisions.md).
-The [host decision record](../provenance/optimization-decision-history.md#h1)
-separates this host's control-plane limits and storage layout from project
-configuration; its paths and rollback discussion are a historical record,
-not setup commands to apply to another machine.
+The script installs the sibling SEED source and SkySEED in editable mode, including
+pytest. For a different dependency location, run
+`SEED_EMULATOR_CHECKOUT=/path/to/seed-emulator bash scripts/setup_dev_environment.sh`.
+It checks the actual ExtensionNode interface after installation. The branch may evolve;
+the tested commit is a reproducibility reference, not a whole-source fingerprint rule.
+For exact reproduction, fetch the fork and `git checkout --detach
+05ad40bd22374496691d4b4fd516b4ee9b36eb4b` in its checkout before running setup.
 
-## Small teaching example
-
-From the repository root:
+Verify which source Python imports; keep the environment and editable source tree together:
 
 ```bash
-python -m examples.complete_static_emulator.main
+python -c 'import sys, seedemu, skyseed_v2; from seedemu.core import ExtensionNode; print(sys.executable); print(seedemu.__file__); print(skyseed_v2.__file__); print(ExtensionNode)'
+git -C ../../seed-emulator rev-parse HEAD   # use your chosen checkout path if different
 ```
 
-This constructs the static Emulator, creates one Simulator/PhysicalWorld and
-public Planner, runs a short Plan-to-Compiler chain, compiles the static Docker
-project, and writes detached physical inspection artifacts.
+Select that interpreter in your editor. Examples use the caller's interpreter; they
+do not auto-switch environments. The environment check reports Conda identity,
+Python version and import locations, as well as required SEED capability.
 
-For the domain chain without output generation:
+## Installation smoke test: Tiny
 
 ```bash
-python -m examples.complete_static_emulator.simu
+# Terminal 1, in skyseed_v2 with skyseed_dev active:
+python examples/Sky00_tiny_network/tiny_network.py
 ```
 
-## Mini generated runtime
+Tiny constructs two satellites, one GS, two Zones and ordinary SEED ground-network
+integration nodes. Its normal output is `examples/Sky00_tiny_network/output/`.
+It computes 0–30 seconds, publishes results, then waits for continuation. Open
+`output/index.html` in a browser; it links the result and visualization entries.
+Tools may still be rendering when calculation finishes. From a second activated terminal:
 
 ```bash
-python -m examples.mini_satellite_internet.main
+cd examples/Sky00_tiny_network/output
+python experiment_control.py status
+# For a calculation-only smoke test, finish by draining the retained process:
+python experiment_control.py cancel-computation
 ```
 
-Generation drains the common incremental realization producer, writes
-`output/domain-history/`, seals `output/runtime/runner-artifact/`, and creates
-runtime scripts plus detached inspection. Generated execution consumes only the
-verified finite artifact.
+Wait for Terminal 1 to return. For a finite calculation, explicitly use
+`--operation generate` instead. Output defaults to the entry's directory even when
+invoked from elsewhere. Existing inactive output requires explicit `--override`;
+use `--output PATH` to preserve an earlier result.
 
-After `main.py` completes all output, realizations, the artifact and controls,
-generated `output/start.sh` deploys and `output/run.sh` starts Runner/Traffic.
-`output/launch.sh` combines start and run; `output/cleanup.sh` independently
-tears down the owned deployment. Use these controls in an environment with the
-required Docker/network privileges. See the
-[common example operating sequence](../../examples/README.md).
+To verify live Tiny, complete [Linux host setup](linux-host.md), leave the computation
+retained, and use a second terminal for `./deploy.sh` then `./run.sh` in its output.
+Use a third activated terminal for `python experiment_control.py status`. Runner
+reaches the requested coverage at ACTIVE `2026-01-01T00:00:30+00:00` and four activations.
+With Traffic enabled, also let its final scheduled probes launch and produce observations;
+reaching that boundary alone does not mean Traffic has caught up. Tiny's Traffic status
+should show ten episodes armed and ten generators launched. For a reply-based smoke
+check, inspect the invocation's `traffic/probe-execution.jsonl` for a `ping_observation`
+with `observation: reply` from each episode before cancellation. Missing replies are a result to investigate,
+not a reason to label the run successful.
 
-Runner Preparation fully prepares the initial finite delivery and physically
-activates B0. The [S1–S5 Example](../../examples/starlink_multi_shell_satellite_internet/README.md)
-adds a sealed successor prepared by Maintenance within the same session. Formal run begins at B1. Generation publication occurs within Main;
-the boundary completes only after withdrawals and all physical deletion jobs join.
+Request `python experiment_control.py shutdown`, wait for both foreground processes to
+return, then run `./cleanup.sh`. Check Traffic's qualification, the invocation's cleanup
+outcome and Deployer completion.
+The [control guide](computation-and-controls.md) describes those independent owners
+and all continuation, pause/resume and reset operations.
 
-## Canonical S3 offline stages
+## Learn assembly and customization
 
-The Starlink Gen1 example keeps the full 720-Satellite, 355-GroundStation,
-732-Zone, ten-minute scenario:
+Run `python examples/Sky02_s4_default/s4.py` for the default S4 assembly: 348 satellites,
+355 GSs, 732 Zones, 600 seconds at five-second cadence. Read `build_emulator()` in
+[s4.py](../../examples/Sky02_s4_default/s4.py) to see independent input loading,
+explicit SEED construction, pure Simulator input and default Model assembly.
+
+[S5](../../examples/Sky01_s5_custom_models/README.md) is the smaller customization
+example: 172 satellites, ten GSs and 184 Zones with three local Models. Its normal
+entry is `python examples/Sky01_s5_custom_models/s5.py`. Consult the
+[scale reference](scale-and-resources.md) before choosing a larger scene.
+[Inputs and scenes](inputs-and-scenes.md), [Model authoring](model-extension.md)
+and the [six-example index](../../examples/README.md) give the next steps.
+
+## Verify a candidate in isolation
+
+Use a fresh source directory containing the **complete candidate**, including intended
+uncommitted files; a checkout of an older HEAD alone does not test that candidate.
+Retrieve SEED independently over the public HTTPS path above. Choose a new prefix:
 
 ```bash
-python -m examples.starlink_gen1_satellite_internet.main \
-  --through physical-world
-
-python -m examples.starlink_gen1_satellite_internet.main \
-  --through planner
-
-python -m examples.starlink_gen1_satellite_internet.main \
-  --through compiler
+# In the fresh candidate's skyseed_v2 directory:
+export SKYSEED_ENV_PREFIX=/path/to/new/skyseed-check-env
+export SEED_EMULATOR_CHECKOUT=/path/to/public-seed-checkout
+bash scripts/setup_dev_environment.sh
+conda activate "$SKYSEED_ENV_PREFIX"
+python scripts/check_dev_environment.py --prefix "$SKYSEED_ENV_PREFIX"
+python -m pip check
 ```
 
-Physical mode computes finite contact predictions and seals all formal physical
-frames without Planner progression. Planner mode publishes 32-frame batches
-without an independent wait. Compiler mode drains the same producer and preserves
-121 formal frames/transitions in four Plans, four realizations and 121 activation
-boundaries. `generation-status.json` marks runtime materials ready before optional
-Tools complete; the CLI collects their final results separately.
-
-Offline Compiler success and full S3 runtime qualification are separate results.
-The deployment uses the same generated controls described above. Accepted finite
-Runner/S3 evidence and documentation-review status are tracked in
-[CURRENT](../CURRENT.md).
-
-## Current chain
-
-```text
-PhysicalWorld / PhysicalFrame
-→ PhysicalLinkObservation
-→ Planner / PlannedOperationalState
-→ Plan
-→ Compiler / BpfCompiledRealization
-→ sealed Runner artifact
-→ Runner / RealizedRuntimeState
-```
-
-See [inspection Tools](inspection-tools.md) for artifact paths and
-[`../accepted-design.md`](../accepted-design.md) for ownership details.
-
-## Starlink shell and observation cadence
-
-Starlink's existing entry accepts `--shell S1` and
-`--observation-interval-seconds 1` with a fresh explicit `--output`. The reference
-remains S3 at 5 seconds. All conditions cover 600 seconds; 1-second cadence has
-601 boundaries and 19 Plans at 32 frames/batch. Preparation, admission and
-refresh durations remain measured in seconds, and Traffic sending intervals
-stay independent of cadence. See the
-[Example instructions](../../examples/starlink_gen1_satellite_internet/README.md)
-and [construction/execution guide](../human-readable/framework-construction-execution.md)
-for configuration origins and their effects. Use each output's generated
-start/run/cleanup controls, and finish scoped teardown before deploying the next
-condition with overlapping node container names.
+This selects only the explicit prefix, preserving `skyseed_dev`. Do not inherit
+`PYTHONPATH` or user-site packages from another installation; use `unset PYTHONPATH`
+and `export PYTHONNOUSERSITE=1` before setup and verification. Record commands, Python,
+package/import locations, source inventory and SEED commit. Run Tiny at its normal
+output location within that tree, including retained waiting and the supported live
+controls when authorized. This checks the chosen candidate from a clean tree. Official
+source retrieval still requires repository access; SEED's public HTTPS retrieval is a
+separate dependency check. See the [development workflow](../development/workflow.md)
+for focused checks and [CURRENT](../CURRENT.md) for recorded installation evidence.

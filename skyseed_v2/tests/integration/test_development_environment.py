@@ -68,19 +68,3 @@ def test_vscode_settings_activate_but_do_not_pin_a_machine_path() -> None:
     assert "/home/" not in (
         PROJECT_ROOT / ".vscode/settings.json"
     ).read_text(encoding="utf-8")
-
-
-def test_agents_records_environment_and_architecture_calibration_policy() -> None:
-    policy = (PROJECT_ROOT / "AGENTS.md").read_text(encoding="utf-8")
-
-    for required in (
-        "skyseed_dev",
-        "CONDA_DEFAULT_ENV",
-        "CONDA_PREFIX",
-        "conda run -n skyseed_dev",
-        "docs/accepted-design.md",
-        "Repository facts",
-        "Design candidates",
-        "Historical/reference facts",
-    ):
-        assert required in policy

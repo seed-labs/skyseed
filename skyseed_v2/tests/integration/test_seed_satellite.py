@@ -6,16 +6,16 @@ from seedemu.core import Emulator, ExtensionNode
 from seedemu.core.enums import NodeRole
 from seedemu.layers import Base
 
-from skyseed_v2.emulator.entities import OrbitParameters, Satellite
-from skyseed_v2.emulator.seedemu import SkyseedAutonomousSystem
-from skyseed_v2.emulator_to_simulator import create_simulator_static_input
+from skyseed_v2.emulator.entities import OrbitParameters, EmulatorSatellite
+from skyseed_v2.emulator.seedemu import EmulatorAutonomousSystem
+from skyseed_v2.adapters.emulator_to_simulator import create_simulator_static_input
 from skyseed_v2.shared import NodeId
 
 
 def build_rendered_emulator():
     emulator = Emulator()
     base = Base()
-    satellite_as = SkyseedAutonomousSystem(65000)
+    satellite_as = EmulatorAutonomousSystem(65000)
     base.setAutonomousSystem(satellite_as)
     shell = satellite_as.create_shell("shell-1")
     orbit = shell.create_orbit(
@@ -35,7 +35,7 @@ def test_orbit_and_as_inventory_share_registered_extension_nodes() -> None:
     registered = emulator.getRegistry().getByType("65000", "extnode")
 
     assert registered == list(orbit.satellites)
-    assert all(isinstance(satellite, Satellite) for satellite in registered)
+    assert all(isinstance(satellite, EmulatorSatellite) for satellite in registered)
     assert all(isinstance(satellite, ExtensionNode) for satellite in registered)
     assert all(
         satellite_as.getExtensionNode(satellite.satellite_id) is satellite
@@ -108,7 +108,7 @@ def test_simulation_input_is_a_static_copy_of_registered_satellite() -> None:
 
 
 def test_as_rejects_duplicate_shell_and_satellite_ids_across_shells() -> None:
-    satellite_as = SkyseedAutonomousSystem(65000)
+    satellite_as = EmulatorAutonomousSystem(65000)
     first_shell = satellite_as.create_shell("shell-1")
     with pytest.raises(ValueError, match="shell_id"):
         satellite_as.create_shell("shell-1")

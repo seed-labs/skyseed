@@ -7,7 +7,7 @@ from seedemu.layers import Base
 
 from skyseed_v2.emulator.entities import GroundStationLocation, OrbitParameters
 from skyseed_v2.emulator.seedemu import (
-    SkyseedAutonomousSystem,
+    EmulatorAutonomousSystem,
     get_skyseed_autonomous_systems,
 )
 
@@ -15,7 +15,7 @@ from skyseed_v2.emulator.seedemu import (
 def test_one_as_owns_satellite_ground_station_and_standard_seed_objects() -> None:
     emulator = Emulator()
     base = Base()
-    skyseed_as = SkyseedAutonomousSystem(150)
+    skyseed_as = EmulatorAutonomousSystem(150)
     base.setAutonomousSystem(skyseed_as)
 
     network = skyseed_as.createNetwork("local-net", "10.150.0.0/24")
@@ -58,8 +58,8 @@ def test_one_as_owns_satellite_ground_station_and_standard_seed_objects() -> Non
 
 
 def test_multiple_unified_as_instances_are_independent() -> None:
-    first = SkyseedAutonomousSystem(150)
-    second = SkyseedAutonomousSystem(151)
+    first = EmulatorAutonomousSystem(150)
+    second = EmulatorAutonomousSystem(151)
 
     first.create_shell("shell-1")
     second.create_ground_station(
@@ -79,7 +79,7 @@ def test_multiple_unified_as_instances_are_independent() -> None:
 
 def test_skyseed_as_query_is_read_only_and_filters_ordinary_as() -> None:
     base = Base()
-    skyseed_as = SkyseedAutonomousSystem(151)
+    skyseed_as = EmulatorAutonomousSystem(151)
     ordinary_as = base.createAutonomousSystem(150)
     base.setAutonomousSystem(skyseed_as)
 
@@ -94,7 +94,7 @@ def test_satellite_only_and_ground_station_only_as_render() -> None:
     emulator = Emulator()
     base = Base()
 
-    satellite_as = SkyseedAutonomousSystem(150)
+    satellite_as = EmulatorAutonomousSystem(150)
     orbit = satellite_as.create_shell("shell-1").create_orbit(
         "orbit-1",
         parameters=OrbitParameters(
@@ -106,7 +106,7 @@ def test_satellite_only_and_ground_station_only_as_render() -> None:
     )
     base.setAutonomousSystem(satellite_as)
 
-    station_as = SkyseedAutonomousSystem(151)
+    station_as = EmulatorAutonomousSystem(151)
     station_as.createNetwork("ground-net", "10.151.0.0/24")
     station = station_as.create_ground_station(
         "gs-1",

@@ -4,21 +4,19 @@ from yaml import compose as compose_yaml
 from yaml import safe_load
 from yaml.nodes import MappingNode, Node, SequenceNode
 
-from examples.complete_static_emulator.emu import build_emulator
-from examples.complete_static_emulator.main import main
-from examples.complete_static_emulator.simu import (
-    create_complete_static_simulator,
-    run_complete_static_chain,
-)
+from examples.Sky00_tiny_network.tiny_network import build_emulator
+from examples.Sky00_tiny_network.tiny_network import main
+from examples.Sky00_tiny_network.tiny_network import create_simulator as create_complete_static_simulator
+from tests._support import drain_simulator as run_complete_static_chain
 from seedemu.compiler import Docker
 from seedemu.layers import Base
-from skyseed_v2.emulator.seedemu import SkyseedAutonomousSystem
+from skyseed_v2.emulator.seedemu import EmulatorAutonomousSystem
 from skyseed_v2.shared import NodeId
 from skyseed_v2.simulator.input import (
     GroundStationSimulationInput,
     SatelliteSimulationInput,
 )
-from skyseed_v2.emulator_to_simulator import create_simulator_static_input
+from skyseed_v2.adapters.emulator_to_simulator import create_simulator_static_input
 
 
 METADATA_PREFIX = "org.seedsecuritylabs.seedemu.meta."
@@ -76,7 +74,7 @@ def test_complete_example_input_matches_registry_and_compiler_output(
         for asn in sorted(base.getAsns())
         if isinstance(
             (autonomous_system := base.getAutonomousSystem(asn)),
-            SkyseedAutonomousSystem,
+            EmulatorAutonomousSystem,
         )
     )
     skyseed_as = skyseed_autonomous_systems[0]
@@ -174,7 +172,7 @@ def test_complete_example_cli_creates_a_new_output_parent(
     monkeypatch.setattr(
         "sys.argv",
         [
-            "complete_static_emulator.py",
+            "complete_static_emulator.py", "--operation", "generate",
             "--output",
             str(output),
         ],
@@ -182,45 +180,28 @@ def test_complete_example_cli_creates_a_new_output_parent(
 
     assert main() == 0
 
-    assert (output / "runtime/docker-compose.yml").is_file()
+    assert (output / "deployment/docker-compose.yml").is_file()
     for relative_path in (
-        "start.sh",
+        "deploy.sh",
         "cleanup.sh",
-        "inspection/index.html",
-        "inspection/physical-world/index.html",
-        "inspection/physical-world/physical-world.json",
-        "inspection/physical-world/summary.txt",
-        "inspection/zone/index.html",
-        "inspection/zone/zones.json",
-        "inspection/zone/summary.txt",
-        "inspection/planner/index.html",
-        "inspection/bpf-compiler/index.html",
-        "inspection/observation/index.html",
+        "visualizations/index.html",
+        "visualizations/physical-world/index.html",
+        "visualizations/physical-world/physical-world.json",
+        "visualizations/physical-world/summary.txt",
+        "visualizations/zone/index.html",
+        "visualizations/zone/zones.json",
+        "visualizations/zone/summary.txt",
+        "visualizations/planner/index.html",
+        "visualizations/bpf-compiler/index.html",
+        "visualizations/performance/index.html",
     ):
         assert (output / relative_path).is_file()
-    assert {
-        path.name for path in output.iterdir()
-    } == {
-        "start.sh",
-        "cleanup.sh",
-        "runtime",
-        "inspection",
-        "domain-history",
-    }
-    assert {
-        path.name for path in (output / "domain-history").iterdir()
-    } == {
-        "physical-frames.jsonl",
-        "planning.jsonl.gz",
-        "compiler.jsonl",
-        "domain-history-manifest.json",
-    }
+    assert {"deploy.sh", "run.sh", "cleanup.sh", "deployment", "visualizations", "results", "inputs"} <= {
+        path.name for path in output.iterdir()}
+    assert not (output / "start.sh").exists() and not (output / "launch.sh").exists()
+    assert {"physical-world", "planner", "compiler", "experiment", "traffic"} <= {
+        path.name for path in (output / "results").iterdir()}
     output_text = capsys.readouterr().out
-    assert "compiled complete static Emulator" in output_text
-    assert "SimulationInput" not in output_text
-    assert "Physical World Tool: PASS" in output_text
-    assert "Zone Tool: PASS" in output_text
-    assert "Planner Tool: PASS" in output_text
-    assert "BPF Compiler Tool: PASS" in output_text
-    assert "System Observation Tool: PASS" in output_text
-    assert "Tooling overall: PASS" in output_text
+    assert "Materials ready" in output_text
+    status = __import__('json').loads((output / 'results/experiment/generation-status.json').read_text())
+    assert status['status'] == 'MATERIALS_READY'

@@ -3,7 +3,7 @@ from subprocess import CompletedProcess
 
 import pytest
 
-from skyseed_v2.compose import launcher as module
+from skyseed_v2.deployment import deployer as module
 
 
 @pytest.mark.parametrize('failed_container', [False, True])
@@ -11,7 +11,7 @@ def test_whole_shell_failure_reentry_preserves_confirmed_containers_and_evidence
     import json
     from copy import deepcopy
     prefix = 'org.seedsecuritylabs.seedemu.meta.skyseed.'
-    runtime = tmp_path/'runtime'; runtime.mkdir()
+    runtime = tmp_path/'deployment'; runtime.mkdir()
     services = {'gs': {'image': 'node'}, **{
         f'{group}-{i}': {'image': 'node', 'labels': {prefix+'entity_type': 'Satellite', prefix+'shell_id': group}}
         for group, count in [('A', 300), ('B', 3), ('C', 2)] for i in range(count)}}
@@ -43,11 +43,11 @@ def test_whole_shell_failure_reentry_preserves_confirmed_containers_and_evidence
                 if failed_container:
                     alive[name]['State'].update(Status='exited', Running=False, ExitCode=1)
                 failing = False
-                raise module.ComposeMaterializationError('injected partial group')
-    monkeypatch.setattr(module, '_bounded_startup_command', deploy)
+                raise module.DeploymentError('injected partial group')
+    monkeypatch.setattr(module, '_startup_command', deploy)
     monkeypatch.setenv('SKYSEED_DEPLOY_BATCH_SIZE', '1')
     monkeypatch.delenv('SKYSEED_DEPLOY_PARALLEL', raising=False)
-    with pytest.raises(module.ComposeMaterializationError, match='partial group'):
+    with pytest.raises(module.DeploymentError, match='partial group'):
         module._controlled_startup(tmp_path, 'project')
     assert len(alive) == 302 and not any(n.startswith('C') for n in alive)
     evidence = runtime/'deployment-measurements.jsonl'
@@ -62,7 +62,7 @@ def test_whole_shell_failure_reentry_preserves_confirmed_containers_and_evidence
     assert [len(c) for c in commands] == [1, 300, 3, 3 if failed_container else 2, 2]
     assert evidence.read_bytes().startswith(original)
     alive['A-0']['Image'] = 'different-image'
-    with pytest.raises(module.ComposeMaterializationError, match='identity differs'):
+    with pytest.raises(module.DeploymentError, match='identity differs'):
         module._controlled_startup(tmp_path, 'project')
     assert len(commands) == 5
 
@@ -72,7 +72,7 @@ def test_group_input_preserves_internal_dependencies_and_checks_external_conditi
         'depends_on': {'base': {'condition': 'service_healthy'}, 'inside': {'condition': 'service_started'}}}}
     path = tmp_path/'group.yml'
     identities = {'base': {'Id': 'immutable', 'State': {'Status': 'running', 'Health': {'Status': 'starting'}}}}
-    with pytest.raises(module.ComposeMaterializationError, match='unsatisfied'):
+    with pytest.raises(module.DeploymentError, match='unsatisfied'):
         module._write_startup_group(path, {'services': services}, ['inside', 'child'], identities, {'inside': 'a', 'child': 'b'})
     identities['base']['State']['Health']['Status'] = 'healthy'
     module._write_startup_group(path, {'services': services}, ['inside', 'child'], identities, {'inside': 'a', 'child': 'b'})
@@ -82,32 +82,19 @@ def test_group_input_preserves_internal_dependencies_and_checks_external_conditi
     assert 'base' in services['child']['depends_on']
 
 
-def test_stage_remaining_budget_does_not_reset_between_groups(tmp_path, monkeypatch):
-    now = [100.0]
-    monkeypatch.setattr(module, 'monotonic', lambda: now[0])
-    guard = module._StartupMeasurements(tmp_path/'events', deadline=500.0)
-    assert guard.remaining() == 400
-    now[0] = 499
-    assert guard.remaining() == 1
-    now[0] = 500
-    with pytest.raises(TimeoutError, match='overall'):
-        guard.remaining()
+def test_measurements_neither_impose_a_deadline_nor_mask_operations(tmp_path, monkeypatch):
+    guard = module._StartupMeasurements(tmp_path / 'missing' / 'events')
+    guard.record('completed', elapsed_seconds=999999)
+    assert guard.failure is not None
+    assert not hasattr(guard, 'remaining')
 
 
-def test_unexpected_successful_process_exit_stops_startup_without_polling(tmp_path, monkeypatch):
-    runtime = tmp_path/'runtime'; runtime.mkdir()
-    (runtime/'docker-compose.yml').write_text('services:\n  node:\n    image: node\n')
-    alive = []
-    monkeypatch.setattr(module, '_inspect_startup_services', lambda *args, **kwargs: list(alive))
-    monkeypatch.setattr(module, 'run', lambda command, **kwargs: CompletedProcess(command, 0, '[{"Id":"image-id"}]', ''))
-    def start(*args):
-        alive.append({'Id': 'node-id', 'Config': {'Labels': {'com.docker.compose.service': 'node'}},
-                      'State': {'Status': 'exited', 'Running': False, 'ExitCode': 0}})
-    monkeypatch.setattr(module, '_bounded_startup_command', start)
-    monkeypatch.setattr(module, 'sleep', lambda *args: pytest.fail('known exit must not wait for the stage deadline'))
-    with pytest.raises(module.ComposeMaterializationError, match='unsuccessful containers'):
-        module._controlled_startup(tmp_path, 'project')
-    assert len(alive) == 1
+def test_client_completion_waits_for_daemon_state_without_attempt_cutoff(monkeypatch):
+    observations = iter([[], *([{'Config': {'Labels': {'com.docker.compose.service': 'node'}}, 'State': {'Status': 'created'}}] for _ in range(45)),
+        [{'Config': {'Labels': {'com.docker.compose.service': 'node'}}, 'State': {'Status': 'running'}}]])
+    monkeypatch.setattr(module, '_inspect_startup_services', lambda *a, **kw: next(observations))
+    monkeypatch.setattr(module, 'sleep', lambda seconds: None)
+    assert module._settle_services('project', {'node': {}}, ['node'], require_all=True)[0]['State']['Status'] == 'running'
 
 
 def test_shell_membership_and_dependency_order_come_from_metadata():
@@ -120,7 +107,7 @@ def test_shell_membership_and_dependency_order_come_from_metadata():
     services['s5'].pop('depends_on')
     assert [g for g, _ in module._startup_groups(services)] == ['S1', 'S5', 'shared']
     services['s5']['depends_on'] = ['gs']
-    with pytest.raises(module.ComposeMaterializationError, match='cyclic'):
+    with pytest.raises(module.DeploymentError, match='cyclic'):
         module._startup_groups(services)
 
 
@@ -130,7 +117,7 @@ def test_optional_inspection_accepts_only_explicit_absence(tmp_path, monkeypatch
     monkeypatch.setattr(module, 'run', lambda *args, **kwargs: CompletedProcess([], 1, '\n', message))
     assert module._inspect_startup_services('project', {'node': {}}, ['node'], allow_missing=True) == []
     monkeypatch.setattr(module, 'run', lambda *args, **kwargs: CompletedProcess([], 1, '', 'daemon unavailable'))
-    with pytest.raises(module.ComposeMaterializationError, match='unavailable'):
+    with pytest.raises(module.DeploymentError, match='unavailable'):
         module._inspect_startup_services('project', {'node': {}}, ['node'], allow_missing=True)
 
 
@@ -152,17 +139,18 @@ def test_inspection_rejects_duplicate_service_as_incomplete_coverage(monkeypatch
     import json
     c = {'Config': {'Labels': {'com.docker.compose.project': 'p', 'com.docker.compose.service': 'a'}}}
     monkeypatch.setattr(module, 'run', lambda *args, **kwargs: CompletedProcess([], 0, json.dumps(c)+'\n'+json.dumps(c), ''))
-    with pytest.raises(module.ComposeMaterializationError, match='duplicate'):
+    with pytest.raises(module.DeploymentError, match='duplicate'):
         module._inspect_startup_services('p', {'a': {}, 'b': {}}, ('a', 'b'))
 
 
 def test_generated_teardown_bounds_actual_resources_and_preserves_failure_retry(tmp_path):
     import json, os, subprocess
-    runtime = tmp_path/'runtime'; runtime.mkdir()
+    runtime = tmp_path/'deployment'; runtime.mkdir()
     services = {'base': {}, **{f'node{i}': {'depends_on': ['base']} for i in range(23)}}
     (runtime/'docker-compose.yml').write_text(module.safe_dump(
         {'services': services, 'networks': {'external': {'external': True}, 'owned': {}}}))
-    module._write_compose_cleanup_script(tmp_path, 'owned-project')
+    (runtime / 'compose-project-name').write_text('owned-project\n')
+    module._write_deployment_scripts(tmp_path, module.sys.executable, None)
     state = tmp_path/'state'
     state.write_text(json.dumps({'containers': {f'id-{name}': name for name in services},
                                 'networks': {'net-owned': 'owned', 'net-external': 'external'},
@@ -218,14 +206,14 @@ path.write_text(json.dumps(state));sys.exit(code)
 
 
 def test_teardown_rejects_wrong_owner_before_mutation(tmp_path, monkeypatch):
-    runtime=tmp_path/'runtime';runtime.mkdir()
+    runtime=tmp_path/'deployment';runtime.mkdir()
     (runtime/'docker-compose.yml').write_text('services: {}\n')
     calls=[]
     def invoke(command, **kwargs):
         calls.append(command)
         return CompletedProcess(command, 0, '\"id\" \"unrelated\" \"service\"\n', '')
     monkeypatch.setattr(module, 'run', invoke)
-    with pytest.raises(module.ComposeMaterializationError, match='ownership'):
+    with pytest.raises(module.DeploymentError, match='ownership'):
         module._controlled_teardown(tmp_path, 'owned-project')
     assert len(calls)==1 and calls[0][1]=='ps'
 
@@ -244,7 +232,7 @@ def test_fixed_group_concurrency_ignores_retired_count_controls(monkeypatch):
 
 def test_whole_cleanup_keeps_real_dependencies_and_graceful_hooks(tmp_path, monkeypatch):
     import json
-    runtime=tmp_path/'runtime';runtime.mkdir()
+    runtime=tmp_path/'deployment';runtime.mkdir()
     services={'base': {}, **{f'n{i:04}': {'depends_on':['base'], 'x-skyseed-disposable-network':True} for i in range(2020)},
               'grace': {'x-skyseed-disposable-network':True, 'stop_grace_period':'3s','depends_on':['base']},
               'signal': {'x-skyseed-disposable-network':True, 'stop_signal':'SIGQUIT','depends_on':['base']},
@@ -252,7 +240,13 @@ def test_whole_cleanup_keeps_real_dependencies_and_graceful_hooks(tmp_path, monk
                         'user':'123','working_dir':'/tmp','privileged':True,'environment':{'VALUE':'retained'}}]}}
     (runtime/'docker-compose.yml').write_text(module.safe_dump({'services':services,'networks':{'owned':{},'external':{'external':True}}}))
     alive={f'id-{name}':name for name in services};networks={'owned-id':'owned','external-id':'external'};calls=[];stopped=set()
+    clock = [0.0]
+    monkeypatch.setattr(module, 'monotonic', lambda: clock[0])
     def run(command, **kwargs):
+        # Each completed operation exceeds the former whole-stage ceiling.
+        # Real resource/dependency state still governs every following action.
+        clock[0] += 3601
+        assert kwargs.get('timeout') is None
         calls.append(command);args=command[1:];out=''
         if args[0]=='ps':out='\n'.join(f'{json.dumps(i)} "project" {json.dumps(n)}' for i,n in alive.items())
         elif args[:1]==['compose']:out=json.dumps({'name':'project','services':services})
@@ -284,7 +278,7 @@ def test_whole_cleanup_keeps_real_dependencies_and_graceful_hooks(tmp_path, monk
 
 
 def test_fast_cleanup_failure_stops_later_dependency_removal(tmp_path, monkeypatch):
-    runtime=tmp_path/'runtime';runtime.mkdir()
+    runtime=tmp_path/'deployment';runtime.mkdir()
     (runtime/'docker-compose.yml').write_text(module.safe_dump({'services':{'base':{},'fast':{'depends_on':['base'],'x-skyseed-disposable-network':True}}}))
     calls=[]
     def run(command, **kwargs):
@@ -292,7 +286,7 @@ def test_fast_cleanup_failure_stops_later_dependency_removal(tmp_path, monkeypat
         if command[1]=='ps':return CompletedProcess(command,0,'"fast-id" "project" "fast"\n"base-id" "project" "base"\n','')
         return CompletedProcess(command,7,'','force removal failed')
     monkeypatch.setattr(module,'run',run)
-    with pytest.raises(module.ComposeMaterializationError,match='force removal failed'):
+    with pytest.raises(module.DeploymentError,match='force removal failed'):
         module._controlled_teardown(tmp_path,'project')
     assert calls[-1]==['docker','rm','--force','fast-id']
     assert len(calls)==2
@@ -313,7 +307,7 @@ def test_stop_hooks_use_compose_resolved_options_without_name_based_stop(tmp_pat
 
 def test_image_preparation_preserves_builds_and_external_images_without_runtime_fields(tmp_path):
     from yaml import safe_dump,safe_load
-    runtime=tmp_path/'runtime';runtime.mkdir()
+    runtime=tmp_path/'deployment';runtime.mkdir()
     source=runtime/'docker-compose.yml'
     base={'image':'base','build':{'context':'.','dockerfile':'dummies/base'}}
     node={'image':'${COMPOSE_PROJECT_NAME}-nodes','build':'./node','platform':'linux/amd64',
@@ -329,7 +323,7 @@ def test_image_preparation_preserves_builds_and_external_images_without_runtime_
                               'map':{'image':'external/map:v1'}}
     assert value['secrets']=={'token':{'file':'./token'}}
     services['replica'].pop('image');source.write_text(safe_dump({'services':services}))
-    with pytest.raises(module.ComposeMaterializationError,match='lacks image'):
+    with pytest.raises(module.DeploymentError,match='lacks image'):
         module._prepare_controlled_image_compose(tmp_path,'project')
 
 
@@ -346,7 +340,7 @@ def test_retry_reconciles_actual_cross_group_namespace_bindings(tmp_path, monkey
                           'stop_grace_period': '2s', 'pre_stop': [{'command': ['save']}]},
                 'leaf': {'image': 'node', 'labels': shell('S2'), 'pid': 'service:child'},
                 'unrelated': {'image': 'node', 'labels': shell('S1'), 'depends_on': ['base']}}
-    runtime = tmp_path/'runtime'; runtime.mkdir()
+    runtime = tmp_path/'deployment'; runtime.mkdir()
     (runtime/'docker-compose.yml').write_text(module.safe_dump({'services': services}))
     def container(name, identity):
         return {'Id': identity, 'Image': 'image-id', 'RestartCount': 0,
@@ -386,7 +380,7 @@ def test_retry_reconciles_actual_cross_group_namespace_bindings(tmp_path, monkey
                     if binding.startswith('service:'):
                         binding = 'container:'+alive[binding[8:]]['Id']
                     alive[name]['HostConfig'][hf] = binding
-    monkeypatch.setattr(module, '_bounded_startup_command', deploy)
+    monkeypatch.setattr(module, '_startup_command', deploy)
     module._controlled_startup(tmp_path, 'project')
     assert alive['unrelated'] == retained
     assert alive['child']['HostConfig'][observed_field] == 'container:'+alive['base']['Id']
@@ -408,7 +402,7 @@ def test_cross_group_retry_removal_failure_preserves_owner_and_partial_evidence(
     services={'base':{'image':'node'},'child':{'image':'node','network_mode':'service:base',
         'labels':{'org.seedsecuritylabs.seedemu.meta.skyseed.entity_type':'Satellite',
                   'org.seedsecuritylabs.seedemu.meta.skyseed.shell_id':'S1'}}}
-    runtime=tmp_path/'runtime';runtime.mkdir();(runtime/'docker-compose.yml').write_text(module.safe_dump({'services':services}))
+    runtime=tmp_path/'deployment';runtime.mkdir();(runtime/'docker-compose.yml').write_text(module.safe_dump({'services':services}))
     alive={n:{'Id':'old-'+n,'Image':'image-id','Config':{'Labels':{
         'com.docker.compose.service':n,module._DEPLOYMENT_CONFIG_LABEL:module._deployment_service_digest(s,'image-id')}},
         'State':{'Status':'running','Running':True},'HostConfig':{}} for n,s in services.items()}
@@ -421,10 +415,20 @@ def test_cross_group_retry_removal_failure_preserves_owner_and_partial_evidence(
         if command[1]=='rm':return CompletedProcess(command,1,'','injected removal failure')
         return CompletedProcess(command,0,'[{"Id":"image-id"}]','')
     monkeypatch.setattr(module,'run',invoke)
-    monkeypatch.setattr(module,'_bounded_startup_command',lambda *a:pytest.fail('failure must stop admission'))
-    with pytest.raises(module.ComposeMaterializationError,match='removal failure'):module._controlled_startup(tmp_path,'project')
+    monkeypatch.setattr(module,'_startup_command',lambda *a:pytest.fail('failure must stop admission'))
+    with pytest.raises(module.DeploymentError,match='removal failure'):module._controlled_startup(tmp_path,'project')
     assert not any('old-base' in c for c in calls if c[1] in ('stop','rm'))
     event=json.loads((runtime/'deployment-measurements.jsonl').read_text().splitlines()[-1])
     assert event['kind']=='admission-stopped' and event['failing_group']=='deployment-reconciliation'
     assert {c['Id'] for c in event['partial_state']}=={'old-base','old-child'}
     assert event['confirmed_groups_preserved'] is True
+
+
+@pytest.fixture(autouse=True)
+def fake_mutation_boundary(monkeypatch):
+    def invoke(command):
+        result = module.run(command, capture_output=True, text=True)
+        if result.returncode:
+            raise module.DeploymentError(result.stderr or result.stdout)
+        return result
+    monkeypatch.setattr(module, '_mutation', invoke)

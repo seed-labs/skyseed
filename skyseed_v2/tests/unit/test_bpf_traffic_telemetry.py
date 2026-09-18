@@ -10,17 +10,16 @@ from types import SimpleNamespace
 
 import pytest
 
-from skyseed_v2.backend.bpf import runner as runner_module
-from skyseed_v2.backend.bpf._runner import (
+from skyseed_v2.backend.bpf.runner import command_channel as runner_module
+from skyseed_v2.backend.bpf.runner import bpf as bpf_module
+from skyseed_v2.backend.bpf.runner import (
     privileged_runtime_command as command_module,
 )
-from skyseed_v2.backend.bpf._runner import (
+from skyseed_v2.backend.bpf.runner import (
     traffic_telemetry_collector as collector_module,
 )
-from skyseed_v2.backend.bpf._runner import traffic_telemetry_abi as protocol_module
-from skyseed_v2.backend.bpf._runner.traffic_telemetry import (
-    _TrafficTelemetryRecorder,
-)
+from skyseed_v2.backend.bpf.runner import traffic_telemetry_abi as protocol_module
+from skyseed_v2.backend.bpf.runner.traffic_telemetry import _TrafficTelemetryRecorder
 
 
 def _ipv4_word(value: str) -> int:
@@ -181,13 +180,6 @@ def test_initialize_binds_one_shared_ring_and_loss_map_to_each_node_program(
     monkeypatch.setattr(command_module, "_load_program", load_program)
     monkeypatch.setattr(command_module, "_pin_object", lambda *_args: None)
     monkeypatch.setattr(command_module, "_update_map", lambda *_args: None)
-    monkeypatch.setattr(
-        command_module,
-        "_in_netns",
-        lambda *_args, **_kwargs: SimpleNamespace(
-            returncode=0, stdout="", stderr=""
-        ),
-    )
     monkeypatch.setattr(command_module.os, "close", lambda _descriptor: None)
 
     result = command_module._initialize(
@@ -196,6 +188,7 @@ def test_initialize_binds_one_shared_ring_and_loss_map_to_each_node_program(
             "nodes": nodes,
             "inactive_generation": 0xFFFFFFFF,
             "retirement_group_end": 0x53530002,
+            "resident_generation_capacity": 8,
             "telemetry_enabled": True,
             "node_address_range": "100.64.0.0/29",
             "zone_prefixes": (),
@@ -223,7 +216,7 @@ def test_initialize_binds_one_shared_ring_and_loss_map_to_each_node_program(
 def test_ring_output_failure_path_converges_back_to_original_terminal_action(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    real_assembler = command_module._Assembler
+    real_assembler = bpf_module._Assembler
     captured = []
 
     class _InspectingAssembler(real_assembler):
@@ -231,8 +224,8 @@ def test_ring_output_failure_path_converges_back_to_original_terminal_action(
             captured.append(self)
             return super().finish()
 
-    monkeypatch.setattr(command_module, "_Assembler", _InspectingAssembler)
-    command_module._tc_program(
+    monkeypatch.setattr(bpf_module, "_Assembler", _InspectingAssembler)
+    bpf_module._tc_program(
         10,
         11,
         12,
@@ -240,7 +233,7 @@ def test_ring_output_failure_path_converges_back_to_original_terminal_action(
         16,
         telemetry_ring_map=13,
         telemetry_loss_map=14,
-        node_slot=3,
+        generation_versions_map=15, node_slot=3,
     )
     assembler = captured[0]
     assert assembler.labels["emit_telemetry"] < assembler.labels["telemetry_emitted"]
@@ -260,7 +253,7 @@ def test_ring_output_failure_path_converges_back_to_original_terminal_action(
 def test_malformed_ipv4_ihl_leaves_icmp_metadata_invalid(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    real_assembler = command_module._Assembler
+    real_assembler = bpf_module._Assembler
     captured = []
 
     class _InspectingAssembler(real_assembler):
@@ -268,8 +261,8 @@ def test_malformed_ipv4_ihl_leaves_icmp_metadata_invalid(
             captured.append(self)
             return super().finish()
 
-    monkeypatch.setattr(command_module, "_Assembler", _InspectingAssembler)
-    command_module._tc_program(
+    monkeypatch.setattr(bpf_module, "_Assembler", _InspectingAssembler)
+    bpf_module._tc_program(
         10,
         11,
         12,
@@ -277,12 +270,12 @@ def test_malformed_ipv4_ihl_leaves_icmp_metadata_invalid(
         16,
         telemetry_ring_map=13,
         telemetry_loss_map=14,
-        node_slot=3,
+        generation_versions_map=15, node_slot=3,
     )
 
     assert any(
         label == "after_icmp"
-        and code == command_module._BPF_JMP_JLT_IMMEDIATE
+        and code == bpf_module._BPF_JMP_JLT_IMMEDIATE
         and destination == 4
         and immediate == 5
         for _index, label, code, destination, _source, immediate
@@ -320,7 +313,7 @@ print(json.dumps({"record_type": "collector_end"}), flush=True)
 def test_recorder_streams_identity_and_preserves_final_drain_prefix(
     tmp_path: Path,
 ) -> None:
-    recorder = _TrafficTelemetryRecorder(tmp_path / "inspection/traffic")
+    recorder = _TrafficTelemetryRecorder(tmp_path / "visualizations/traffic")
     recorder.start(
         helper=_CollectorHelper(),
         foundation={
@@ -342,26 +335,15 @@ def test_recorder_streams_identity_and_preserves_final_drain_prefix(
             },
         },
     )
-    write_evidence = recorder.write_generation_identity(
-        (
-            {
-                "generation": 4,
-                "node_slot": 0,
-                "node_id": "node-a",
-                "ifindex": 12,
-                "interface": "sv2examplea",
-                "connection_id": "isl:node-a--node-b",
-                "peer_node_id": "node-b",
-                "validity": "exact-generation",
-            },
-        )
+    recorder.enqueue_generation_identity(
+        ({"generation": 4, "node_slot": 0, "node_id": "node-a",
+          "logical_port_id": 1, "interface": "sv2examplea",
+          "connection_id": "isl:node-a--node-b", "peer_node_id": "node-b",
+          "validity": "exact-generation"},),
+        ({"logical_port_id": 1, "ifindex": 12},), (),
+        {"generation_publication_occurred": True, "active_generation": 4,
+         "boundary_timestamp": "2026-01-01T00:00:00+00:00"},
     )
-    assert write_evidence["record_count"] == 1
-    assert write_evidence["serialized_bytes"] > 0
-    assert write_evidence["serialization_seconds"] >= 0
-    assert write_evidence["write_flush_seconds"] >= 0
-    assert write_evidence["total_seconds"] >= 0
-    assert write_evidence["complete"] is True
     recorder.write_simulation_clock_anchor(
         nominal_origin="2026-01-01T00:00:00+00:00",
         monotonic_origin_seconds=123.25,
@@ -370,7 +352,7 @@ def test_recorder_streams_identity_and_preserves_final_drain_prefix(
     snapshot = recorder.stop_and_drain()
     records = tuple(
         json.loads(line)
-        for line in (tmp_path / "inspection/traffic/traffic-telemetry.jsonl")
+        for line in (tmp_path / "visualizations/traffic/traffic-telemetry.jsonl")
         .read_text(encoding="utf-8")
         .splitlines()
     )
@@ -382,7 +364,7 @@ def test_recorder_streams_identity_and_preserves_final_drain_prefix(
         "first_link": "inferred-from-first-observed-ingress",
     }
     assert records[1]["record_type"] == "node_identity"
-    assert any(value["record_type"] == "interface_identity" for value in records)
+    assert any(value["record_type"] == "interface_update" for value in records)
     assert next(
         value
         for value in records
@@ -393,6 +375,8 @@ def test_recorder_streams_identity_and_preserves_final_drain_prefix(
         "monotonic_origin_ns": 123_250_000_000,
         "clock_domain": "host-kernel-monotonic",
         "nominal_pacing": "1:1",
+        "revision": 0, "action": "start", "held_since": None,
+        "active_frontier": None, "effective_monotonic_ns": 123_250_000_000,
     }
     assert any(
         value.get("stage") == "final-drain"

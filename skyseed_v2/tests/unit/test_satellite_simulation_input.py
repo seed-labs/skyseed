@@ -4,17 +4,17 @@ from datetime import datetime, timezone
 import pytest
 from seedemu.core import Node
 
-from skyseed_v2.emulator_to_simulator import create_satellite_simulation_input
+from skyseed_v2.adapters.emulator_to_simulator import create_satellite_simulation_input
 from skyseed_v2.shared import NodeId
-from skyseed_v2.emulator.entities import OrbitParameters, Satellite, Shell
+from skyseed_v2.emulator.entities import OrbitParameters, EmulatorSatellite, EmulatorShell
 from skyseed_v2.simulator.input import SatelliteSimulationInput
 
 
-def satellite() -> tuple[Satellite, OrbitParameters]:
+def satellite() -> tuple[EmulatorSatellite, OrbitParameters]:
     parameters = OrbitParameters(
         550.0, 53.0, 15.0, datetime(2026, 1, 1, tzinfo=timezone.utc)
     )
-    orbit = Shell("shell-1", asn=65000).create_orbit(
+    orbit = EmulatorShell("shell-1", asn=65000).create_orbit(
         "orbit-1",
         parameters=parameters,
     )
@@ -88,7 +88,7 @@ def test_input_contains_only_static_values_not_seed_or_container_objects() -> No
         "router",
         "compiler",
         "docker",
-        "compose",
+        "deployment",
         "container_config",
         "namespace",
     ):

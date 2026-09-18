@@ -1,4 +1,4 @@
-"""Define a static GroundStation with SEED Router capability."""
+"""Define a static EmulatorGroundStation with SEED Router capability."""
 
 from __future__ import annotations
 
@@ -15,12 +15,12 @@ from skyseed_v2.shared.identifier import validate_identifier
 
 @dataclass(frozen=True, slots=True)
 class GroundStationLocation:
-    """Hold one GroundStation's geodetic values for a static Emulator run.
+    """Hold one EmulatorGroundStation's geodetic values for a static Emulator run.
 
     Layer: entity-bound value object. Handwritten callers or static Emulator
-    creation build it; GroundStation and input generation read it. It is not a
+    creation build it; EmulatorGroundStation and input generation read it. It is not a
     dynamic position or visibility model. It is root public because direct
-    GroundStation creation requires this validated value.
+    EmulatorGroundStation creation requires this validated value.
     """
 
     latitude_deg: float
@@ -42,11 +42,11 @@ class GroundStationLocation:
         object.__setattr__(self, "elevation_m", elevation)
 
 
-class GroundStation(Router):
-    """Represent one GroundStation and the same instance's SEED Router capability.
+class EmulatorGroundStation(Router):
+    """Represent one EmulatorGroundStation and the same instance's SEED Router capability.
 
     Layer: approved Emulator entity plus SEED capability.
-    `SkyseedAutonomousSystem.create_ground_station` creates it; its AS, routing
+    `EmulatorAutonomousSystem.create_ground_station` creates it; its AS, routing
     layers and the standard SEED compiler use it. Input generation copies its static
     values. It is not a Config, ordinary Router or dynamic link state. It is
     root public because it is an approved user-visible entity.
@@ -97,7 +97,7 @@ class GroundStation(Router):
         )
         self.setDisplayName(display_name or self.ground_station_id)
         self.setGeo(location.latitude_deg, location.longitude_deg)
-        # Keep standard Router/BorderRouter identity; Skyseed identity is
+        # Keep standard Router/BorderRouter identity; SkySEED identity is
         # projected only through public labels.
         self.setLabel("skyseed.entity_type", "GroundStation")
         self.setLabel("skyseed.ground_station_id", self.ground_station_id)

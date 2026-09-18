@@ -7,17 +7,12 @@ import json
 
 import pytest
 
-from examples.complete_static_emulator.emu import build_emulator
-from examples.complete_static_emulator.simu import (
-    DEFAULT_START_TIME,
-    ZONE_LAYOUT_FILE,
-    create_complete_static_simulator,
-    create_complete_static_planner,
-    run_complete_static_chain,
-)
+from examples.Sky00_tiny_network.tiny_network import build_emulator
+from examples.Sky00_tiny_network.tiny_network import DEFAULT_START_TIME, ZONE_LAYOUT_FILE, create_simulator as create_complete_static_simulator
+from tests._support import drain_simulator as run_complete_static_chain
 from skyseed_v2.configuration.simulator import load_zone_layout_definition
-from skyseed_v2.experiment._realization_producer import (
-    _IncrementalRealizationProducer,
+from skyseed_v2.experiment.producer import (
+    Producer,
 )
 from skyseed_v2.simulator import (
     CircularOrbitPositionModel,
@@ -25,7 +20,7 @@ from skyseed_v2.simulator import (
     SimulationTimeline,
     Simulator,
 )
-from skyseed_v2.simulator.planning import (
+from skyseed_v2.simulator.planner import (
     published_planning_evidence_from_data,
 )
 
@@ -56,9 +51,9 @@ def test_common_producer_persists_detached_formal_history(tmp_path) -> None:
     assert snapshot["pull_mode"] == "compiler"
     assert snapshot["domain_history_sealed"] is True
 
-    physical = _records(evidence / "physical-frames.jsonl")
-    planning = _records(evidence / "planning.jsonl.gz")
-    compiler = _records(evidence / "compiler.jsonl")
+    physical = _records(evidence / "physical-world/physical-frames.jsonl")
+    planning = _records(evidence / "planner/planning.jsonl.gz")
+    compiler = _records(evidence / "compiler/compiler.jsonl")
     assert len(physical) == 1 + snapshot["formal_frame_count"]
     assert len(planning) == 1 + len(plans)
     assert len(compiler) == 1 + len(realizations)
@@ -86,7 +81,7 @@ def test_common_producer_persists_detached_formal_history(tmp_path) -> None:
     assert [value["source_plan_id"] for value in compiler[1:]] == [
         value.plan_id for value in plans
     ]
-    manifest_path = evidence / "domain-history-manifest.json"
+    manifest_path = evidence / "experiment/domain-history-manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert snapshot["evidence"]["manifest"] == str(manifest_path.resolve())
     assert manifest["terminal"] is True
@@ -122,9 +117,9 @@ def test_producer_evidence_root_must_be_new_and_not_a_symlink(tmp_path) -> None:
     target.mkdir()
     link = tmp_path / "link"
     link.symlink_to(target, target_is_directory=True)
-    planner = create_complete_static_planner(simulator)
+    planner = simulator.get_planner()
     with pytest.raises(ValueError, match="symlink"):
-        _IncrementalRealizationProducer(
+        Producer(
             simulator.get_timeline(),
             simulator.get_physical_world(),
             simulator.get_physical_link_model(),
@@ -136,8 +131,8 @@ def test_producer_evidence_root_must_be_new_and_not_a_symlink(tmp_path) -> None:
 
 def test_producer_close_is_idempotent() -> None:
     simulator = create_complete_static_simulator(build_emulator())
-    planner = create_complete_static_planner(simulator)
-    producer = _IncrementalRealizationProducer(
+    planner = simulator.get_planner()
+    producer = Producer(
         simulator.get_timeline(),
         simulator.get_physical_world(),
         simulator.get_physical_link_model(),
@@ -161,10 +156,10 @@ def test_producer_rejects_planner_from_another_physical_world(tmp_path) -> None:
     second = create_complete_static_simulator(
         build_emulator(), zone_layout_path=changed_zones
     )
-    planner = create_complete_static_planner(first)
+    planner = first.get_planner()
     try:
         with pytest.raises(ValueError, match="same PhysicalWorld"):
-            _IncrementalRealizationProducer(
+            Producer(
                 second.get_timeline(),
                 second.get_physical_world(),
                 first.get_physical_link_model(),
@@ -174,35 +169,11 @@ def test_producer_rejects_planner_from_another_physical_world(tmp_path) -> None:
         planner.shutdown(wait=True)
 
 
-def test_producer_exposes_only_the_exact_bounded_first_formal_input() -> None:
-    simulator = create_complete_static_simulator(build_emulator())
-    planner = create_complete_static_planner(simulator)
-    producer = _IncrementalRealizationProducer(
-        simulator.get_timeline(),
-        simulator.get_physical_world(),
-        simulator.get_physical_link_model(),
-        planner,
-    )
-    try:
-        with pytest.raises(RuntimeError, match="no formal Planner input"):
-            producer.first_formal_input()
-        assert producer.produce_next_realization() is not None
-        first = producer.first_formal_input()
-        repeated = producer.first_formal_input()
-        assert first[0] is repeated[0]
-        assert first[1] is repeated[1]
-        assert first[0].timestamp == simulator.get_timeline().start_time
-        assert first[1].timestamp == first[0].timestamp
-        assert producer.snapshot()["first_formal_input_available"] is True
-    finally:
-        producer.close()
-
-
 def test_incomplete_close_does_not_seal_domain_history(tmp_path) -> None:
     simulator = create_complete_static_simulator(build_emulator())
-    planner = create_complete_static_planner(simulator)
+    planner = simulator.get_planner()
     evidence = tmp_path / "incomplete"
-    producer = _IncrementalRealizationProducer(
+    producer = Producer(
         simulator.get_timeline(),
         simulator.get_physical_world(),
         simulator.get_physical_link_model(),
@@ -212,7 +183,7 @@ def test_incomplete_close_does_not_seal_domain_history(tmp_path) -> None:
 
     producer.close()
 
-    assert not (evidence / "domain-history-manifest.json").exists()
+    assert not (evidence / "experiment/domain-history-manifest.json").exists()
     assert producer.snapshot()["domain_history_sealed"] is False
 
 
@@ -227,8 +198,8 @@ def test_common_cursor_prohibits_mixing_pull_modes(
     first_method, second_method
 ) -> None:
     simulator = create_complete_static_simulator(build_emulator())
-    planner = create_complete_static_planner(simulator)
-    producer = _IncrementalRealizationProducer(
+    planner = simulator.get_planner()
+    producer = Producer(
         simulator.get_timeline(),
         simulator.get_physical_world(),
         simulator.get_physical_link_model(),
@@ -249,7 +220,7 @@ def test_terminal_domain_history_manifest_is_deterministic(tmp_path) -> None:
         simulator = create_complete_static_simulator(build_emulator())
         evidence = tmp_path / f"history-{index}"
         run_complete_static_chain(simulator, evidence_path=evidence)
-        manifest_path = evidence / "domain-history-manifest.json"
+        manifest_path = evidence / "experiment/domain-history-manifest.json"
         manifests.append(manifest_path.read_bytes())
         stream_hashes.append(
             json.loads(manifest_path.read_text(encoding="utf-8"))["streams"]
@@ -267,17 +238,11 @@ def test_planner_only_cursor_seals_121_transitions_in_four_batches(
         DEFAULT_START_TIME + timedelta(seconds=600),
         timedelta(seconds=5),
     )
-    source = create_complete_static_simulator(build_emulator())
-    simulator = Simulator(
-        SimulationDefinition(source.get_definition().static_input, timeline)
-    )
-    simulator.create_physical_world(
-        position_model=CircularOrbitPositionModel(),
-        zone_layout_definition=load_zone_layout_definition(ZONE_LAYOUT_FILE),
-    )
-    planner = create_complete_static_planner(simulator)
+    simulator = create_complete_static_simulator(build_emulator(),
+        duration=timedelta(seconds=600), observation_interval=timedelta(seconds=5))
+    planner = simulator.get_planner()
     evidence = tmp_path / "planner-only"
-    producer = _IncrementalRealizationProducer(
+    producer = Producer(
         timeline,
         simulator.get_physical_world(),
         simulator.get_physical_link_model(),
@@ -303,14 +268,14 @@ def test_planner_only_cursor_seals_121_transitions_in_four_batches(
     assert snapshot["pull_mode"] == "planner"
     assert snapshot["domain_history_sealed"] is True
     manifest = json.loads(
-        (evidence / "domain-history-manifest.json").read_text(encoding="utf-8")
+        (evidence / "experiment/domain-history-manifest.json").read_text(encoding="utf-8")
     )
     assert manifest["through"] == "planner"
     assert manifest["counts"]["expected_formal_frames"] == 121
     assert manifest["counts"]["plans"] == 4
     assert manifest["counts"]["transitions"] == 121
     assert manifest["counts"]["realizations"] == 0
-    assert len(_records(evidence / "compiler.jsonl")) == 1
+    assert len(_records(evidence / "compiler/compiler.jsonl")) == 1
 
 
 def test_common_producer_observes_truthful_owned_timing_and_accounting(
@@ -319,17 +284,17 @@ def test_common_producer_observes_truthful_owned_timing_and_accounting(
     simulator = create_complete_static_simulator(build_emulator())
     observation_path = tmp_path / "observations.jsonl"
     evidence_path = tmp_path / "evidence"
-    planner = create_complete_static_planner(simulator)
-    producer = _IncrementalRealizationProducer(
+    planner = simulator.get_planner()
+    producer = Producer(
         simulator.get_timeline(),
         simulator.get_physical_world(),
         simulator.get_physical_link_model(),
         planner,
         evidence_path=evidence_path,
     )
-    # Mini constructs its producer before enabling optional observation. The
+    # The small regression scene constructs its producer before enabling optional observation. The
     # producer must therefore discover the recorder dynamically from Planner.
-    simulator._enable_execution_observation(observation_path)
+    _bind_observer(simulator, None)
     plans = []
     realizations = []
     try:
@@ -341,7 +306,7 @@ def test_common_producer_observes_truthful_owned_timing_and_accounting(
             realizations.append(realization)
     finally:
         producer.close()
-    simulator._write_execution_observations()
+    simulator.get_planner()._get_execution_observer().write_jsonl(observation_path)
 
     records = _records(observation_path)[1:]
 
@@ -432,9 +397,7 @@ def test_common_producer_observes_truthful_owned_timing_and_accounting(
 
 def test_failed_optional_observer_does_not_change_domain_progression(tmp_path) -> None:
     simulator = create_complete_static_simulator(build_emulator())
-    observer = simulator._enable_execution_observation(
-        tmp_path / "unused-observations.jsonl"
-    )
+    observer = _bind_observer(simulator, None)
     observer.record(
         component="",
         stage="invalid",
@@ -453,17 +416,15 @@ def test_failed_physical_link_inspection_sink_isolated_from_progression(
     tmp_path,
 ) -> None:
     simulator = create_complete_static_simulator(build_emulator())
-    planner = create_complete_static_planner(simulator)
-    observer = simulator._enable_execution_observation(
-        tmp_path / "observations.jsonl"
-    )
+    planner = simulator.get_planner()
+    observer = _bind_observer(simulator, None)
     attempts = []
 
     def fail_once(observation):
         attempts.append(observation.timestamp)
         raise OSError("injected inspection sink failure")
 
-    producer = _IncrementalRealizationProducer(
+    producer = Producer(
         simulator.get_timeline(),
         simulator.get_physical_world(),
         simulator.get_physical_link_model(),
@@ -498,3 +459,10 @@ def test_failed_physical_link_inspection_sink_isolated_from_progression(
         "observations_captured": 0,
         "capture_failures": 1,
     }
+
+
+def _bind_observer(simulator, metadata=None):
+    from skyseed_v2.experiment.output.observation import _ExecutionObserver
+    observer = _ExecutionObserver(metadata)
+    simulator._set_execution_observer(observer)
+    return observer

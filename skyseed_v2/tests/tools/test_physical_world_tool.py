@@ -1,4 +1,5 @@
 from __future__ import annotations
+from skyseed_v2.experiment.output.physical_links import _PhysicalLinkInspectionWriter
 
 from datetime import datetime, timedelta, timezone
 import json
@@ -6,11 +7,11 @@ from pathlib import Path
 
 import pytest
 
-from examples.complete_static_emulator.emu import build_emulator
-from examples.complete_static_emulator.simu import create_complete_static_simulator
+from examples.Sky00_tiny_network.tiny_network import build_emulator
+from examples.Sky00_tiny_network.tiny_network import create_simulator as create_complete_static_simulator
 from skyseed_v2.shared import NodeId
 from skyseed_v2.simulator import (
-    PhysicalLinkObservation,
+    PhysicalLinkQueryResult,
     SimulationDefinition,
     SimulationTimeline,
     Simulator,
@@ -20,11 +21,10 @@ from skyseed_v2.simulator.input import (
     SatelliteSimulationInput,
     SimulatorStaticInput,
 )
-from tools._display_geometry import EARTH_REFERENCE_RADIUS_M, physical_display_radius
-from tools._earth_reference import _natural_earth_coastline_lines
-from tools._html import write_failed_tool
+from tools._presentation.display_geometry import EARTH_REFERENCE_RADIUS_M, physical_display_radius
+from tools._presentation.earth_reference import _natural_earth_coastline_lines
+from tools._presentation.html import write_failed_tool
 from tools._inspection_evidence import (
-    _PhysicalLinkInspectionWriter,
     iter_physical_link_inspection,
     read_physical_link_inspection_index,
 )
@@ -348,7 +348,7 @@ def test_exact_physical_link_inspection_stream_is_sealed_and_verified(
 ) -> None:
     timestamp = datetime(2026, 1, 1, tzinfo=timezone.utc)
     writer = _PhysicalLinkInspectionWriter(tmp_path, physical_world)
-    writer.record(PhysicalLinkObservation(timestamp))
+    writer.record(PhysicalLinkQueryResult(timestamp))
     manifest = writer.finalize()
 
     assert manifest.is_file()
@@ -373,3 +373,30 @@ def test_failed_page_is_conspicuous_and_contains_no_success_claim(
     assert "formal API broke" in html
     assert "没有产生成功结果" in html
     assert "status=FAILED" in summary
+
+
+def test_physical_consuming_read_hashes_bytes_once_and_validates_count(physical_world, tmp_path, monkeypatch):
+    from tools import _inspection_evidence as reader
+    writer = _PhysicalLinkInspectionWriter(tmp_path, physical_world)
+    writer.record(PhysicalLinkQueryResult(datetime(2026, 1, 1, tzinfo=timezone.utc)))
+    manifest_path = writer.finalize()
+    byte_counts = []
+    original = reader._PublishedPrefix.read
+    def read(self, size=-1):
+        value = original(self, size)
+        byte_counts.append(len(value))
+        return value
+    monkeypatch.setattr(reader._PublishedPrefix, 'read', read)
+    reader.read_physical_link_inspection_index(writer.path)
+    byte_counts.clear()  # Header/index reading is separate from the full consuming pass.
+    assert len(tuple(reader.iter_physical_link_inspection(writer.path))) == 2
+    assert sum(byte_counts) == writer.path.stat().st_size
+    manifest = json.loads(manifest_path.read_text())
+    manifest['stream_sha256'] = '0'*64
+    manifest_path.write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match='checksum'):
+        tuple(reader.iter_physical_link_inspection(writer.path))
+    manifest['formal_observation_count'] += 1
+    manifest_path.write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match='record count'):
+        tuple(reader.iter_physical_link_inspection(writer.path))

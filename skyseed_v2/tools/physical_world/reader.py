@@ -7,8 +7,8 @@ from copy import deepcopy
 from typing import Any
 
 from skyseed_v2.shared import NodeId
-from skyseed_v2.simulator import PhysicalFrame, Satellite, PhysicalWorld
-from skyseed_v2.simulator.physical.physical_link import PhysicalLinkObservation
+from skyseed_v2.simulator import PhysicalPositionSnapshot, PhysicalSatellite, PhysicalWorld
+from skyseed_v2.simulator.physical.queries.physical_link import PhysicalLinkQueryResult
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,8 +22,8 @@ def read_physical_world(
     physical_world: PhysicalWorld,
     *,
     physical_frames: tuple[dict[str, Any], ...] = (),
-    physical_frame: PhysicalFrame | None = None,
-    physical_link_observation: PhysicalLinkObservation | None = None,
+    physical_frame: PhysicalPositionSnapshot | None = None,
+    physical_link_observation: PhysicalLinkQueryResult | None = None,
     physical_link_model: object | None = None,
     model_descriptors: dict[str, object] | None = None,
 ) -> PhysicalWorldRead:
@@ -276,7 +276,7 @@ def read_physical_world(
     )
 
 
-def _satellite_record(satellite: Satellite) -> dict[str, object]:
+def _satellite_record(satellite: PhysicalSatellite) -> dict[str, object]:
     capability = satellite.inter_satellite_link_capability
     return {
         "node_id": satellite.node_id.value,
@@ -300,22 +300,22 @@ def _satellite_record(satellite: Satellite) -> dict[str, object]:
 
 def _read_exact_frame_input(
     physical_world: PhysicalWorld,
-    frame: PhysicalFrame,
-    observation: PhysicalLinkObservation | None,
+    frame: PhysicalPositionSnapshot,
+    observation: PhysicalLinkQueryResult | None,
 ) -> tuple[dict[str, object], dict[str, object] | None]:
     """Detach one exact frame for the PhysicalWorld Tool only."""
 
-    if not isinstance(frame, PhysicalFrame):
-        raise TypeError("physical_frame must be a PhysicalFrame")
+    if not isinstance(frame, PhysicalPositionSnapshot):
+        raise TypeError("physical_frame must be a PhysicalPositionSnapshot")
     if observation is not None:
-        if not isinstance(observation, PhysicalLinkObservation):
+        if not isinstance(observation, PhysicalLinkQueryResult):
             raise TypeError(
                 "physical_link_observation must be a "
-                "PhysicalLinkObservation or None"
+                "PhysicalLinkQueryResult or None"
             )
         if observation.timestamp != frame.timestamp:
             raise ValueError(
-                "PhysicalLinkObservation timestamp must match PhysicalFrame"
+                "PhysicalLinkQueryResult timestamp must match PhysicalPositionSnapshot"
             )
     node_kinds = {
         satellite.node_id: "satellite"
@@ -333,7 +333,7 @@ def _read_exact_frame_input(
     )
     if set(frame.positions) != set(node_kinds):
         raise ValueError(
-            "PhysicalFrame positions must match the supplied PhysicalWorld node set"
+            "PhysicalPositionSnapshot positions must match the supplied PhysicalWorld node set"
         )
     snapshot = {
         "timestamp": frame.timestamp.isoformat(),
@@ -363,7 +363,7 @@ def _read_exact_frame_input(
 
 def _physical_link_snapshot(
     physical_world: PhysicalWorld,
-    observation: PhysicalLinkObservation,
+    observation: PhysicalLinkQueryResult,
     expected_node_ids: set[NodeId],
 ) -> dict[str, object]:
     try:
@@ -382,7 +382,7 @@ def _physical_link_snapshot(
                 "endpoint_a": candidate.endpoint_a.value,
                 "endpoint_b": candidate.endpoint_b.value,
                 "relation": (
-                    "same-plane" if candidate.same_plane else "cross-plane"
+                    None if candidate.same_plane is None else "same-plane" if candidate.same_plane else "cross-plane"
                 ),
                 "cyclic_plane_separation": candidate.cyclic_plane_separation,
                 "distance_m": candidate.distance_m,
@@ -408,7 +408,7 @@ def _physical_link_snapshot(
     for candidate in observation.zone_service_candidates:
         if candidate.zone_id not in zone_ids:
             raise ValueError(
-                "PhysicalLinkObservation Zone must belong to supplied PhysicalWorld"
+                "PhysicalLinkQueryResult Zone must belong to supplied PhysicalWorld"
             )
         _require_known_node(candidate.satellite_id, expected_node_ids)
         zone_service.append(
@@ -444,7 +444,7 @@ def _physical_link_snapshot(
                 "zone_service_pairs_evaluated",
                 "zone_service_pairs_feasible",
             )
-        },
+        } if counts is not None else None,
     }
 
 
@@ -453,7 +453,7 @@ def _require_known_node(
 ) -> None:
     if node_id not in expected_node_ids:
         raise ValueError(
-            "PhysicalLinkObservation node must belong to supplied PhysicalWorld"
+            "PhysicalLinkQueryResult node must belong to supplied PhysicalWorld"
         )
 
 

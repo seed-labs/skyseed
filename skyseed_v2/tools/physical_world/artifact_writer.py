@@ -7,7 +7,7 @@ from typing import Any
 
 from tools._inspection_evidence import iter_physical_link_inspection
 
-from .._html import write_json, write_text
+from .._presentation.html import write_json, write_text
 def write_physical_world_artifacts(
     data: dict[str, Any],
     page: str,
@@ -89,7 +89,7 @@ def _write_frame_chunks(data: dict[str, Any], directory: Path) -> None:
                     "inter_satellite": [],
                     "ground_station": [],
                     "zone_service": [],
-                    "work_counts": {},
+                    "work_counts": None,
                 },
             ),
         }
@@ -114,7 +114,7 @@ def _fallback_candidates(
                 node_index[item["endpoint_b"]],
                 item["distance_m"],
                 item["propagation_delay_us"],
-                int(item["relation"] == "same-plane"),
+                None if item["relation"] is None else int(item["relation"] == "same-plane"),
                 item["cyclic_plane_separation"],
             ]
             for item in value["inter_satellite_candidates"]

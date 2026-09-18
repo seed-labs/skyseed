@@ -7,13 +7,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from skyseed_v2.backend.bpf import BpfCompiledRealization
-from skyseed_v2.shared._domain_history import (
+from skyseed_v2.backend.bpf import BpfCompilationResult
+from skyseed_v2.experiment.output.history import (
     _iter_verified_domain_history_stream,
     _read_domain_history_manifest,
 )
 from skyseed_v2.simulator import Plan
-from skyseed_v2.simulator.planning import (
+from skyseed_v2.simulator.planner import (
     plan_to_data,
     plan_transition_to_data,
     planned_operational_state_to_data,
@@ -252,7 +252,7 @@ def _history_string(value: object, name: str) -> str:
 
 def read_bpf_compiler_inspection(
     plans: tuple[Plan, ...],
-    realizations: tuple[BpfCompiledRealization, ...],
+    realizations: tuple[BpfCompilationResult, ...],
 ) -> BpfCompilerInspectionRead:
     """Read an aligned continuous Plan/realization sequence without compiling."""
 
@@ -261,11 +261,11 @@ def read_bpf_compiler_inspection(
     if not plan_values or any(not isinstance(value, Plan) for value in plan_values):
         raise TypeError("plans must contain at least one Plan")
     if len(realization_values) != len(plan_values) or any(
-        not isinstance(value, BpfCompiledRealization)
+        not isinstance(value, BpfCompilationResult)
         for value in realization_values
     ):
         raise TypeError(
-            "realizations must contain one BpfCompiledRealization per Plan"
+            "realizations must contain one BpfCompilationResult per Plan"
         )
     _require_aligned_sequence(plan_values, realization_values)
     return BpfCompilerInspectionRead(
@@ -275,7 +275,7 @@ def read_bpf_compiler_inspection(
             "authority": {
                 "status": "non-authoritative-view",
                 "plans": "immutable self-contained Plan publications",
-                "compiled": "already-produced BpfCompiledRealization values",
+                "compiled": "already-produced BpfCompilationResult values",
                 "compiler": "not invoked by this Tool",
                 "planned_state": (
                     "intended semantic state, not realized runtime state"
@@ -293,7 +293,7 @@ def read_bpf_compiler_inspection(
 
 def _require_aligned_sequence(
     plans: tuple[Plan, ...],
-    realizations: tuple[BpfCompiledRealization, ...],
+    realizations: tuple[BpfCompilationResult, ...],
 ) -> None:
     world = plans[0].physical_world_fingerprint
     for index, (plan, realization) in enumerate(
@@ -329,15 +329,15 @@ def _require_aligned_sequence(
                 raise ValueError("first Plan/realization must be bootstrap")
         else:
             previous_plan = plans[index - 1]
-            previous_realization = realizations[index - 1]
+            previous_result = realizations[index - 1]
             if plan.previous_plan_id != previous_plan.plan_id:
                 raise ValueError("Plan lineage is not continuous")
-            if plan.input_state_fingerprint != previous_realization.output_state_fingerprint:
+            if plan.input_state_fingerprint != previous_result.output_state_fingerprint:
                 raise ValueError("realization semantic-state lineage is not continuous")
 
 
 def _read_realization(
-    index: int, plan: Plan, realization: BpfCompiledRealization
+    index: int, plan: Plan, realization: BpfCompilationResult
 ) -> dict[str, object]:
     return {
         "realization_index": index,

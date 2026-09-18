@@ -1,174 +1,40 @@
-# Emulator entities
+# Authored entities
 
-This package owns Skyseed Shell/Orbit/Satellite/GroundStation objects and
-their bound immutable values. It owns no Simulator object, YAML loader,
-compiler lifecycle, or cross-layer projection. Broad inherited upstream SEED
-methods are intentionally omitted.
-
-## Local assembly / ownership map
-
-`SkyseedAutonomousSystem` is formally defined in the sibling `seedemu`
-integration package; this map references that real public owner rather than
-inventing a local AS role.
-
-Legend: `*--` is Emulator entity ownership/composition.
+`EmulatorShell` holds Orbits; each `EmulatorOrbit` holds immutable `OrbitParameters`
+and Satellites. Orbit epoch/phase are independent of the simulation Timeline.
+`EmulatorSatellite` is a SEED ExtensionNode; `EmulatorGroundStation` is a Router
+with location and optional access capacity. Shell and Orbit group authored entities;
+they do not represent processes or resource lifecycles.
 
 ```mermaid
 classDiagram
-    class SkyseedAutonomousSystem
-    class GroundStation
-    class Shell
-    class Orbit
-    class Satellite
-
-    SkyseedAutonomousSystem "1" *-- "0..*" GroundStation : ground stations
-    SkyseedAutonomousSystem "1" *-- "0..*" Shell : shells
-    Shell "1" *-- "0..*" Orbit : orbits
-    Orbit "1" *-- "0..*" Satellite : satellites
+    class EmulatorShell {
+        shell_id
+        orbits
+        create_orbit()
+    }
+    class EmulatorOrbit {
+        parameters : OrbitParameters
+        satellites
+        create_satellite()
+        create_satellites()
+    }
+    class EmulatorSatellite {
+        satellite_id
+        mean_anomaly_deg
+        maximum_simultaneous_inter_satellite_links
+        max_simultaneous_ground_station_accesses
+    }
+    class EmulatorGroundStation {
+        ground_station_id
+        location : GroundStationLocation
+        max_simultaneous_satellite_accesses
+    }
+    EmulatorShell "1" *-- "many" EmulatorOrbit
+    EmulatorOrbit "1" *-- "many" EmulatorSatellite
 ```
 
-Legend: `o--` is a same-instance lifecycle reference without ownership
-transfer.
-
-```mermaid
-classDiagram
-    class SkyseedAutonomousSystem
-    class Satellite
-    SkyseedAutonomousSystem "1" o-- "0..*" Satellite : SEED lifecycle index
-```
-
-Standalone local values expanded below: `GroundStationLocation` and
-`OrbitParameters`.
-
-## Detailed public class/member diagrams
-
-Legend: `A *-- B` means A owns B in the Emulator entity tree.
-
-```mermaid
-classDiagram
-    direction LR
-    class Shell {
-        <<Emulator entity owner>>
-        +shell_id
-        +orbits
-        +create_orbit()
-        +get_orbit()
-        +iter_satellites()
-    }
-    class Orbit {
-        <<Emulator entity owner>>
-        +orbit_id
-        +shell_id
-        +parameters
-        +satellites
-        +get_satellite()
-        +create_satellite()
-        +create_satellites()
-    }
-    class Satellite {
-        <<Emulator and SEED node>>
-        +satellite_id
-        +shell_id
-        +orbit_id
-        +orbit_index
-        +mean_anomaly_deg
-        +payload
-        +max_simultaneous_ground_station_accesses
-        +maximum_simultaneous_inter_satellite_links
-    }
-    class GroundStation {
-        <<Emulator and SEED router>>
-        +ground_station_id
-        +location
-        +station_type
-        +operator
-        +max_simultaneous_satellite_accesses
-        +service_config
-    }
-    Shell "1" *-- "*" Orbit : orbits
-    Orbit "1" *-- "*" Satellite : satellites
-```
-
-Legend: `A *-- B` means entity A contains the complete immutable value B.
-
-```mermaid
-classDiagram
-    direction LR
-    class Orbit {
-        <<Emulator entity owner>>
-    }
-    class OrbitParameters {
-        <<immutable Orbit parameters>>
-        +altitude_km
-        +inclination_deg
-        +right_ascension_deg
-        +epoch_utc
-    }
-    class GroundStation {
-        <<Emulator and SEED router>>
-    }
-    class GroundStationLocation {
-        <<immutable physical location>>
-        +latitude_deg
-        +longitude_deg
-        +elevation_m
-    }
-    Orbit "1" *-- "1" OrbitParameters : parameters
-    GroundStation "1" *-- "1" GroundStationLocation : location
-```
-
-| Diagram class | Public contract | Required public members |
-|---|---|---|
-| `Shell` | `skyseed_v2.emulator.entities.Shell` | `shell_id`, `orbits`, `create_orbit()`, `get_orbit()`, `iter_satellites()` |
-| `Orbit` | `skyseed_v2.emulator.entities.Orbit` | `orbit_id`, `shell_id`, `parameters`, `satellites`, `get_satellite()`, `create_satellite()`, `create_satellites()` |
-| `Satellite` | `skyseed_v2.emulator.entities.Satellite` | `satellite_id`, `shell_id`, `orbit_id`, `orbit_index`, `mean_anomaly_deg`, `payload`, `max_simultaneous_ground_station_accesses`, `maximum_simultaneous_inter_satellite_links` |
-| `GroundStation` | `skyseed_v2.emulator.entities.GroundStation` | `ground_station_id`, `location`, `station_type`, `operator`, `max_simultaneous_satellite_accesses`, `service_config` |
-| `GroundStationLocation` | `skyseed_v2.emulator.entities.GroundStationLocation` | `latitude_deg`, `longitude_deg`, `elevation_m` |
-| `OrbitParameters` | `skyseed_v2.emulator.entities.OrbitParameters` | `altitude_km`, `inclination_deg`, `right_ascension_deg`, `epoch_utc` |
-
-Satellite projects `skyseed.entity_type`, `skyseed.satellite_id`,
-`skyseed.shell_id`, and `skyseed.orbit_id` through public Node labels.
-GroundStation keeps standard Router/BorderRouter role and projects
-`skyseed.entity_type`, `skyseed.ground_station_id`,
-`skyseed.station_type`, latitude, longitude, and elevation labels; it also uses
-public `setGeo()`. The descriptive `skyseed.operator` label is projected only
-when `operator` is a known non-empty string; `operator=None` emits no label.
-
-A GroundStation represents one site-level terrestrial satellite-network
-endpoint. A site may contain multiple physical antennas, but
-`max_simultaneous_satellite_accesses` is only an optional positive-integer
-simulation capability; it does not record or infer antenna count.
-
-Satellite `max_simultaneous_ground_station_accesses` is an optional
-positive-integer cap on simultaneous GroundStation-access Connections. It is
-not total Satellite degree, an ISL limit, a UT-beam limit, or antenna count.
-
-Satellite `maximum_simultaneous_inter_satellite_links` is the optional
-positive-integer upstream scalar copied into Simulator static input and then
-materialized as the PhysicalWorld Satellite's immutable
-`InterSatelliteLinkCapability`. It is a simultaneous physical maximum, not a
-terminal inventory/direction, same-/cross-plane split, candidate-search scope,
-or operational selection. Canonical S3's value `4` is a scenario assumption;
-the injected Network Planner's reference `2 + 2` split remains separate policy.
-
-## Entry points
-
-Code entries are `shell.py`, `orbit.py`, `satellite.py`, and
-`ground_station.py`.
-
-## Dependencies
-
-The entity package depends on neutral shared validation/identity values and
-upstream SEED node bases. Emulator construction and `seedemu/` own creation;
-`emulator_to_simulator.py` reads the completed tree.
-
-## Examples and tests
-
-All Emulator examples consume these entities. Entity/identity unit tests plus
-SEED/compiler integration tests cover the tree.
-
-## Maintenance checklist
-
-When these owners or values change, update the local map and detailed
-diagrams, global object model when cross-package relations change,
-ownership/boundary contracts, public imports, projector, and focused tests.
+The AS factory in [seedemu](../seedemu/README.md) enforces identity uniqueness.
+[Independent inputs](../../../../docs/user-guides/inputs-and-scenes.md) shows both
+Satellite and GroundStation construction; [developer reference](../../../../docs/development/component-boundaries.md)
+defines identity/capability semantics.

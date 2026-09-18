@@ -1,47 +1,27 @@
-# Detached inspection Tools
+# Tools: browse completed facts
 
-Repository-local Tools read completed semantic/runtime values or durable
-records and write non-authoritative offline artifacts.
+`write_experiment_tools(output, physical_world=world, publication=None)` renders
+completed generation facts and available runtime records. During `serve()`, the
+Controller supplies a completed publication to the optional presentation callback.
+It runs separately from calculation and runtime progress; failure preserves domain
+results and is reported under `results/experiment/presentation-status.json`.
 
-Legend: `-->` is a detached read/project/render handoff; no edge grants a Tool
-control over the source owner.
+Open `output/visualizations/index.html`, or the fixed [interactive demos](../docs/demos/index.html).
 
-```mermaid
-flowchart LR
-    FACTS["physical / planning / compiler / runner / traffic records"] --> READ["validated detached reader"]
-    READ --> PROJ["Tool-owned projection"]
-    PROJ --> RENDER["offline renderer"]
-    RENDER --> ART["invocation-owned artifacts"]
-```
+| Tool | What to inspect |
+|---|---|
+| [PhysicalWorld](physical_world/README.md) | Time, physical entities and candidate feasibility |
+| [Zone](zone/README.md) | Static geography and boundaries |
+| [Planner](planner/README.md) | Selected state, acquisition, paths, changes and optional Areas |
+| [Compiler](bpf_compiler/README.md) | Activation work and material lineage |
+| [Runner](runner/README.md) | Actual initialization, preparation, activation and cleanup |
+| [Traffic](traffic/README.md) | Planned paths alongside recorded probes and telemetry |
+| [Performance](performance/README.md) | Measured spans, work and resources by owner |
 
-Maintained Tools:
-
-- `physical_world/`: linked temporal 3D/2D physical entities, Zones, and
-  clearly separated retained candidate overlays;
-- `zone/`: static Zone geography;
-- `planner/`: staged INPUT → MODEL → RESULT/CHANGE inspection with linked
-  temporal planned-network views, lifecycle, Plans, deltas, and lineage;
-- `bpf_compiler/`: compact activation workload, operation/folding trends,
-  intended-state cardinalities, lineage, and Observation timing;
-- `runner/`: post-run lifecycle and realized-state evidence;
-- `observation/`: real monotonic spans plus duration/work/resource records;
-- `traffic/`: explicit planned reachability and telemetry replay.
-
-The physical/planning/compiler evidence streams are
-`domain-history/physical-frames.jsonl`, `domain-history/planning.jsonl.gz`, and
-`domain-history/compiler.jsonl`. Traffic consumes
-physical and planning histories explicitly rather than reconstructing semantic
-truth from missing runtime entries.
-
-Tools never call PositionModel, PhysicalLinkModel, Planner Models,
-`compile_bpf`, or Runner lifecycle actions. They do not own fact retention.
-Tool failure is isolated from the valid sealed Runner artifact.
-Generated `run.sh` reports detached Tool failure as a warning and preserves a
-successful domain-runtime exit status.
-
-Run a maintained generator, then open `output/inspection/index.html`. Browser
-validation scripts in `scripts/` inspect the generated artifacts; screenshots
-are validation evidence, not formal inputs.
-
-Contracts: `docs/codex-reference/inspection-tools.md` and
-`docs/user-guides/inspection-tools.md`.
+Tools never rerun Models or infer execution success from planned state. Readers pin
+completed byte prefixes; browser assets live under `visualizations/`, raw runtime
+records under `runs/<invocation>/`, and Tool measurements under `results/tools/`.
+[Output guide](../docs/user-guides/outputs-and-tools.md) explains these distinctions.
+[_presentation](_presentation/README.md) contains neutral display helpers.
+The optional `traffic.active` code is an explicit runtime consumer, separate from
+Traffic's detached reader and browser presentation.

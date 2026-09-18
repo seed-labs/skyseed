@@ -10,14 +10,14 @@ from skyseed_v2.shared import NodeId
 from skyseed_v2.simulator import (
     CircularOrbitPositionModel,
     EarthFixedPosition,
-    GroundStation,
-    Orbit,
-    Satellite,
-    Shell,
+    PhysicalGroundStation,
+    PhysicalOrbit,
+    PhysicalSatellite,
+    PhysicalShell,
     SimulationDefinition,
     SimulationTimeline,
     Simulator,
-    SkyseedAutonomousSystem,
+    PhysicalAutonomousSystem,
     PhysicalWorld,
 )
 from skyseed_v2.simulator.input import (
@@ -25,7 +25,7 @@ from skyseed_v2.simulator.input import (
     GroundStationSimulationInput,
     SatelliteSimulationInput,
 )
-from skyseed_v2.simulator.physical import PhysicalFrame, PositionModel
+from skyseed_v2.simulator.physical import PhysicalPositionSnapshot, PositionModel
 
 
 def satellite_input(
@@ -196,14 +196,14 @@ def test_physical_world_materializes_multi_as_shell_and_orbit_hierarchy() -> Non
         65002,
     )
     first_as = physical_world.get_autonomous_system(65001)
-    assert isinstance(first_as, SkyseedAutonomousSystem)
+    assert isinstance(first_as, PhysicalAutonomousSystem)
     assert tuple(shell.shell_id for shell in first_as.shells) == (
         "shell-a",
         "shell-b",
     )
     first_shell = physical_world.get_shell(65001, "shell-a")
     second_shell = physical_world.get_shell(65001, "shell-b")
-    assert isinstance(first_shell, Shell)
+    assert isinstance(first_shell, PhysicalShell)
     assert tuple(orbit.orbit_id for orbit in first_shell.orbits) == (
         "orbit-second",
         "orbit-shared",
@@ -215,8 +215,8 @@ def test_physical_world_materializes_multi_as_shell_and_orbit_hierarchy() -> Non
     satellite_id = NodeId(65001, "satellite", "sat-a0")
     satellite = physical_world.get_satellite(satellite_id)
     orbit = physical_world.get_orbit(65001, "shell-a", "orbit-shared")
-    assert isinstance(satellite, Satellite)
-    assert isinstance(orbit, Orbit)
+    assert isinstance(satellite, PhysicalSatellite)
+    assert isinstance(orbit, PhysicalOrbit)
     assert orbit.get_satellite(satellite_id) is satellite
     assert physical_world.get_node(satellite_id) is satellite
     assert orbit.altitude_km == 550.0
@@ -232,7 +232,7 @@ def test_physical_world_materializes_multi_as_shell_and_orbit_hierarchy() -> Non
     assert satellite.node_id is source.node_id
     station_id = NodeId(65001, "ground-station", "gs-shared")
     station = physical_world.get_ground_station(station_id)
-    assert isinstance(station, GroundStation)
+    assert isinstance(station, PhysicalGroundStation)
     assert first_as.get_ground_station(station_id) is station
     assert physical_world.get_node(station_id) is station
     assert station.node_id is simulator_input.get_ground_station(station_id).node_id
@@ -291,6 +291,7 @@ def test_physical_world_collections_and_static_entities_are_immutable() -> None:
         "_autonomous_systems",
         "_autonomous_systems_by_asn",
         "_nodes_by_id",
+        "_shutdown",
             "_zone_layout",
             "_position_model",
             "_execution_observer",
@@ -336,7 +337,7 @@ def test_physical_world_frame_at_returns_an_immutable_deterministic_physical_fra
     first = physical_world.frame_at(requested)
     repeated = physical_world.frame_at(requested)
 
-    assert isinstance(first, PhysicalFrame)
+    assert isinstance(first, PhysicalPositionSnapshot)
     assert first is not repeated
     assert first == repeated
     assert first.timestamp == datetime(
@@ -350,6 +351,7 @@ def test_physical_world_frame_at_returns_an_immutable_deterministic_physical_fra
     assert {field.name for field in fields(first)} == {
         "timestamp",
         "positions",
+        "_node_inventory",
     }
     with pytest.raises(TypeError):
         first.positions[NodeId(65001, "satellite", "new")] = (
@@ -358,7 +360,7 @@ def test_physical_world_frame_at_returns_an_immutable_deterministic_physical_fra
     with pytest.raises(FrozenInstanceError):
         first.timestamp = requested
     with pytest.raises(TypeError, match="created by PhysicalWorld.frame_at"):
-        PhysicalFrame()
+        PhysicalPositionSnapshot()
     for operational_attribute in (
         "slice_id",
         "connection_slice",
@@ -438,7 +440,7 @@ def test_position_model_is_owned_and_imported_only_from_physical_package() -> No
 
     assert isinstance(model, PositionModel)
     assert physical_world.get_position_model() is model
-    assert PositionModel.__module__ == "skyseed_v2.simulator.physical.position"
+    assert PositionModel.__module__ == "skyseed_v2.simulator.physical.models.position"
     assert importlib.util.find_spec(
         "skyseed_v2.simulator.slicing"
     ) is None
@@ -468,6 +470,63 @@ def test_physical_world_preserves_nullable_ground_station_operator() -> None:
     assert station.max_simultaneous_satellite_accesses is None
 
 
+def test_ground_station_materialization_constructs_only_the_published_entities(monkeypatch):
+    constructed = []
+    original = PhysicalGroundStation.__post_init__
+
+    def record(station):
+        original(station)
+        constructed.append(station)
+
+    monkeypatch.setattr(PhysicalGroundStation, "__post_init__", record)
+    inputs = SimulatorStaticInput(ground_stations=(ground_station_input(65001, "a"), ground_station_input(65002, "b")))
+    world = Simulator(definition_for(inputs)).create_physical_world(position_model=CircularOrbitPositionModel())
+    assert len(constructed) == 2
+    assert all(world.get_ground_station(station.node_id) is station for station in constructed)
+
+
+def test_snapshot_receives_model_mapping_once_and_world_identity_stays_cached(monkeypatch):
+    from collections.abc import Mapping
+    from skyseed_v2.simulator.physical.world import world as world_module
+
+    satellite = satellite_input(65001, "s", "shell", "orbit", 0)
+    station = ground_station_input(65001, "g")
+
+    class CountedMapping(Mapping):
+        scans = 0
+
+        def __init__(self):
+            self.values = {satellite.node_id: EarthFixedPosition(7_000_000, 0, 0),
+                           station.node_id: EarthFixedPosition(6_378_137, 0, 0)}
+
+        def __len__(self):
+            return len(self.values)
+
+        def __iter__(self):
+            self.scans += 1
+            return iter(self.values)
+
+        def __getitem__(self, key):
+            return self.values[key]
+
+    positions = CountedMapping()
+    model = _RecordingPositionModel(positions)
+    world = Simulator(definition_for(SimulatorStaticInput((satellite,), (station,)))).create_physical_world(position_model=model)
+    fingerprint = world.semantic_fingerprint()
+    assert positions.scans == 0  # World identity does not inspect Model state.
+
+    def forbidden(*args):
+        raise AssertionError("static identity recomputed during projection")
+
+    monkeypatch.setattr(world_module, "_physical_world_semantic_fingerprint", forbidden)
+    snapshot = world.frame_at(datetime(2026, 1, 1, tzinfo=timezone.utc))
+    assert positions.scans == 1
+    assert tuple(snapshot.positions) == (station.node_id, satellite.node_id)
+    positions.values.clear()
+    assert len(snapshot.positions) == 2
+    assert world.semantic_fingerprint() == fingerprint
+
+
 @pytest.mark.parametrize("capability", (0, -1, True))
 def test_physical_world_ground_station_rejects_invalid_access_capability(
     capability: int,
@@ -475,7 +534,7 @@ def test_physical_world_ground_station_rejects_invalid_access_capability(
     with pytest.raises(
         ValueError, match="max_simultaneous_satellite_accesses"
     ):
-        GroundStation(
+        PhysicalGroundStation(
             node_id=NodeId(65001, "ground-station", "invalid-capability"),
             latitude_deg=40.0,
             longitude_deg=-74.0,
@@ -501,9 +560,9 @@ def test_physical_world_facade_fails_closed_on_wrong_kinds_types_and_missing_val
         physical_world.get_ground_station(satellite_id)
     with pytest.raises(KeyError, match="Node not found"):
         physical_world.get_node(NodeId(65001, "satellite", "missing"))
-    with pytest.raises(KeyError, match="Shell not found"):
+    with pytest.raises(KeyError, match="PhysicalShell not found"):
         physical_world.get_shell(65001, "missing")
-    with pytest.raises(KeyError, match="Orbit not found"):
+    with pytest.raises(KeyError, match="PhysicalOrbit not found"):
         physical_world.get_orbit(65001, "shell-a", "missing")
     with pytest.raises(ValueError, match="asn"):
         physical_world.get_autonomous_system(0)
@@ -516,22 +575,22 @@ def test_physical_world_shell_and_orbit_queries_delegate_to_their_owners(
         definition_for(multi_hierarchy_input())
     ).create_physical_world(position_model=CircularOrbitPositionModel())
     calls: list[tuple[str, str]] = []
-    original_get_shell = SkyseedAutonomousSystem.get_shell
-    original_get_orbit = Shell.get_orbit
+    original_get_shell = PhysicalAutonomousSystem.get_shell
+    original_get_orbit = PhysicalShell.get_orbit
 
     def tracked_get_shell(
-        autonomous_system: SkyseedAutonomousSystem,
+        autonomous_system: PhysicalAutonomousSystem,
         shell_id: str,
-    ) -> Shell:
+    ) -> PhysicalShell:
         calls.append(("shell", shell_id))
         return original_get_shell(autonomous_system, shell_id)
 
-    def tracked_get_orbit(shell: Shell, orbit_id: str) -> Orbit:
+    def tracked_get_orbit(shell: PhysicalShell, orbit_id: str) -> PhysicalOrbit:
         calls.append(("orbit", orbit_id))
         return original_get_orbit(shell, orbit_id)
 
-    monkeypatch.setattr(SkyseedAutonomousSystem, "get_shell", tracked_get_shell)
-    monkeypatch.setattr(Shell, "get_orbit", tracked_get_orbit)
+    monkeypatch.setattr(PhysicalAutonomousSystem, "get_shell", tracked_get_shell)
+    monkeypatch.setattr(PhysicalShell, "get_orbit", tracked_get_orbit)
 
     assert physical_world.get_shell(65001, "shell-a").shell_id == "shell-a"
     assert (
@@ -570,7 +629,7 @@ def test_conflicting_orbit_parameters_fail_without_publishing_a_physical_world()
     )
     simulator = Simulator(definition_for(simulator_input))
 
-    with pytest.raises(ValueError, match="conflicting Orbit parameters"):
+    with pytest.raises(ValueError, match="conflicting PhysicalOrbit parameters"):
         simulator.create_physical_world(
             position_model=CircularOrbitPositionModel()
         )
@@ -620,9 +679,9 @@ def test_simulator_types_are_not_added_to_the_package_root() -> None:
         "SimulationDefinition",
         "SimulationTimeline",
         "Simulator",
-        "SkyseedAutonomousSystem",
+        "PhysicalAutonomousSystem",
         "PhysicalWorld",
-        "PhysicalFrame",
+        "PhysicalPositionSnapshot",
     ):
         assert not hasattr(skyseed_v2, name)
 
@@ -647,6 +706,6 @@ def test_simulator_rejects_an_untyped_definition() -> None:
 
 
 def test_public_hierarchy_constructors_do_not_create_parallel_owner_trees() -> None:
-    for class_type in (Orbit, Shell, SkyseedAutonomousSystem, PhysicalWorld):
+    for class_type in (PhysicalOrbit, PhysicalShell, PhysicalAutonomousSystem, PhysicalWorld):
         with pytest.raises(TypeError):
             class_type()

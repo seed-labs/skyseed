@@ -6,16 +6,16 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 from skyseed_v2.configuration.simulator import ZoneLayoutDefinition
-from skyseed_v2.shared._execution_observation import _ExecutionObserver
+from skyseed_v2.shared._shutdown import _shutdown_owned
+from skyseed_v2.shared.recording import PerformanceRecorder, record_performance
 
 from .definition import SimulationDefinition
-from .planning import (
-    CoordinationPolicy,
+from .planner import (
     GroundStationAccessPlanningModel,
     InterSatelliteConnectionPlanningModel,
     ParameterPlanningModel,
     Planner,
-    PlanningWindowPolicy,
+    PlannerConfiguration,
     RouteDemand,
     RoutePlanningModel,
     ZoneServicePlanningModel,
@@ -40,54 +40,31 @@ class Simulator:
     """
 
     __slots__ = (
+        "_shutdown",
         "_definition",
         "_physical_world",
         "_physical_link_model",
         "_planner",
         "_execution_observer",
-        "_execution_observation_path",
     )
 
     def __init__(self, definition: SimulationDefinition) -> None:
         if not isinstance(definition, SimulationDefinition):
             raise TypeError("definition must be a SimulationDefinition")
+        self._shutdown = False
         self._definition = definition
         self._physical_world: PhysicalWorld | None = None
         self._physical_link_model: PhysicalLinkModel | None = None
         self._planner: Planner | None = None
-        self._execution_observer: _ExecutionObserver | None = None
-        self._execution_observation_path: Path | None = None
+        self._execution_observer: PerformanceRecorder | None = None
 
-    def _enable_execution_observation(
-        self,
-        path: Path,
-        *,
-        metadata: Mapping[str, object] | None = None,
-    ) -> _ExecutionObserver:
-        """Enable private detached observations for this exact execution."""
-
-        if self._execution_observer is not None:
-            raise RuntimeError("execution observation is already enabled")
-        observer = _ExecutionObserver(metadata)
+    def _set_execution_observer(self, observer: PerformanceRecorder | None) -> None:
+        """Bind an optional fact receiver without owning its output or lifetime."""
         self._execution_observer = observer
-        self._execution_observation_path = Path(path)
         if self._physical_world is not None:
             self._physical_world._set_execution_observer(observer)
         if self._planner is not None:
             self._planner._set_execution_observer(observer)
-        return observer
-
-    def _write_execution_observations(self) -> Path:
-        """Persist observations already produced by successful work."""
-
-        if (
-            self._execution_observer is None
-            or self._execution_observation_path is None
-        ):
-            raise RuntimeError("execution observation is not enabled")
-        return self._execution_observer.write_jsonl(
-            self._execution_observation_path
-        )
 
     def get_definition(self) -> SimulationDefinition:
         return self._definition
@@ -102,12 +79,16 @@ class Simulator:
         zone_layout_definition: ZoneLayoutDefinition | None = None,
         zone_membership_model: ZoneMembershipModel | None = None,
     ) -> PhysicalWorld:
+        if self._shutdown:
+            raise RuntimeError("Simulator is shut down")
         if self._physical_world is not None:
             raise RuntimeError("PhysicalWorld has already been created")
         if zone_layout_definition is None and zone_membership_model is not None:
             raise ValueError(
                 "zone_membership_model requires zone_layout_definition"
             )
+        if position_model is zone_membership_model:
+            raise ValueError("each Model role requires a distinct instance")
         physical_world = PhysicalWorld._materialize(
             self._definition.static_input,
             position_model=position_model,
@@ -132,12 +113,13 @@ class Simulator:
         zone_service_model: ZoneServicePlanningModel,
         parameter_model: ParameterPlanningModel,
         route_model: RoutePlanningModel,
-        coordination_policy: CoordinationPolicy,
-        planning_window_policy: PlanningWindowPolicy | None = None,
-        route_demands: Iterable[RouteDemand] = (),
+        planner_configuration: PlannerConfiguration | None = None,
+        route_demands: Iterable[RouteDemand] | None = None,
     ) -> Planner:
         """Create the sole Planner and retain its physical observation Model."""
 
+        if self._shutdown:
+            raise RuntimeError("Simulator is shut down")
         if self._planner is not None:
             raise RuntimeError("Planner has already been created")
         physical_world = self.get_physical_world()
@@ -153,10 +135,15 @@ class Simulator:
             zone_service_model,
             parameter_model,
             route_model,
-            coordination_policy,
         )
+        try:
+            membership = physical_world.get_zone_layout().get_membership_model()
+        except RuntimeError:
+            membership = None
+        if membership is not None:
+            model_roles += (membership,)
         if len({id(value) for value in model_roles}) != len(model_roles):
-            raise ValueError("each Model/policy role requires a distinct instance")
+            raise ValueError("each Model role requires a distinct instance")
         planner_arguments: dict[str, object] = {
             "physical_world": physical_world,
             "observation_interval": (
@@ -167,16 +154,24 @@ class Simulator:
             "zone_service_model": zone_service_model,
             "parameter_model": parameter_model,
             "route_model": route_model,
-            "coordination_policy": coordination_policy,
             "route_demands": route_demands,
             "execution_observer": self._execution_observer,
         }
-        if planning_window_policy is not None:
-            planner_arguments["planning_window_policy"] = planning_window_policy
+        if planner_configuration is not None:
+            planner_arguments["configuration"] = planner_configuration
         planner = Planner(**planner_arguments)
         self._physical_link_model = physical_link_model
         self._planner = planner
         return planner
+
+    def shutdown(self, *, wait: bool = True) -> None:
+        """Close optional resources of the components assembled for this run."""
+        if not isinstance(wait, bool):
+            raise TypeError("wait must be a bool")
+        if self._shutdown:
+            return
+        self._shutdown = True
+        _shutdown_owned((self._planner, self._physical_link_model, self._physical_world), wait=wait)
 
     def get_physical_link_model(self) -> PhysicalLinkModel:
         """Return the exact Model injected with the sole Planner."""

@@ -1,4 +1,4 @@
-"""Define Orbit parameters, ownership and Satellite construction."""
+"""Define EmulatorOrbit parameters, ownership and EmulatorSatellite construction."""
 
 from __future__ import annotations
 
@@ -10,18 +10,18 @@ from collections.abc import Callable, Mapping
 from skyseed_v2.shared.identifier import validate_identifier
 from skyseed_v2.shared.time import normalize_utc_datetime
 
-from .satellite import Satellite
+from .satellite import EmulatorSatellite
 from .validation import _validate_angle
 
 
 @dataclass(frozen=True, slots=True)
 class OrbitParameters:
-    """Hold fixed orbital values owned by one Orbit.
+    """Hold fixed orbital values owned by one EmulatorOrbit.
 
     Layer: entity-bound value object. Handwritten callers or static Emulator
-    creation build it; Orbit owns it and Simulator-input generation reads it.
-    It is not an Orbit, Satellite field, trajectory or dynamic position. It is
-    root public because direct Orbit construction requires these values.
+    creation build it; EmulatorOrbit owns it and Simulator-input generation reads it.
+    It is not an EmulatorOrbit, EmulatorSatellite field, trajectory or dynamic position. It is
+    root public because direct EmulatorOrbit construction requires these values.
     """
 
     altitude_km: float
@@ -49,14 +49,14 @@ class OrbitParameters:
         )
 
 
-class Orbit:
-    """Own the Satellites belonging to exactly one Shell Orbit.
+class EmulatorOrbit:
+    """Own the Satellites belonging to exactly one EmulatorShell EmulatorOrbit.
 
-    Layer: approved Emulator entity. `Shell.create_orbit` creates it;
-    handwritten callers or static Emulator creation call its Satellite methods.
-    It owns one OrbitParameters value and all Satellites in the Orbit. It is not
+    Layer: approved Emulator entity. `EmulatorShell.create_orbit` creates it;
+    handwritten callers or static Emulator creation call its EmulatorSatellite methods.
+    It owns one OrbitParameters value and all Satellites in the EmulatorOrbit. It is not
     a Config, trajectory service or population. It is root public because it is
-    the approved Satellite ownership entry point.
+    the approved EmulatorSatellite ownership entry point.
     """
 
     def __init__(
@@ -66,7 +66,7 @@ class Orbit:
         parameters: OrbitParameters,
         satellite_ids: set[str],
         asn: int,
-        _on_satellite_created: Callable[[Satellite], None] | None = None,
+        _on_satellite_created: Callable[[EmulatorSatellite], None] | None = None,
     ) -> None:
         self._orbit_id = validate_identifier(orbit_id, "orbit_id")
         self._shell_id = validate_identifier(shell_id, "shell_id")
@@ -75,7 +75,7 @@ class Orbit:
         self._parameters = parameters
         self._satellite_ids = satellite_ids
         self._asn = asn
-        self._satellites: dict[str, Satellite] = {}
+        self._satellites: dict[str, EmulatorSatellite] = {}
         self._satellite_indices: set[int] = set()
         self._on_satellite_created = _on_satellite_created
 
@@ -92,10 +92,10 @@ class Orbit:
         return self._parameters
 
     @property
-    def satellites(self) -> tuple[Satellite, ...]:
+    def satellites(self) -> tuple[EmulatorSatellite, ...]:
         return tuple(self._satellites.values())
 
-    def get_satellite(self, satellite_id: str) -> Satellite:
+    def get_satellite(self, satellite_id: str) -> EmulatorSatellite:
         try:
             return self._satellites[satellite_id]
         except KeyError as error:
@@ -113,8 +113,8 @@ class Orbit:
         payload: Mapping[str, str] | None = None,
         max_simultaneous_ground_station_accesses: int | None = None,
         maximum_simultaneous_inter_satellite_links: int | None = None,
-    ) -> Satellite:
-        """Create and own one Satellite with the Orbit's AS identity."""
+    ) -> EmulatorSatellite:
+        """Create and own one EmulatorSatellite with the EmulatorOrbit's AS identity."""
 
         satellite_id = validate_identifier(satellite_id, "satellite_id")
         if satellite_id in self._satellite_ids:
@@ -127,7 +127,7 @@ class Orbit:
                 f"{self.orbit_id!r}"
             )
 
-        satellite = Satellite(
+        satellite = EmulatorSatellite(
             satellite_id=satellite_id,
             shell_id=self.shell_id,
             orbit_id=self.orbit_id,
@@ -142,8 +142,8 @@ class Orbit:
                 maximum_simultaneous_inter_satellite_links
             ),
         )
-        # Orbit organization and the AS lifecycle index receive this same
-        # Satellite instance; neither side creates a wrapper or copy.
+        # EmulatorOrbit organization and the AS lifecycle index receive this same
+        # EmulatorSatellite instance; neither side creates a wrapper or copy.
         if self._on_satellite_created is not None:
             self._on_satellite_created(satellite)
         self._satellites[satellite_id] = satellite
@@ -162,7 +162,7 @@ class Orbit:
         payload: Mapping[str, str] | None = None,
         max_simultaneous_ground_station_accesses: int | None = None,
         maximum_simultaneous_inter_satellite_links: int | None = None,
-    ) -> tuple[Satellite, ...]:
+    ) -> tuple[EmulatorSatellite, ...]:
         """Plan a deterministic batch, then delegate each entity creation."""
 
         if not isinstance(count, int) or count <= 0:

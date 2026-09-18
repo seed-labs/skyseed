@@ -15,32 +15,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from skyseed_v2.backend.bpf._runner import privileged_runtime_command as command
-from skyseed_v2.backend.bpf._runner import runtime_realization as runtime_module
-from skyseed_v2.backend.bpf._runner.runtime_realization import (
-    _IncompleteActivationError,
-    _MaterializedDataplaneState,
-    _TcBpfRuntimeRealization,
-    _RuntimeCapacityDemandAccumulator,
-    _empty_state,
-)
-from skyseed_v2.backend.bpf._runner_artifact import (
-    _BoundaryOperation,
-    _NominalBoundary,
-)
-from skyseed_v2.backend.bpf.compiled_realization import (
-    _AttachmentDemand,
-    _ForwardingBinding,
-    _ForwardingIntent,
-    _ForwardingKey,
-    _MutationOperation,
-    _PhysicalWorldProjection,
-    _QdiscIntent,
-    _ResourceIntent,
-    _ResourceOperation,
-    _ZoneEdgeIntent,
-    _ZoneEdgePhase,
-)
+from skyseed_v2.backend.bpf.runner import privileged_runtime_command as command
+from skyseed_v2.backend.bpf.runner import bpf as bpf_syscalls
+from skyseed_v2.backend.bpf.execution_materials import mechanics
+from skyseed_v2.backend.bpf.runner import runtime_realization as runtime_module
+from skyseed_v2.backend.bpf.runner.runtime_realization import _IncompleteActivationError, _TcBpfRuntimeRealization
+from skyseed_v2.backend.bpf.execution_materials.mechanics import _MaterializedDataplaneState, _RuntimeCapacityDemandAccumulator, _empty_state
+from skyseed_v2.backend.bpf.execution_materials.boundaries import _BoundaryOperation, _NominalBoundary
+from skyseed_v2.backend.bpf.execution_materials.actions import _AttachmentDemand, _ForwardingBinding, _ForwardingIntent, _ForwardingKey, _MutationOperation, _PhysicalWorldProjection, _QdiscIntent, _ResourceIntent, _ResourceOperation, _ZoneEdgeIntent, _ZoneEdgePhase
 from skyseed_v2.shared import NodeId
 from skyseed_v2.simulator import (
     OperationalConnectionId,
@@ -55,82 +37,6 @@ def _capacity_demand(projection, boundaries):
         accumulator.add(boundary)
     return accumulator.snapshot()
 
-def _capacity_test_oracle(projection, boundaries):
-    """Retain the retired startup algorithm here only as a differential oracle."""
-
-    nodes = tuple(sorted(projection.node_ids, key=runtime_module._node_key))
-    addresses, _ = runtime_module._allocate_node_addresses(nodes, ())
-    state = _empty_state()
-    generation_count = 0
-    physical_high_water = 0
-    interface_high_water = {node.value: 0 for node in nodes}
-    active_totals = {node.value: 0 for node in nodes}
-    route_totals = {node.value: 0 for node in nodes}
-    active_maximums = {node.value: 0 for node in nodes}
-    route_maximums = {node.value: 0 for node in nodes}
-    for boundary in boundaries:
-        previous = state
-        state = runtime_module._materialize_boundary(previous, boundary)
-        if (
-            generation_count == 0
-            or runtime_module._generation_state(previous)
-            != runtime_module._generation_state(state)
-        ):
-            generation_count += 1
-            interfaces = runtime_module._interfaces_for_state(state, nodes)
-            routes = runtime_module._routes_for_state(state, nodes, addresses)
-            for node in nodes:
-                key = node.value
-                active = len(interfaces[node])
-                route = len(routes[node])
-                active_totals[key] += active
-                route_totals[key] += route
-                active_maximums[key] = max(active_maximums[key], active)
-                route_maximums[key] = max(route_maximums[key], route)
-        transition = set(previous.resources) | set(state.resources)
-        runtime_module._assert_unique_resource_bindings(transition)
-        physical_high_water = max(physical_high_water, len(transition))
-        per_node_transition = {node.value: 0 for node in nodes}
-        for connection in transition:
-            per_node_transition[connection.endpoint_a.value] += 1
-            per_node_transition[connection.endpoint_b.value] += 1
-        for key, count in per_node_transition.items():
-            interface_high_water[key] = max(interface_high_water[key], count)
-    terminal_interfaces = runtime_module._interfaces_for_state(state, nodes)
-    terminal_routes = runtime_module._routes_for_state(state, nodes, addresses)
-    return {
-        "schema_version": 1,
-        "boundary_count": len(boundaries),
-        "generation_count": generation_count,
-        "physical_connection_high_water": physical_high_water,
-        "interface_binding_high_water": physical_high_water * 2,
-        "interface_identity_derivation": "blake2s-40-bit-connection-key-v1",
-        "collision_audit": {
-            "result": "passed",
-            "audited_transition_count": len(boundaries),
-            "derivation": "blake2s-40-bit-connection-key-v1",
-        },
-        "per_node": [
-            {
-                "key": node.value,
-                "cumulative_active_link_entries": active_totals[node.value],
-                "cumulative_route_entries": route_totals[node.value],
-                "maximum_generation_active_link_entries": active_maximums[
-                    node.value
-                ],
-                "maximum_generation_route_entries": route_maximums[node.value],
-                "physical_interface_high_water": interface_high_water[node.value],
-                "terminal_active_link_entries": len(terminal_interfaces[node]),
-                "terminal_route_entries": len(terminal_routes[node]),
-            }
-            for node in nodes
-        ],
-        "terminal": {
-            "active_connection_count": len(state.resources),
-            "generation_active": True,
-            "per_node_count": len(nodes),
-        },
-    }
 
 def _capacity_transition_sequence():
     a = NodeId(65001, "satellite", "sat-a")
@@ -275,10 +181,12 @@ def _capacity_transition_sequence():
     )
     return projection, boundaries
 
-def test_incremental_capacity_matches_retired_full_range_test_oracle() -> None:
+def test_incremental_capacity_has_exact_add_before_withdraw_and_shared_generation_counts() -> None:
     projection, boundaries = _capacity_transition_sequence()
     actual = _capacity_demand(projection, boundaries)
-    assert actual == _capacity_test_oracle(projection, boundaries)
+    assert [(n["cumulative_active_link_entries"], n["cumulative_route_entries"],
+             n["physical_interface_high_water"], n["terminal_route_entries"])
+            for n in actual["per_node"]] == [(2, 5, 2, 1), (1, 4, 1, 1), (1, 4, 1, 1)]
     assert actual["generation_count"] == 3
     assert actual["physical_connection_high_water"] == 2
     assert actual["terminal"]["active_connection_count"] == 0
@@ -303,11 +211,11 @@ def test_continued_admission_allows_peer_work_migration_but_keeps_fixed_limits(m
         idle["cumulative_route_entries"] = 3
         idle["maximum_generation_route_entries"] = 3
         idle["terminal_route_entries"] = 3
-        runtime._admit_batch(future)
+        runtime.admit_batch(future)
         assert runtime._capacity_demand["per_node"] == future["per_node"]
         idle["cumulative_route_entries"] = runtime._batch_admission_limits[idle["key"]]["cumulative_route_entries"] + 1
         with pytest.raises(runtime_module._CapacityAuditError, match="fixed per-node admission"):
-            runtime._admit_batch(future)
+            runtime.admit_batch(future)
         assert runtime._map_capacities == caps
         assert first == original
     finally:
@@ -334,7 +242,7 @@ def test_incremental_capacity_collision_audit_covers_transition_union(
     projection, boundaries = _capacity_transition_sequence()
     accumulator = _RuntimeCapacityDemandAccumulator(projection, ())
     monkeypatch.setattr(
-        runtime_module,
+        mechanics,
         "_interface_names",
         lambda connection: ("sv2collisiona", "sv2collisionb"),
     )
@@ -451,28 +359,28 @@ def test_parallel_map_preserves_input_order_and_worker_bound() -> None:
     assert high_water == 2
 
 def test_bpf_pin_scope_and_exact_batch_key_encoding(monkeypatch) -> None:
-    program = command._tc_program(10, 11, 12, 13, 14)
+    program = bpf_syscalls._tc_program(10, 11, 12, 13, 14, generation_versions_map=15)
     assert len(program) % 8 == 0
     assert len(program) >= 40 * 8
-    assert command._pin_root(
+    assert bpf_syscalls._pin_root(
         "/sys/fs/bpf/skyseed-v2/run-0123456789ab"
     ).name == "run-0123456789ab"
     with pytest.raises(ValueError, match="outside"):
-        command._pin_root("/sys/fs/bpf/not-owned")
+        bpf_syscalls._pin_root("/sys/fs/bpf/not-owned")
 
     observed = []
 
     def bpf(command_number, attributes):
         observed.append((
             command_number,
-            bytes(command.ctypes.string_at(attributes.keys, attributes.count * 8)),
+            bytes(bpf_syscalls.ctypes.string_at(attributes.keys, attributes.count * 8)),
         ))
         return 0
 
-    monkeypatch.setattr(command, "_bpf", bpf)
-    assert command._update_map_batch(19, (((7, 11), 1), ((7, 13), 1))) == 2
+    monkeypatch.setattr(bpf_syscalls, "_bpf", bpf)
+    assert bpf_syscalls._update_map_batch(19, (((7, 11), 1), ((7, 13), 1))) == 2
     assert observed == [
-        (command._BPF_MAP_UPDATE_BATCH, struct.pack("=IIII", 7, 11, 7, 13))
+        (bpf_syscalls._BPF_MAP_UPDATE_BATCH, struct.pack("=IIII", 7, 11, 7, 13))
     ]
 
 def test_runtime_cleanup_failure_retains_ownership_for_retry() -> None:
@@ -544,8 +452,8 @@ class _Kernel:
         monkeypatch.setattr(command, "_update_map_entries", self.update_entries)
         def forbidden(*args, **kwargs):
             raise AssertionError("formal runtime attempted a syscall/process/identity preflight outside its fake executor")
-        for name in ("_bpf", "_run", "_in_netns", "_assert_netns"):
-            monkeypatch.setattr(command, name, forbidden)
+        monkeypatch.setattr(command, "_assert_netns", forbidden)
+        monkeypatch.setattr(bpf_syscalls, "_bpf", forbidden)
 
     def update(self, fd, key, value):
         if fd == "generation":
@@ -675,20 +583,9 @@ def test_all_finite_semantics_are_prepared_without_future_veth(monkeypatch):
         runtime.prepare_all((), logical_ports={})
 
 
-def test_incremental_preparation_matches_full_state_oracle_and_consumes_one_boundary(monkeypatch):
-    original_derive = _TcBpfRuntimeRealization._derive_boundary_plan
+def test_incremental_preparation_consumes_and_completes_one_boundary_at_a_time(monkeypatch):
     original_prepare = _TcBpfRuntimeRealization.prepare_all
-    state = _empty_state()
     milestones = []
-    def derive(self, boundary, **kwargs):
-        nonlocal state
-        state = runtime_module._materialize_boundary(state, boundary)
-        draft = original_derive(self, boundary, **kwargs)
-        routes = runtime_module._routes_for_state(state, self._node_ids, self._node_addresses)
-        interfaces = runtime_module._interfaces_for_state(state, self._node_ids)
-        assert {node.node_id: node.routes for node in draft.generation_nodes} == routes
-        assert {node.node_id: node.active_interfaces for node in draft.generation_nodes} == interfaces
-        return draft
     def prepare(self, boundaries, **kwargs):
         def stream():
             for index, boundary in enumerate(boundaries):
@@ -696,7 +593,6 @@ def test_incremental_preparation_matches_full_state_oracle_and_consumes_one_boun
                 yield boundary
         return original_prepare(self, stream(), **kwargs,
                                 progress=lambda stage, **fields: milestones.append((stage, fields)))
-    monkeypatch.setattr(_TcBpfRuntimeRealization, '_derive_boundary_plan', derive)
     monkeypatch.setattr(_TcBpfRuntimeRealization, 'prepare_all', prepare)
     runtime, plans, kernel = _finite_runtime(monkeypatch, telemetry_enabled=True)
     assert milestones[-1][0] == 'delivery-prepared'
@@ -716,8 +612,6 @@ def test_formal_main_never_derives_audits_preflights_or_reclaims(monkeypatch):
     semantic = {fd: deepcopy(values) for fd, values in kernel.maps.items()
                 if isinstance(fd, tuple) and fd[1] in ("active_links", "routes")}
     def forbidden(*args, **kwargs): raise AssertionError("full-state work entered formal runtime")
-    for name in ("_materialize_boundary", "_routes_for_state", "_interfaces_for_state"):
-        monkeypatch.setattr(runtime_module, name, forbidden)
     for name in ("_derive_boundary_plan", "_audit_boundary_capacity", "_validate_collision_audit"):
         monkeypatch.setattr(runtime, name, forbidden)
     for plan in plans:
@@ -851,8 +745,8 @@ def test_actual_runner_records_preserve_boundaries_generations_and_traffic_ident
     import io
     import json
     from time import monotonic_ns
-    from skyseed_v2.backend.bpf import runner as runner_module
-    from skyseed_v2.backend.bpf._runner.traffic_telemetry import _TrafficTelemetryRecorder
+    from skyseed_v2.backend.bpf.runner import lifecycle as runner_module
+    from skyseed_v2.backend.bpf.runner.traffic_telemetry import _TrafficTelemetryRecorder
     from tools.traffic.reader import _read_telemetry, _validate_interface_generation_boundaries
     from tools.traffic.projection import _project_probe_qualification
     from tools.runner.projection import project_runner_inspection
@@ -883,7 +777,7 @@ def test_actual_runner_records_preserve_boundaries_generations_and_traffic_ident
                               stderr=io.StringIO(), poll=lambda: 0, wait=lambda **kwargs: 0)
     recorder = _TrafficTelemetryRecorder(tmp_path)
     recorder.start(helper=SimpleNamespace(start_telemetry_collector=lambda request: process), foundation=foundation)
-    runner = runner_module.BpfRunner(compose_project_name="test", runtime_artifact=tmp_path / "manifest.json")
+    runner = runner_module.Runner(compose_project_name="test", runtime_artifact=tmp_path / "manifest.json")
     runner._runtime_realization = runtime
     runner._helper = transport
     runner._prepared_plans = plans
@@ -1144,13 +1038,13 @@ def test_timing_preserves_kernel_operation_order_results_and_failure_ownership(f
 
 def test_actual_bpf_call_counters_include_attempts_at_the_syscall_boundary(monkeypatch):
     from threading import local
-    monkeypatch.setattr(command, "_BPF_CALLS", local())
+    monkeypatch.setattr(bpf_syscalls, "_BPF_CALLS", local())
     calls = []
-    monkeypatch.setattr(command, "_LIBC", SimpleNamespace(syscall=lambda number, operation, *args: calls.append(operation) or 0))
-    command._update_map(123, 0, 1)
-    assert command._delete_map(123, 0)
-    assert calls == [command._BPF_MAP_UPDATE_ELEM, command._BPF_MAP_DELETE_ELEM]
-    counts = command._kernel_call_counts()
+    monkeypatch.setattr(bpf_syscalls, "_LIBC", SimpleNamespace(syscall=lambda number, operation, *args: calls.append(operation) or 0))
+    bpf_syscalls._update_map(123, 0, 1)
+    assert bpf_syscalls._delete_map(123, 0)
+    assert calls == [bpf_syscalls._BPF_MAP_UPDATE_ELEM, bpf_syscalls._BPF_MAP_DELETE_ELEM]
+    counts = bpf_syscalls._bpf_call_counts()
     assert counts["bpf_update_calls"] == counts["bpf_delete_calls"] == 1
     assert counts["bpf_update_batch_calls"] == 0
 

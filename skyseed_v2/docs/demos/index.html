@@ -1,0 +1,22 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SkySEED · Interactive demonstrations</title>
+<style>
+:root{font-family:system-ui,sans-serif;color:#e9f0f7;background:#101d2c}body{max-width:1050px;margin:auto;padding:48px 24px;line-height:1.65}h1{font-size:clamp(30px,5vw,48px);line-height:1.1;max-width:750px}h2{font-size:24px;margin-top:0}a{color:#8fdaff}small,.muted{color:#b4c6d7}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:22px;margin:32px 0}.card{padding:28px;border:1px solid #365068;border-radius:12px;background:#172a3e}.links{display:flex;flex-wrap:wrap;gap:10px}.links a{padding:6px 13px;background:#25415b;border-radius:6px;text-decoration:none}.tag{font-size:12px;letter-spacing:1px;color:#9bd4cb;text-transform:uppercase}footer{border-top:1px solid #365068;padding-top:22px;margin-top:35px}li{margin-bottom:5px}
+</style>
+<p class="tag">SkySEED · Recorded results</p>
+<h1>Explore a satellite network, from physical facts to observed traffic</h1>
+<p>These pages work directly from this folder. No Python, server, Docker or running experiment is required.
+Choose a time, select an entity, and follow a planned or observed path.</p>
+<div class="cards">
+<section class="card"><p class="tag">Representative experiment</p><h2>S5 · Three custom Models</h2>
+<p>172 satellites, 10 GroundStations and 184 Zones. Calculated interval: <strong>2026-01-01, 00:00–00:10 UTC</strong>, at five-second boundaries. Includes actual Runner and Traffic records from September 17, 2026.</p>
+<div class="links"><a href="s5/index.html">All S5 views →</a><a href="s5/physical-world/index.html">PhysicalWorld</a><a href="s5/zone/index.html">Zones</a><a href="s5/planner/index.html">Planner</a><a href="s5/bpf-compiler/index.html">Compiler</a><a href="s5/runner/index.html">Runner</a><a href="s5/traffic/index.html">Traffic</a><a href="s5/performance/index.html">Performance</a></div>
+</section>
+<section class="card"><p class="tag">Distinctive Model explanation</p><h2>S3 · OSPF Areas</h2>
+<p>720 satellites with configured Area and ABR membership. The first complete published Plan covers <strong>2026-01-01, 00:00–00:02:35 UTC</strong>. Its 32 recorded boundaries demonstrate Area-aware path browsing.</p>
+<p>This is an offline computational Route Model, with no live OSPF protocol evidence.</p>
+<div class="links"><a href="s3/planner/index.html">Explore Areas and paths →</a></div></section>
+</div>
+<p class="muted">Physical candidates, planned operational state, compiled intent and recorded execution are separate facts. Missing measurements remain unavailable. Historical evidence is not live qualification of phase 4b-2.</p>
+<footer><a href="README.md">Provenance and regeneration</a> · <a href="provenance.json">Source hashes</a></footer>
+</html>

@@ -12,6 +12,34 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_ROOT = PROJECT_ROOT / "src/skyseed_v2"
 PACKAGE_NAME = "skyseed_v2"
 RETIRED_PATHS = (
+    "compose", "experiment/workflow.py", "experiment/_realization_producer.py",
+    "experiment/traffic", "shared/_domain_history.py", "shared/_execution_observation.py",
+    "backend/bpf/compiler.py",
+    "backend/bpf/compiled_realization.py",
+    "backend/bpf/runner.py",
+    "backend/bpf/_runner_artifact.py",
+    "backend/bpf/_runner",
+    "simulator/planning",
+    "simulator/planner/models.py",
+    "simulator/_ground_station_allocation.py",
+    "simulator/_gateway_candidates.py",
+    "simulator/_route_computation.py",
+    "simulator/_routing_core.py",
+    "simulator/planner/_route_demands.py",
+    "emulator_to_simulator.py",
+    "emulator/seedemu/skyseed_autonomous_system.py",
+    "configuration/emulator/satellite.py",
+    "configuration/emulator/yaml.py",
+    "configuration/simulator/zone.py",
+    "configuration/simulator/yaml.py",
+    "configuration/simulator/global_layout.py",
+    "simulator/models",
+    "simulator/physical/world.py",
+    "simulator/physical/zone.py",
+    "simulator/physical/capability.py",
+    "simulator/physical/position.py",
+    "simulator/physical/physical_frame.py",
+    "simulator/physical/physical_link.py",
     "_time.py",
     "entities",
     "identifier.py",
@@ -32,13 +60,13 @@ RETIRED_PATHS = (
     "simulator/models/gateway_hop_count_route.py",
     "simulator/models/geometric_connection.py",
     "simulator/models/hop_count_route.py",
-    "simulator/planning/_difference_time.py",
-    "simulator/planning/_network_changes.py",
-    "simulator/planning/_network_coordination.py",
-    "simulator/planning/_network_core.py",
-    "simulator/planning/_network_models.py",
-    "simulator/planning/_network_values.py",
-    "simulator/planning/algorithms.py",
+    "simulator/planner/_difference_time.py",
+    "simulator/planner/_network_changes.py",
+    "simulator/planner/_network_coordination.py",
+    "simulator/planner/_network_core.py",
+    "simulator/planner/_network_models.py",
+    "simulator/planner/_network_values.py",
+    "simulator/planner/algorithms.py",
     "simulator/slicing",
     "simulator/topology.py",
     "simulator/topology",
@@ -53,7 +81,7 @@ def _collapsed_group(module_name: str) -> str:
         "skyseed_v2.experiment."
     ):
         return "EXPERIMENT"
-    if module_name == "skyseed_v2.emulator_to_simulator":
+    if module_name == "skyseed_v2.adapters" or module_name.startswith("skyseed_v2.adapters."):
         return "BRIDGE"
     if module_name == "skyseed_v2.backend" or module_name.startswith(
         "skyseed_v2.backend."
@@ -69,11 +97,10 @@ def _collapsed_group(module_name: str) -> str:
         ("skyseed_v2.simulator.input", "INPUT"),
         ("skyseed_v2.simulator.geometry", "GEOMETRY"),
         ("skyseed_v2.simulator.physical", "PHYSICAL"),
-        ("skyseed_v2.simulator.models", "MODELS"),
-        ("skyseed_v2.simulator.planning", "PLANNING"),
+        ("skyseed_v2.simulator.planner", "PLANNING"),
         ("skyseed_v2.simulator", "SIM"),
         ("skyseed_v2.shared", "SHARED"),
-        ("skyseed_v2.compose", "COMPOSE"),
+        ("skyseed_v2.deployment", "DEPLOYMENT"),
     ):
         if module_name == prefix or module_name.startswith(prefix + "."):
             return group
@@ -257,11 +284,30 @@ def main() -> int:
         has_simulator = any(
             target.startswith("skyseed_v2.simulator") for target in targets
         )
-        if has_emulator and has_simulator:
+        # The root exports selectable modules but performs no cross-domain adaptation.
+        if has_emulator and has_simulator and module_name != PACKAGE_NAME:
             bridge_modules.append(module_name)
+        backend = "skyseed_v2.backend.bpf."
+        if module_name.startswith(backend + "compiler") and any(
+            target.startswith(backend + "runner") for target in targets
+        ):
+            raise AssertionError(f"Compiler depends on runtime: {module_name} -> {targets}")
+        if module_name.startswith(backend + "execution_materials"):
+            if any(target.startswith(backend + "runner") for target in targets):
+                raise AssertionError(f"Pure materials depend on runtime: {module_name} -> {targets}")
+            if not module_name.endswith(".sealing") and any(
+                target.startswith(backend + "compiler") for target in targets
+            ):
+                raise AssertionError(f"Material reading/rules depend on Compiler: {module_name} -> {targets}")
+        if module_name.startswith(backend + "runner") and any(
+            target.startswith(backend + "compiler") or target == backend + "execution_materials.sealing"
+            for target in targets
+        ):
+            raise AssertionError(f"Runner depends on compilation: {module_name} -> {targets}")
         if module_name.startswith("skyseed_v2.simulator") and any(
             target.startswith("skyseed_v2.emulator")
-            or target == "skyseed_v2.emulator_to_simulator"
+            or target == "skyseed_v2.adapters"
+            or target.startswith("skyseed_v2.adapters.")
             or target.startswith("skyseed_v2.backend")
             for target in targets
         ):
@@ -273,7 +319,7 @@ def main() -> int:
             for target in (*targets, *external[module_name])
             for prefix in (
                 "skyseed_v2.simulator",
-                "skyseed_v2.compose",
+                "skyseed_v2.deployment",
                 "tools",
                 "examples",
             )
@@ -282,7 +328,7 @@ def main() -> int:
                 f"SEED boundary reverse dependency: {module_name} -> {targets}"
             )
 
-    if bridge_modules != ["skyseed_v2.emulator_to_simulator"]:
+    if bridge_modules != ["skyseed_v2.adapters.emulator_to_simulator"]:
         raise AssertionError(f"cross-layer bridges: {bridge_modules}")
 
     for path in PACKAGE_ROOT.rglob("*.py"):
@@ -296,7 +342,11 @@ def main() -> int:
             else:
                 continue
             if any(name == "tools" or name.startswith("tools.") for name in names):
-                raise AssertionError(f"production imports Tools: {path}")
+                allowed = {"experiment/controller.py", "experiment/execution.py"}
+                if path.relative_to(PACKAGE_ROOT).as_posix() not in allowed or not all(
+                    name in {"tools.traffic.active.probe_plan", "tools.traffic.active.probe_execution"}
+                    for name in names if name == "tools" or name.startswith("tools.")):
+                    raise AssertionError(f"non-boundary production imports Tools: {path}")
         if "sys.modules" in source:
             raise AssertionError(f"compatibility module alias found: {path}")
 
@@ -330,7 +380,7 @@ def main() -> int:
     for source, target in edges:
         print(f"  {source} -> {target}")
     print(f"SCCs with more than one module: {len(components)}")
-    print("cross-layer bridge: skyseed_v2.emulator_to_simulator")
+    print("cross-layer bridge: skyseed_v2.adapters.emulator_to_simulator")
     print("SEED direct internal dependencies:")
     for value in seed_direct_dependencies:
         print(f"  {value}")
@@ -338,10 +388,10 @@ def main() -> int:
     for value in seed_direct_consumers:
         print(f"  {value}")
     print("retired paths: absent")
-    print("production -> Tools: absent")
+    print("core -> Tools: absent; experiment boundary -> explicitly enabled Traffic only")
     print("Simulator -> Emulator/SEED: absent")
     print("Simulator -> backend: absent")
-    print("SEED -> Simulator/Tools/Compose/examples: absent")
+    print("SEED -> Simulator/Tools/Deployment/examples: absent")
     print("compatibility forwarding: absent")
     print("import dependency result: PASS")
     return 0

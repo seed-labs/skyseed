@@ -4,17 +4,17 @@ import pytest
 from seedemu.core import Router
 
 import skyseed_v2
-from skyseed_v2.emulator_to_simulator import create_ground_station_simulation_input
-from skyseed_v2.emulator.entities import GroundStation, GroundStationLocation
+from skyseed_v2.adapters.emulator_to_simulator import create_ground_station_simulation_input
+from skyseed_v2.emulator.entities import EmulatorGroundStation, GroundStationLocation
 from skyseed_v2.shared import NodeId
-from skyseed_v2.emulator.seedemu import SkyseedAutonomousSystem
+from skyseed_v2.emulator.seedemu import EmulatorAutonomousSystem
 from skyseed_v2.simulator.input import (
     GroundStationSimulationInput,
 )
 
 
-def create_station() -> GroundStation:
-    return GroundStation(
+def create_station() -> EmulatorGroundStation:
+    return EmulatorGroundStation(
         ground_station_id="gs-1",
         asn=151,
         location=GroundStationLocation(40.0, -74.0, 12.5),
@@ -43,7 +43,7 @@ def test_ground_station_is_the_unique_router_object_with_static_fields() -> None
 
 
 def test_ground_station_as_rejects_duplicate_stable_ids() -> None:
-    station_as = SkyseedAutonomousSystem(151)
+    station_as = EmulatorAutonomousSystem(151)
     location = GroundStationLocation(40.0, -74.0)
     created = station_as.create_ground_station(
         "gs-1",
@@ -77,7 +77,7 @@ def test_ground_station_omits_missing_elevation_label() -> None:
     # Isolate label projection without changing the accepted location-value
     # validation contract, which still defaults to 0.0 and rejects None.
     object.__setattr__(location, "elevation_m", None)
-    station = GroundStation(
+    station = EmulatorGroundStation(
         ground_station_id="gs-no-elevation",
         asn=151,
         location=location,
@@ -89,7 +89,7 @@ def test_ground_station_omits_missing_elevation_label() -> None:
 
 
 def test_ground_station_nullable_operator_omits_only_operator_metadata() -> None:
-    station = GroundStation(
+    station = EmulatorGroundStation(
         ground_station_id="gs-no-known-operator",
         asn=151,
         location=GroundStationLocation(40.0, -74.0),
@@ -102,7 +102,7 @@ def test_ground_station_nullable_operator_omits_only_operator_metadata() -> None
     assert station.getLabel()["skyseed.station_type"] == "gateway"
     assert create_ground_station_simulation_input(station).operator is None
 
-    known = GroundStation(
+    known = EmulatorGroundStation(
         ground_station_id="gs-known-operator",
         asn=151,
         location=GroundStationLocation(41.0, -73.0),
@@ -113,7 +113,7 @@ def test_ground_station_nullable_operator_omits_only_operator_metadata() -> None
     assert known.getLabel()["skyseed.operator"] == "Skyseed"
 
     with pytest.raises(ValueError, match="operator"):
-        GroundStation(
+        EmulatorGroundStation(
             ground_station_id="gs-invalid-operator",
             asn=151,
             location=GroundStationLocation(42.0, -72.0),
@@ -129,7 +129,7 @@ def test_ground_station_rejects_invalid_optional_access_capability(
     with pytest.raises(
         ValueError, match="max_simultaneous_satellite_accesses"
     ):
-        GroundStation(
+        EmulatorGroundStation(
             ground_station_id="gs-invalid-capability",
             asn=151,
             location=GroundStationLocation(42.0, -72.0),
@@ -167,7 +167,7 @@ def test_ground_station_simulation_input_is_immutable_and_restricted() -> None:
         "router",
         "compiler",
         "docker",
-        "compose",
+        "deployment",
         "container_config",
         "namespace",
     ):

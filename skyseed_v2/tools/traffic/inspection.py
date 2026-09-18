@@ -9,7 +9,7 @@ import resource
 from time import perf_counter
 from typing import Any
 
-from tools._html import _write_compact_json, write_json, write_text
+from tools._presentation.html import _write_compact_json, write_json, write_text
 
 from .projection import _project_traffic_replay
 from .reader import read_traffic_replay
@@ -62,7 +62,7 @@ def write_traffic_replay_tool(
 
     started = perf_counter()
     source_files = (*sorted(Path(__file__).parent.glob("*.py")),
-                    *(Path(__file__).parent.parent / name for name in ("_shell_display.py", "_spatial_display.py", "_display_geometry.py", "_earth_reference.py")))
+                    *(Path(__file__).parent.parent / "_presentation" / name for name in ("shell_display.py", "spatial_display.py", "display_geometry.py", "earth_reference.py")))
     tool_source = {"projection_version": "compact-generation-identity-v4-spatial-v2",
                    "files": {p.name: _digest(p) for p in source_files}}
     telemetry = Path(telemetry_path).resolve()

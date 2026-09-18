@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from skyseed_v2.shared._domain_history import (
+from skyseed_v2.experiment.output.history import (
     _DomainHistoryManifest,
     _iter_verified_domain_history_stream,
     _read_domain_history_manifest,
@@ -18,12 +18,12 @@ from skyseed_v2.simulator import (
     PublishedPlanningEvidence, Plan, PlanningFrontiers, apply_plan,
     plan_transition_fingerprint,
 )
-from skyseed_v2.simulator.planning import (
+from skyseed_v2.simulator.planner import (
     published_planning_evidence_from_data,
     plan_from_data,
 )
 
-from skyseed_v2.simulator.planning.evidence import _frontiers_from_data
+from skyseed_v2.simulator.planner.evidence import _frontiers_from_data
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,7 +70,7 @@ def _read_plan_history_entry(data):
         "schema", "plan", "transition_fingerprints", "frames", "frontiers"
     }:
         raise ValueError("invalid published planning evidence envelope")
-    if data["schema"] not in {"skyseed-v2-published-planning-evidence-v4"}:
+    if data["schema"] not in {"skyseed-v2-published-planning-evidence-v5"}:
         raise ValueError("unsupported PublishedPlanningEvidence schema")
     plan = plan_from_data(data["plan"])
     fingerprints = tuple(data["transition_fingerprints"])
@@ -83,8 +83,8 @@ def _read_plan_history_entry(data):
         value.timestamp.isoformat() for value in plan.transitions
     ):
         raise ValueError("frame timestamps must match Plan transitions")
-    if data["schema"].endswith("-v4") and any("ground_station_preparations" not in frame for frame in frames):
-        raise ValueError("v3 evidence requires GS preparation records")
+    if any("ground_station_preparations" not in frame for frame in frames):
+        raise ValueError("current evidence requires GS preparation records")
     frontiers = _frontiers_from_data(data["frontiers"])
     if frontiers.publication != plan.end_timestamp:
         raise ValueError("evidence publication frontier must equal Plan end")
@@ -119,9 +119,9 @@ def _iter_planner_history(
     try:
         physical_header = next(physical_rows)
     except StopIteration as error:
-        raise ValueError("PhysicalFrame evidence stream is empty") from error
+        raise ValueError("PhysicalPositionSnapshot evidence stream is empty") from error
     if physical_header != _PHYSICAL_HEADER:
-        raise ValueError("PhysicalFrame evidence header is invalid")
+        raise ValueError("PhysicalPositionSnapshot evidence header is invalid")
 
     compiler_rows = _iter_verified_domain_history_stream(manifest, "compiler")
     try:
@@ -205,7 +205,7 @@ def _iter_planner_history(
                 physical_row = next(physical_rows)
             except StopIteration as error:
                 raise ValueError(
-                    "PhysicalFrame and Planner formal timestamp coverage differ"
+                    "PhysicalPositionSnapshot and Planner formal timestamp coverage differ"
                 ) from error
             _validate_physical_row(physical_row, expected_timestamp)
             transition_count += 1
@@ -260,7 +260,7 @@ def _iter_planner_history(
         raise ValueError("Planner evidence final lineage differs from manifest")
     _require_stream_exhausted(
         physical_rows,
-        "PhysicalFrame and Planner formal timestamp coverage differ",
+        "PhysicalPositionSnapshot and Planner formal timestamp coverage differ",
     )
     _require_stream_exhausted(
         compiler_rows,
@@ -276,15 +276,15 @@ def _validate_physical_row(
     row: dict[str, Any], expected_timestamp: datetime
 ) -> None:
     if set(row) != {"record_type", "timestamp", "positions"}:
-        raise ValueError("PhysicalFrame evidence row has unknown fields")
+        raise ValueError("PhysicalPositionSnapshot evidence row has unknown fields")
     if row["record_type"] != "physical_frame":
-        raise ValueError("PhysicalFrame evidence record type is invalid")
+        raise ValueError("PhysicalPositionSnapshot evidence record type is invalid")
     if not isinstance(row["positions"], list):
-        raise TypeError("PhysicalFrame positions must be a list")
-    timestamp = _history_timestamp(row["timestamp"], "PhysicalFrame timestamp")
+        raise TypeError("PhysicalPositionSnapshot positions must be a list")
+    timestamp = _history_timestamp(row["timestamp"], "PhysicalPositionSnapshot timestamp")
     if timestamp != expected_timestamp:
         raise ValueError(
-            "PhysicalFrame and Planner formal timestamp coverage differ"
+            "PhysicalPositionSnapshot and Planner formal timestamp coverage differ"
         )
 
 

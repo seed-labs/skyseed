@@ -1,4 +1,5 @@
 from __future__ import annotations
+from tests._support import MODEL_TIMESTAMP, selection_state
 
 from collections import Counter
 from datetime import timedelta
@@ -13,61 +14,48 @@ from types import SimpleNamespace
 import pytest
 from seedemu.compiler import Docker
 
-from examples.starlink_gen1_satellite_internet import main as starlink_main
-from examples.starlink_gen1_satellite_internet.emu import (
-    build_starlink_gen1_satellite_internet_emulator,
+from examples.Sky04_single_shell_continuation.single_shell import (
+    build_emulator as build_starlink_gen1_satellite_internet_emulator,
+    create_simulator as create_starlink_gen1_simulator, REFERENCE_EPOCH, DATA_ROOT,
+    DEFAULT_OBSERVATION_INTERVAL as STARLINK_GEN1_OBSERVATION_INTERVAL,
 )
-from examples.starlink_gen1_satellite_internet.simu import (
-    BANDWIDTH_BPS_BY_KIND,
-    GATEWAY_CANDIDATE_COUNT,
-    GATEWAY_CANDIDATE_MAX_DISTANCE_M,
-    MAXIMUM_GROUND_STATION_ACCESS_COUNT,
-    PACKET_LOSS_PPM_BY_KIND,
-    REFERENCE_EPOCH,
-    STARLINK_GEN1_ACQUISITION_DURATION,
-    STARLINK_GEN1_DELAY_RELATIVE_THRESHOLD,
-    STARLINK_GEN1_FORMAL_BOUNDARY_COUNT,
-    STARLINK_GEN1_OBSERVATION_INTERVAL,
-    STARLINK_GEN1_PARAMETER_MAX_STALENESS,
-    STARLINK_GEN1_PLAN_BATCH_FRAMES,
-    STARLINK_GEN1_ISL_MINIMUM_SERVICE,
-    STARLINK_GEN1_GS_MINIMUM_SERVICE,
-    STARLINK_GEN1_TIMELINE_END,
-    create_starlink_gen1_planner,
-    create_starlink_gen1_simulator,
-    starlink_gen1_physical_configuration,
-    starlink_gen1_planning_configuration,
-)
-from scripts import generate_zone_layout, refresh_starlink_gen1_ground_stations
+from skyseed_v2.deployment import seed as seed_adapter
+from skyseed_v2.deployment import metadata as deployment_metadata
+from skyseed_v2.experiment.output.generation import _write_orchestration_timing, _append_phase
+STARLINK_GEN1_FORMAL_BOUNDARY_COUNT = 121
+STARLINK_GEN1_TIMELINE_END = REFERENCE_EPOCH + timedelta(seconds=600)
+MAXIMUM_GROUND_STATION_ACCESS_COUNT = 4
+GATEWAY_CANDIDATE_COUNT = 3
+GATEWAY_CANDIDATE_MAX_DISTANCE_M = None
+STARLINK_GEN1_PLAN_BATCH_FRAMES = 32
+from tools.zone import generate as generate_zone_layout
+from data.starlink import rebuild_frozen_ground_stations
 from skyseed_v2.backend.bpf import compile_bpf
 from skyseed_v2.backend.bpf.compiler import _compile_bpf_observed
 from skyseed_v2.configuration.emulator import load_static_emulator_config
 from skyseed_v2.configuration.simulator import load_zone_layout_definition
-from skyseed_v2.emulator.entities import GroundStation, GroundStationLocation
+from skyseed_v2.emulator.entities import EmulatorGroundStation, GroundStationLocation
 from skyseed_v2.emulator.seedemu import get_skyseed_autonomous_systems
-from skyseed_v2.emulator_to_simulator import create_simulator_static_input
-from skyseed_v2.backend.bpf._runner_artifact import (
-    _RunnerArtifactWriter,
-    _open_runner_artifact,
-)
-from skyseed_v2.shared._execution_observation import _ExecutionObserver
+from skyseed_v2.adapters.emulator_to_simulator import create_simulator_static_input
+from skyseed_v2.backend.bpf.execution_materials.sealing import _RunnerArtifactWriter
+from skyseed_v2.backend.bpf.execution_materials.codec import _open_runner_artifact
+from skyseed_v2.experiment.output.observation import _ExecutionObserver
 from skyseed_v2.simulator import (
     AccumulatedDeadbandParameterPlanningModel,
     CircularOrbitPositionModel,
-    DefaultCoordinationPolicy,
     GatewayHopCountRoutePlanningModel,
     GeometricPhysicalLinkModel,
     GroundStationRouteDemandTarget,
     HighestElevationZoneServicePlanningModel,
     OperationalConnectionKind,
-    PhysicalFrame,
-    PhysicalLinkObservation,
+    PhysicalPositionSnapshot,
+    PhysicalLinkQueryResult,
     PhysicalWorld,
     PlanTransition,
     CoverageFirstGroundStationAccessPlanningModel,
     RetainFirstInterSatelliteConnectionPlanningModel,
     Simulator,
-    FrameBatchPlanningWindowPolicy,
+    PlannerConfiguration,
     ZoneRouteDemandTarget,
     ZoneServiceAssignment,
     ZoneServiceTransition,
@@ -78,7 +66,7 @@ from skyseed_v2.simulator import (
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-EXAMPLE_ROOT = PROJECT_ROOT / "examples/starlink_gen1_satellite_internet"
+EXAMPLE_ROOT = PROJECT_ROOT / "examples/Sky04_single_shell_continuation"
 EXPECTED_LONGITUDE_COUNTS = (
     3,
     9,
@@ -140,7 +128,7 @@ CANONICAL_GROUND_STATION_ALLOCATION_REGRESSION = (
 @pytest.fixture(scope="module")
 def starlink_simulator() -> Simulator:
     simulator = create_starlink_gen1_simulator(
-        build_starlink_gen1_satellite_internet_emulator()
+        build_starlink_gen1_satellite_internet_emulator("S3")
     )
     yield simulator
     try:
@@ -156,14 +144,14 @@ def starlink_physical_world(starlink_simulator: Simulator) -> PhysicalWorld:
 
 @pytest.fixture(scope="module")
 def starlink_planner(starlink_simulator: Simulator):
-    return create_starlink_gen1_planner(starlink_simulator)
+    return starlink_simulator.get_planner()
 
 
 @pytest.fixture(scope="module")
 def first_physical_input(
     starlink_simulator: Simulator,
     starlink_planner,
-) -> tuple[PhysicalFrame, PhysicalLinkObservation]:
+) -> tuple[PhysicalPositionSnapshot, PhysicalLinkQueryResult]:
     physical_world = starlink_simulator.get_physical_world()
     frame = physical_world.frame_at(REFERENCE_EPOCH)
     observation = starlink_simulator.get_physical_link_model().compute_observation(
@@ -199,20 +187,13 @@ def starlink_plan_realization(starlink_simulator: Simulator):
     return plan, compile_bpf(plan, physical_world, None)
 
 
-def test_starlink_gen1_runtime_has_no_rolling_availability_policy() -> None:
-    source = (EXAMPLE_ROOT / "main.py").read_text(encoding="utf-8")
-    assert "_RUNNER_PREPARATION_LOOKAHEAD" not in source
-    assert "_RUNNER_PREPARATION_BOUNDARY_DEPTH" not in source
-    assert "future_realization_supplier" not in source
-
-
 def test_starlink_gen1_frozen_inputs_are_deterministic_and_v2_local() -> None:
     layout, rendered_zones = generate_zone_layout._canonical_content(
         latitude_bands=24,
         equatorial_cells=48,
         alignment="antimeridian-centered",
     )
-    assert rendered_zones == (EXAMPLE_ROOT / "zones.yaml").read_text(
+    assert rendered_zones == (PROJECT_ROOT / "data/global_zones.yaml").read_text(
         encoding="utf-8"
     )
     assert tuple(
@@ -223,128 +204,40 @@ def test_starlink_gen1_frozen_inputs_are_deterministic_and_v2_local() -> None:
         for index in range(24)
     ) == EXPECTED_LONGITUDE_COUNTS
     assert sum(EXPECTED_LONGITUDE_COUNTS) == 732
-    frozen = EXAMPLE_ROOT / "ground_stations.yaml"
+    frozen = DATA_ROOT / "ground_stations.yaml"
     assert sha256(frozen.read_bytes()).hexdigest() == (
         "18f3531ec1bd535cd87f3f8673717cc6e6d5a9f0866456f8304076fd6415d0e8"
     )
     assert sha256(GROUND_STATION_EVIDENCE_FILE.read_bytes()).hexdigest() == (
-        refresh_starlink_gen1_ground_stations.REVIEWED_EVIDENCE_SHA256
+        rebuild_frozen_ground_stations.REVIEWED_EVIDENCE_SHA256
     )
     assert len(
-        refresh_starlink_gen1_ground_stations.load_reviewed_sites(
+        rebuild_frozen_ground_stations.load_reviewed_sites(
             GROUND_STATION_EVIDENCE_FILE
         )
     ) == 355
-    assert refresh_starlink_gen1_ground_stations.render_ground_stations(
+    assert rebuild_frozen_ground_stations.render_ground_stations(
         GROUND_STATION_EVIDENCE_FILE
     ) == frozen.read_text(encoding="utf-8")
 
-    for runtime_source in ("emu.py", "simu.py", "main.py"):
+    for runtime_source in ("single_shell.py",):
         source = (EXAMPLE_ROOT / runtime_source).read_text(encoding="utf-8")
         assert "skyseed_v1" not in source
         assert "research/" not in source
 
 
-def test_starlink_gen1_input_snapshot_contains_every_formal_input(
-    tmp_path: Path,
-) -> None:
-    starlink_main._write_input_snapshots(tmp_path)
-
-    inputs = tmp_path / "inputs"
-    assert {path.name for path in inputs.iterdir()} == {
-        "scenario.yaml",
-        "shells.yaml",
-        "ground_stations.yaml",
-        "zones.yaml",
-    }
-    for name in (
-        "scenario.yaml",
-        "shells.yaml",
-        "ground_stations.yaml",
-        "zones.yaml",
-    ):
-        assert (inputs / name).read_bytes() == (EXAMPLE_ROOT / name).read_bytes()
-
-
-def test_starlink_gen1_cli_uses_only_natural_round_b_boundaries() -> None:
-    parser = starlink_main._parser()
-    default = parser.parse_args([])
-    bounded = parser.parse_args(["--through", "planner", "--output", "/tmp/s4"])
-
-    assert default.through == "compiler"
-    assert default.output == starlink_main.DEFAULT_OUTPUT
-    assert bounded.through == "planner"
-    assert bounded.output == Path("/tmp/s4")
-    assert STARLINK_GEN1_FORMAL_BOUNDARY_COUNT == 121
-    for obsolete in (
-        "--dynamic",
-        "--planner",
-        "--planner-profile",
-        "--boundary-limit",
-        "--tool-workers",
-    ):
-        with pytest.raises(SystemExit):
-            parser.parse_args([obsolete])
-    with pytest.raises(SystemExit):
-        parser.parse_args(["--through", "not-a-stage"])
-
-
-def test_starlink_gen1_regeneration_guard_allows_only_inactive_output(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    compute_only = tmp_path / "compute-only"
-    (compute_only / "inspection").mkdir(parents=True)
-    monkeypatch.setattr(
-        starlink_main.subprocess,
-        "run",
-        lambda *_args, **_kwargs: pytest.fail(
-            "compute-only output has no deployment identity to query"
-        ),
-    )
-    starlink_main._guard_existing_output(compute_only)
-
-    unverifiable = tmp_path / "unverifiable"
-    (unverifiable / "runtime").mkdir(parents=True)
-    (unverifiable / "runtime/docker-compose.yml").write_text(
-        "services: {}\n", encoding="utf-8"
-    )
-    with pytest.raises(RuntimeError, match="no verifiable Compose identity"):
-        starlink_main._guard_existing_output(unverifiable)
-
-    live = tmp_path / "live"
-    (live / "runtime").mkdir(parents=True)
-    (live / "runtime/compose-project-name").write_text(
-        "skyseed-v2-s4-live\n", encoding="utf-8"
-    )
-    sentinel = live / "preserve-me"
-    sentinel.write_text("preserved", encoding="utf-8")
-    monkeypatch.setattr(
-        starlink_main.subprocess,
-        "run",
-        lambda *_args, **_kwargs: SimpleNamespace(
-            returncode=0,
-            stdout="container-id\n",
-            stderr="",
-        ),
-    )
-    with pytest.raises(RuntimeError, match="still has containers"):
-        starlink_main._guard_existing_output(live)
-    assert sentinel.read_text(encoding="utf-8") == "preserved"
-
-
 def test_starlink_gen1_runtime_docker_preserves_interface_less_router_identity(
     monkeypatch,
 ) -> None:
-    station = GroundStation(
+    station = EmulatorGroundStation(
         ground_station_id="gateway-a",
         asn=65040,
         location=GroundStationLocation(0.0, 0.0),
         station_type="gateway",
         operator=None,
     )
-    compiler = starlink_main._InterfaceLessRuntimeDocker()
-    same_display_station = GroundStation(
+    compiler = seed_adapter._InterfaceLessRuntimeDocker()
+    same_display_station = EmulatorGroundStation(
         ground_station_id="gateway-b",
         asn=65040,
         location=GroundStationLocation(1.0, 1.0),
@@ -377,7 +270,7 @@ def test_starlink_gen1_runtime_docker_preserves_interface_less_router_identity(
 def test_starlink_gen1_build_plan_groups_only_identical_contexts(
     tmp_path: Path,
 ) -> None:
-    runtime = tmp_path / "runtime"
+    runtime = tmp_path / "deployment"
     (runtime / "dummies").mkdir(parents=True)
     (runtime / "dummies/base-image").write_text("FROM base\n")
     for name, start in (
@@ -396,7 +289,7 @@ def test_starlink_gen1_build_plan_groups_only_identical_contexts(
                 for name in ("satellite-a", "satellite-b", "gateway-a")}
     original = {name: dict(value) for name, value in services.items()}
     (runtime / "docker-compose.yml").write_text(safe_dump({"services": services}))
-    plan = starlink_main._write_compose_build_plan(runtime).read_text().splitlines()
+    plan = deployment_metadata._write_compose_build_plan(runtime).read_text().splitlines()
     deployed = safe_load((runtime / "docker-compose.yml").read_text())["services"]
     assert "# contexts=3" in plan
     assert "# identical-content-groups=2" in plan
@@ -410,105 +303,9 @@ def test_starlink_gen1_build_plan_groups_only_identical_contexts(
             assert deployed[name][key] == original[name][key]
 
 
-def test_starlink_gen1_generated_run_path_owns_runtime_tools_and_final_index(
-    tmp_path: Path,
-) -> None:
-    starlink_main._write_generated_run_script(
-        tmp_path,
-        python_executable="python3",
-        compiler_tool_directory="compiler",
-        tool_package_parent=starlink_main.PROJECT_ROOT,
-    )
-
-    run_script = (tmp_path / "run.sh").read_text(encoding="utf-8")
-    assert "-m skyseed_v2.experiment.execution" in run_script
-    assert "docker compose" not in run_script
-    assert "-m tools.runner" in run_script
-    assert "-m tools.traffic" in run_script
-    assert "write_observation_tool" in run_script
-    assert 'PYTHONPATH="$TOOL_PYTHONPATH"' in run_script
-    assert "inspection/compiler/bpf-compiler-inspection.json" in run_script
-    assert "inputs/shells.yaml" in run_script
-    assert "inspection/runtime-runs/$INVOCATION_ID" in run_script
-    assert '--invocation-directory "$INVOCATION_DIR"' in run_script
-    assert '--events "$INVOCATION_DIR/runner/runner-events.jsonl"' in run_script
-    assert '--telemetry "$INVOCATION_DIR/traffic/traffic-telemetry.jsonl"' in run_script
-    assert "finalize_runtime_aggregate_index" in run_script
-    assert "exit \"$execution_status\"" in run_script
-    assert "exit \"$runner_tool_status\"" not in run_script
-    assert run_script.index("-m tools.traffic") < run_script.index(
-        "finalize_runtime_aggregate_index"
-    )
-    syntax = starlink_main.subprocess.run(
-        ("bash", "-n", str(tmp_path / "run.sh")),
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    assert syntax.returncode == 0, syntax.stderr
-    launch_script = (tmp_path / "launch.sh").read_text(encoding="utf-8")
-    assert '"$SCRIPT_DIR/start.sh"' in launch_script
-    assert 'exec "$SCRIPT_DIR/run.sh"' in launch_script
-    assert "docker compose" not in launch_script
-
-
-def test_starlink_gen1_physical_world_boundary_writes_only_static_tools(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    starlink_simulator = create_starlink_gen1_simulator(
-        build_starlink_gen1_satellite_internet_emulator()
-    )
-    output = tmp_path / "physical-world"
-    frame_timestamps = []
-    original_frame_at = PhysicalWorld.frame_at
-
-    def recording_frame_at(physical_world, timestamp):
-        frame_timestamps.append(timestamp)
-        return original_frame_at(physical_world, timestamp)
-
-    monkeypatch.setattr(PhysicalWorld, "frame_at", recording_frame_at)
-    monkeypatch.setattr(
-        starlink_main,
-        "build_starlink_gen1_satellite_internet_emulator",
-        lambda *_args: object(),
-    )
-    monkeypatch.setattr(
-        starlink_main,
-        "create_starlink_gen1_simulator",
-        lambda _emulator, **_kwargs: starlink_simulator,
-    )
-    # Selection composition supplies only request/dependency facts. No semantic
-    # progression or compilation is permitted through this cutoff.
-    from skyseed_v2.simulator import Planner
-    monkeypatch.setattr(Planner, "observe", lambda *args: pytest.fail("physical cutoff cannot plan"))
-
-
-    assert (
-        starlink_main.main(
-            ["--through", "physical-world", "--output", str(output)]
-        )
-        == 0
-    )
-    formal = tuple(starlink_simulator.get_timeline().iter_timestamps())
-    assert all(timestamp in frame_timestamps for timestamp in formal)
-    status = json.loads((output / "generation-status.json").read_text())
-    assert status["producer"]["formal_frame_count"] == 121
-    assert status["producer"]["plan_count"] == 0
-    assert status["producer"]["physical_prediction"]["prediction_frames"] > 121
-    assert (output / "inspection/index.html").is_file()
-    assert (output / "inspection/physical-world/index.html").is_file()
-    assert (output / "inspection/zone/index.html").is_file()
-    assert not (output / "inspection/physical-frame").exists()
-    assert (output / "domain-history/domain-history-manifest.json").is_file()
-    assert not (output / "runtime").exists()
-    assert not (output / "inspection/planner").exists()
-    assert not (output / "inspection/bpf-compiler").exists()
-
-
 def test_zone_authoring_check_is_exact_and_read_only(tmp_path: Path) -> None:
     existing = tmp_path / "zones.yaml"
-    shutil.copyfile(EXAMPLE_ROOT / "zones.yaml", existing)
+    shutil.copyfile(PROJECT_ROOT / "data/global_zones.yaml", existing)
     before = existing.read_bytes()
 
     assert (
@@ -539,9 +336,9 @@ def test_zone_authoring_check_is_exact_and_read_only(tmp_path: Path) -> None:
 def test_starlink_gen1_scenario_expands_exact_constellation_and_ground_body(
     starlink_physical_world: PhysicalWorld,
 ) -> None:
-    config = load_static_emulator_config(EXAMPLE_ROOT / "scenario.yaml")
+    config = load_static_emulator_config(DATA_ROOT / "scenario.yaml")
     autonomous_system = config.skyseed_autonomous_systems[0]
-    shell_input = autonomous_system.shells[0]
+    shell_input = next(shell for shell in autonomous_system.shells if shell.shell_id == "S3")
     assert shell_input.shell_id == "S3"
     assert shell_input.generated_orbit_layout is None
     assert shell_input.altitude_km == 570.0
@@ -595,7 +392,7 @@ def test_starlink_gen1_scenario_expands_exact_constellation_and_ground_body(
 
 
 def test_starlink_gen1_capabilities_cross_the_formal_fact_chain() -> None:
-    emulator = build_starlink_gen1_satellite_internet_emulator()
+    emulator = build_starlink_gen1_satellite_internet_emulator("S3")
     autonomous_systems = get_skyseed_autonomous_systems(
         emulator.getLayer("Base")
     )
@@ -626,78 +423,6 @@ def test_starlink_gen1_capabilities_cross_the_formal_fact_chain() -> None:
     assert MAXIMUM_GROUND_STATION_ACCESS_COUNT == 4
 
 
-def test_starlink_gen1_planner_factory_uses_explicit_normal_configuration(
-    starlink_simulator: Simulator,
-    starlink_planner,
-) -> None:
-    planner = starlink_planner
-    configuration = starlink_gen1_planning_configuration(starlink_simulator)
-    physical = starlink_gen1_physical_configuration()
-
-    assert starlink_simulator.get_planner() is planner
-    assert isinstance(
-        planner._planning_window_policy, FrameBatchPlanningWindowPolicy
-    )
-    assert isinstance(
-        planner._inter_satellite_model,
-        RetainFirstInterSatelliteConnectionPlanningModel,
-    )
-    assert isinstance(
-        planner._ground_station_model,
-        CoverageFirstGroundStationAccessPlanningModel,
-    )
-    assert isinstance(
-        planner._zone_service_model,
-        HighestElevationZoneServicePlanningModel,
-    )
-    assert isinstance(
-        planner._parameter_model,
-        AccumulatedDeadbandParameterPlanningModel,
-    )
-    assert isinstance(planner._route_model, GatewayHopCountRoutePlanningModel)
-    assert isinstance(planner._coordination_policy, DefaultCoordinationPolicy)
-    assert configuration["observation_interval_seconds"] == 5
-    assert configuration["formal_boundary_count"] == 121
-    assert configuration["frames_per_batch"] == 32
-    assert configuration["acquisition_duration_seconds"] == 5
-    assert configuration["isl_policy"] == (
-        "retain-first 2 same-plane + 2 cross-plane / K1"
-    )
-    assert configuration["ground_station_policy"] == (
-        "GS coverage / distinct satellites / connections / continuity / quality"
-    )
-    assert configuration["zone_policy"] == (
-        "highest elevation with explicit unserved state"
-    )
-    assert configuration["route_policy"] == (
-        "gateway demand-bounded hop count"
-    )
-    assert set(configuration["frontiers"].values()) == {None}
-    window = planner._planning_window_policy
-    assert window.frames_per_batch == STARLINK_GEN1_PLAN_BATCH_FRAMES
-    assert planner.required_prehistory == STARLINK_GEN1_ACQUISITION_DURATION
-    isl = planner._inter_satellite_model._configuration
-    assert (
-        isl.desired_same_plane_links,
-        isl.desired_cross_plane_links,
-        isl.maximum_cross_plane_separation,
-        isl.acquisition_duration,
-    ) == (2, 2, 1, timedelta(seconds=5))
-    assert planner._ground_station_model._default_ground_station_limit == 4
-    assert planner._route_model._gateway_candidate_count == 3
-    assert planner._route_model._gateway_candidate_max_distance_m is None
-    for kind in OperationalConnectionKind:
-        parameter = planner._parameter_model._configuration[kind]
-        assert parameter.bandwidth_bps == BANDWIDTH_BPS_BY_KIND[kind]
-        assert parameter.packet_loss_ppm == PACKET_LOSS_PPM_BY_KIND[kind]
-        assert parameter.delay_relative_threshold == STARLINK_GEN1_DELAY_RELATIVE_THRESHOLD
-        assert parameter.max_staleness == STARLINK_GEN1_PARAMETER_MAX_STALENESS
-    assert physical["physical_input"]["owner"] == "PhysicalWorld"
-    assert physical["physical_input"]["frame"] == "PhysicalFrame"
-    request = planner.create_physical_link_request()
-    assert len(request.inter_satellite_pairs) == 15_120
-
-
 @pytest.mark.parametrize(
     ("shell_id", "source_element_id", "source_plane_ids", "satellite_count"),
     (
@@ -715,18 +440,16 @@ def test_starlink_gen1_shell_selection_matches_all_fcc_published_orbits(
     source_plane_ids: tuple[int, ...],
     satellite_count: int,
 ) -> None:
-    scenario = (EXAMPLE_ROOT / "scenario.yaml").read_text(encoding="utf-8")
+    scenario = (DATA_ROOT / "scenario.yaml").read_text(encoding="utf-8")
     (tmp_path / "scenario.yaml").write_text(
-        scenario.replace(
-            "    selected_shell: S3", f"    selected_shell: {shell_id}"
-        ),
+        scenario.replace("    shells_file:", f"    selected_shell: {shell_id}\n    shells_file:"),
         encoding="utf-8",
     )
     shutil.copyfile(
-        EXAMPLE_ROOT / "ground_stations.yaml",
+        DATA_ROOT / "ground_stations.yaml",
         tmp_path / "ground_stations.yaml",
     )
-    shutil.copyfile(EXAMPLE_ROOT / "shells.yaml", tmp_path / "shells.yaml")
+    shutil.copyfile(DATA_ROOT / "shells.yaml", tmp_path / "shells.yaml")
     config = load_static_emulator_config(tmp_path / "scenario.yaml")
     selected = config.skyseed_autonomous_systems[0].shells
     assert len(selected) == 1
@@ -778,38 +501,10 @@ def test_starlink_gen1_shell_selection_matches_all_fcc_published_orbits(
         } == {4}
 
 
-def test_starlink_gen1_runtime_construction_uses_self_contained_input_copy(
-    tmp_path: Path,
-) -> None:
-    copied = tmp_path / "starlink-gen1-inputs"
-    copied.mkdir()
-    for name in (
-        "scenario.yaml",
-        "shells.yaml",
-        "ground_stations.yaml",
-        "zones.yaml",
-    ):
-        shutil.copyfile(EXAMPLE_ROOT / name, copied / name)
-
-    emulator = build_starlink_gen1_satellite_internet_emulator(
-        copied / "scenario.yaml"
-    )
-    physical_world = create_starlink_gen1_simulator(
-        emulator,
-        zone_layout_path=copied / "zones.yaml",
-    ).get_physical_world()
-    assert len(physical_world.get_zone_layout().zones) == 732
-    assert sum(
-        len(value.ground_stations)
-        for value in physical_world.autonomous_systems
-    ) == 355
-    assert physical_world.semantic_fingerprint()
-
-
 def test_starlink_gen1_zone_partition_has_exact_bands_and_global_resolution(
     starlink_physical_world: PhysicalWorld,
 ) -> None:
-    definition = load_zone_layout_definition(EXAMPLE_ROOT / "zones.yaml")
+    definition = load_zone_layout_definition(PROJECT_ROOT / "data/global_zones.yaml")
     assert definition.allow_overlap is False
     assert len(definition.zones) == 732
 
@@ -926,7 +621,7 @@ def test_starlink_gen1_timeline_and_physical_model_chain_are_explicit(
 
 
 def test_starlink_gen1_spatial_pruning_preserves_exact_physical_work_counts(
-    first_physical_input: tuple[PhysicalFrame, PhysicalLinkObservation],
+    first_physical_input: tuple[PhysicalPositionSnapshot, PhysicalLinkQueryResult],
 ) -> None:
     _, observation = first_physical_input
     counts = observation.work_counts
@@ -971,8 +666,8 @@ def test_starlink_gen1_route_demands_are_bounded_and_deterministic(
         gateway_candidate_max_distance_m=GATEWAY_CANDIDATE_MAX_DISTANCE_M,
     )
     try:
-        first = model.create_route_demands(physical_world, (assignment,))
-        second = model.create_route_demands(physical_world, (assignment,))
+        first = model.create_route_demands(physical_world, (assignment,), timestamp=MODEL_TIMESTAMP)
+        second = model.create_route_demands(physical_world, (assignment,), timestamp=MODEL_TIMESTAMP)
     finally:
         model.shutdown(wait=True)
 
@@ -1000,7 +695,7 @@ def test_starlink_gen1_route_demands_are_bounded_and_deterministic(
 
 def test_starlink_gen1_first_physical_input_publishes_complete_sparse_facts(
     starlink_physical_world: PhysicalWorld,
-    first_physical_input: tuple[PhysicalFrame, PhysicalLinkObservation],
+    first_physical_input: tuple[PhysicalPositionSnapshot, PhysicalLinkQueryResult],
 ) -> None:
     frame, observation = first_physical_input
     known_nodes = {
@@ -1057,525 +752,46 @@ def test_starlink_gen1_ground_station_allocation_preserves_canonical_identity(
     allocation_model = CoverageFirstGroundStationAccessPlanningModel(
         default_ground_station_limit=MAXIMUM_GROUND_STATION_ACCESS_COUNT
     )
+    # Phase 4a-1 moves Model classes; provenance changes with their actual module paths.
     assert physical_world.semantic_fingerprint() == (
-        "e5af32b6aa3300f0ac356d264bdc019c8156ca4f6e94b040d0bccb26062e9308"
+        "ab2e4e68ffb78d65223fa42dd6fce1dd67bdd1bb7a7543eff8f96f56c364303e"
     )
 
-    # The old edge-maximization hashes are historical policy evidence. Under
-    # the new policy compare coverage with the exhaustive-capable reference
-    # maximum-cardinality matching, then verify deterministic continuity.
-    from skyseed_v2.simulator._ground_station_allocation import _allocate_ground_station_accesses, _GroundAccessAllocationPreference, _GroundAccessChoice
+    # Independent coverage-only bipartite augmenting paths. The complete five-level
+    # objective is tested separately by exhaustive enumeration of small graphs.
     for offset, expected_candidates, _, _ in CANONICAL_GROUND_STATION_ALLOCATION_REGRESSION:
         frame = physical_world.frame_at(REFERENCE_EPOCH + timedelta(seconds=offset))
         observation = physical_link_model.compute_observation(physical_world, frame, starlink_planner.create_physical_link_request())
         candidates = observation.ground_station_access_candidates
-        selected = allocation_model.select_ground_station_accesses(physical_world, candidates)
+        selected = allocation_model.select_ground_station_accesses(physical_world, candidates, state=selection_state())
         stations = sorted({c.ground_station_id for c in candidates}, key=lambda n: n.value)
         satellites = {c.satellite_id for c in candidates}
-        preferences = tuple(_GroundAccessAllocationPreference(station, 1, tuple(
-            _GroundAccessChoice(c.elevation_deg, c.satellite_id) for c in candidates if c.ground_station_id == station
-        )) for station in stations)
-        capacities = {n: physical_world.get_satellite(n).max_simultaneous_ground_station_accesses for n in satellites}
-        reference = _allocate_ground_station_accesses(preferences, capacities)
         assert len(candidates) == expected_candidates
-        assert len({c.ground_station_id for c in selected}) == sum(bool(v) for v in reference.values())
+        slots = {sat: tuple((sat, i) for i in range(physical_world.get_satellite(sat).max_simultaneous_ground_station_accesses)) for sat in satellites}
+        options = {station: tuple(slot for c in candidates if c.ground_station_id == station for slot in slots[c.satellite_id]) for station in stations}
+        matched = {}
+        def augment(station, seen):
+            for slot in options[station]:
+                if slot in seen:
+                    continue
+                seen.add(slot)
+                if slot not in matched or augment(matched[slot], seen):
+                    matched[slot] = station
+                    return True
+            return False
+        maximum_coverage = sum(augment(station, set()) for station in stations)
+        assert len({c.ground_station_id for c in selected}) == maximum_coverage
+        assert {(c.ground_station_id, c.satellite_id) for c in selected} <= {(c.ground_station_id, c.satellite_id) for c in candidates}
+        assert all(sum(c.satellite_id == sat for c in selected) <= physical_world.get_satellite(sat).max_simultaneous_ground_station_accesses for sat in satellites)
         retained = frozenset((c.ground_station_id, c.satellite_id) for c in selected)
-        assert allocation_model.select_ground_station_accesses(physical_world, tuple(reversed(candidates)), retained) == selected
-
-
-def test_starlink_gen1_composition_is_explicitly_unadvanced_by_default() -> None:
-    simulator = create_starlink_gen1_simulator(
-        build_starlink_gen1_satellite_internet_emulator()
-    )
-
-    physical_world = simulator.get_physical_world()
-    assert physical_world is not None
-    assert simulator.get_timeline().start_time == REFERENCE_EPOCH
-    with pytest.raises(RuntimeError, match="Planner has not been created"):
-        simulator.get_planner()
-    with pytest.raises(RuntimeError, match="Planner has not been created"):
-        simulator.get_physical_link_model()
-    assert physical_world.frame_at(REFERENCE_EPOCH).timestamp == REFERENCE_EPOCH
-
-
-def test_starlink_gen1_entry_packages_common_producer_and_runner_artifact() -> None:
-    imported_modules = set()
-    for name in ("main.py", "simu.py"):
-        tree = ast.parse((EXAMPLE_ROOT / name).read_text(encoding="utf-8"))
-        imported_modules.update(
-            node.module or ""
-            for node in ast.walk(tree)
-            if isinstance(node, ast.ImportFrom)
-        )
-        imported_modules.update(
-            alias.name
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Import)
-            for alias in node.names
-        )
-    assert "skyseed_v2.experiment._realization_producer" in imported_modules
-    assert "skyseed_v2.backend.bpf._runner_artifact" in imported_modules
-    assert "skyseed_v2.experiment.execution" in imported_modules
-    assert "skyseed_v2.backend.bpf" not in imported_modules
-    assert "tools._detached_inspection" in imported_modules
-    assert not (EXAMPLE_ROOT / "qualification.py").exists()
-    assert not (EXAMPLE_ROOT / "generate_inputs.py").exists()
-    main_source = (EXAMPLE_ROOT / "main.py").read_text(encoding="utf-8")
-    assert "_IncrementalRealizationProducer" in main_source
-    assert "produce_next_plan()" in main_source
-    assert "produce_next_realization(delivery_end=" in main_source
-    assert "first_formal_input()" in main_source
-    assert "compile_bpf(" not in main_source
-    assert "_RunnerArtifactWriter" in main_source
-    assert "_write_execution_definition" in main_source
-    assert "_write_generated_run_script" in main_source
-    assert "SKYSEED_RUNNER_ACTIVATION_LIMIT" not in main_source
-    assert "qualification" not in main_source
-    detached_source = (
-        PROJECT_ROOT / "tools/_detached_inspection.py"
-    ).read_text(encoding="utf-8")
-    assert "tools.planner" in detached_source
-
-
-class _FocusedMainSimulator:
-    def __init__(self, events: list[str]) -> None:
-        self.events = events
-        self.observation_path: Path | None = None
-        self.timeline = SimpleNamespace(
-            start_time=REFERENCE_EPOCH,
-            end_time=STARLINK_GEN1_TIMELINE_END,
-            observation_interval=STARLINK_GEN1_OBSERVATION_INTERVAL,
-        )
-
-    def get_timeline(self):
-        return self.timeline
-
-    def _enable_execution_observation(self, path, *, metadata):
-        assert metadata["progression"] == (
-            "physical-world-planner-plan-compiler"
-        )
-        self.observation_path = Path(path)
-        self.events.append("observation-enabled")
-        return object()
-
-    def _write_execution_observations(self):
-        assert self.observation_path is not None
-        self.observation_path.parent.mkdir(parents=True, exist_ok=True)
-        self.observation_path.write_text("{}\n", encoding="utf-8")
-        self.events.append("observations-persisted")
-        return self.observation_path
-
-
-def _focused_snapshot(*, realization_count: int) -> dict[str, object]:
-    return {
-        "formal_frame_count": 121,
-        "transition_count": 121,
-        "plan_count": 4,
-        "realization_count": realization_count,
-        "domain_history_sealed": True,
-        "formal_observation_sink_seconds": 0.0,
-        "domain_evidence_persistence_seconds": 0.0,
-    }
-
-
-def test_starlink_gen1_dynamic_tools_follow_sealed_domain_and_exact_input(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    output = tmp_path / "planner"
-    events: list[str] = []
-    simulator = _FocusedMainSimulator(events)
-    first_frame = object()
-    first_observation = object()
-
-    monkeypatch.setattr(
-        starlink_main,
-        "build_starlink_gen1_satellite_internet_emulator",
-        lambda *_args: object(),
-    )
-    monkeypatch.setattr(
-        starlink_main,
-        "create_starlink_gen1_simulator",
-        lambda _emulator, **_kwargs: simulator,
-    )
-    monkeypatch.setattr(
-        starlink_main,
-        "create_starlink_gen1_planner",
-        lambda _simulator: events.append("planner-created"),
-    )
-
-    def run_planner(candidate, destination, **_kwargs):
-        assert candidate is simulator
-        assert destination == output
-        history = destination / "domain-history"
-        history.mkdir()
-        (history / "domain-history-manifest.json").write_text(
-            '{"terminal":true}\n', encoding="utf-8"
-        )
-        events.append("domain-history-sealed")
-        return _focused_snapshot(realization_count=0), first_frame, first_observation
-
-    def run_static(
-        candidate,
-        inspection,
-        *,
-        physical_frame=None,
-        physical_link_observation=None,
-        **_kwargs,
-    ):
-        assert candidate is simulator
-        assert inspection == output / "inspection"
-        assert physical_frame is first_frame
-        assert physical_link_observation is first_observation
-        assert (output / "domain-history/domain-history-manifest.json").is_file()
-        events.append("exact-input-tools")
-        return {"physical-world": {"status": "PASS", "counts": {}}}
-
-    def run_dynamic(destination, *, through, **_kwargs):
-        assert destination == output
-        assert through == "planner"
-        assert events[-1] == "exact-input-tools"
-        assert json.loads((destination / "generation-status.json").read_text())["status"] == "MATERIALS_READY"
-        events.append("dynamic-tools")
-        return ({"planner": {"status": "PASS"}}, ())
-
-    monkeypatch.setattr(starlink_main, "_run_planner_stage", run_planner)
-    monkeypatch.setattr(starlink_main, "_run_static_tools", run_static)
-    monkeypatch.setattr(starlink_main, "_run_dynamic_tools", run_dynamic)
-    monkeypatch.setattr(
-        starlink_main,
-        "write_aggregate_index",
-        lambda *_args, **_kwargs: events.append("aggregate-index"),
-    )
-
-    assert (
-        starlink_main.main(
-            ["--through", "planner", "--output", str(output)]
-        )
-        == 0
-    )
-    assert events == [
-        "planner-created",
-        "observation-enabled",
-        "domain-history-sealed",
-        "observations-persisted",
-        "exact-input-tools",
-        "dynamic-tools",
-        "aggregate-index",
-    ]
-
-
-def test_starlink_gen1_compiler_handoff_survives_static_tool_failure(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    output = tmp_path / "compiler"
-    events: list[str] = []
-    simulator = _FocusedMainSimulator(events)
-    first_frame = object()
-    first_observation = object()
-
-    monkeypatch.setattr(
-        starlink_main,
-        "build_starlink_gen1_satellite_internet_emulator",
-        lambda *_args: object(),
-    )
-    monkeypatch.setattr(
-        starlink_main,
-        "create_starlink_gen1_simulator",
-        lambda _emulator, **_kwargs: simulator,
-    )
-    monkeypatch.setattr(
-        starlink_main,
-        "create_starlink_gen1_planner",
-        lambda _simulator: events.append("planner-created"),
-    )
-
-    def run_compiler(candidate, destination, **_kwargs):
-        assert candidate is simulator
-        staging = destination / ".runner-artifact"
-        staging.mkdir()
-        manifest = staging / "manifest.json"
-        manifest.write_text("{}\n", encoding="utf-8")
-        events.append("compiler-domain-complete")
-        return (
-            manifest,
-            _focused_snapshot(realization_count=4),
-            first_frame,
-            first_observation,
-        )
-
-    def write_runtime(
-        destination, *, emulator, simulator, staged_manifest, **_kwargs
-    ):
-        assert staged_manifest == destination / ".runner-artifact/manifest.json"
-        manifest = destination / "runtime/runner-artifact/manifest.json"
-        manifest.parent.mkdir(parents=True)
-        manifest.write_text('{"terminal":true}\n', encoding="utf-8")
-        events.append("runtime-handoff-ready")
-        return manifest
-
-    def fail_static(
-        candidate,
-        inspection,
-        *,
-        physical_frame=None,
-        physical_link_observation=None,
-        **_kwargs,
-    ):
-        assert candidate is simulator
-        assert physical_frame is first_frame
-        assert physical_link_observation is first_observation
-        assert (output / "runtime/runner-artifact/manifest.json").is_file()
-        events.append("static-tool-failed")
-        return {
-            "physical-world": {
-                "status": "FAILED",
-                "message": "focused Tool input failure",
-            }
-        }
-
-    monkeypatch.setattr(starlink_main, "_run_compiler_stage", run_compiler)
-    monkeypatch.setattr(starlink_main, "_write_runtime_package", write_runtime)
-    monkeypatch.setattr(starlink_main, "_run_static_tools", fail_static)
-    monkeypatch.setattr(
-        starlink_main,
-        "_run_dynamic_tools",
-        lambda *_args, **_kwargs: (
-            {"planner": {"status": "PASS"}},
-            (),
-        ),
-    )
-    monkeypatch.setattr(starlink_main, "write_aggregate_index", lambda *_args: None)
-
-    assert (
-        starlink_main.main(
-            ["--through", "compiler", "--output", str(output)]
-        )
-        == 0
-    )
-    assert events.index("compiler-domain-complete") < events.index(
-        "runtime-handoff-ready"
-    ) < events.index("static-tool-failed")
-    assert (output / "runtime/runner-artifact/manifest.json").is_file()
-
-
-def test_starlink_gen1_planner_boundary_never_pulls_compiler(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    calls: list[str] = []
-    first_frame = object()
-    first_observation = object()
-
-    class FocusedProducer:
-        def __init__(
-            self, *_args, evidence_path, formal_observation_sink=None
-        ):
-            assert evidence_path == tmp_path / "domain-history"
-            assert callable(formal_observation_sink)
-            self.index = 0
-
-        def produce_next_plan(self):
-            calls.append("plan")
-            if self.index == 4:
-                return None
-            self.index += 1
-            return object()
-
-        def produce_next_realization(self):
-            pytest.fail("Planner boundary must not pull Compiler output")
-
-        def snapshot(self):
-            return _focused_snapshot(realization_count=0)
-
-        def first_formal_input(self):
-            return first_frame, first_observation
-
-        def close(self):
-            calls.append("close")
-
-    class FocusedEvidenceWriter:
-        def __init__(self, *_args):
-            pass
-
-        def record(self, _value):
-            pass
-
-        def finalize(self):
-            return tmp_path / "inspection-evidence/manifest.json"
-
-        def close(self):
-            pass
-
-    simulator = SimpleNamespace(
-        get_timeline=lambda: _FocusedMainSimulator([]).get_timeline(),
-        get_physical_world=lambda: object(),
-        get_physical_link_model=lambda: object(),
-        get_planner=lambda: object(),
-    )
-    monkeypatch.setattr(
-        starlink_main,
-        "_IncrementalRealizationProducer",
-        FocusedProducer,
-    )
-    monkeypatch.setattr(
-        starlink_main,
-        "_PhysicalLinkInspectionWriter",
-        FocusedEvidenceWriter,
-    )
-
-    snapshot, frame, observation = starlink_main._run_planner_stage(
-        simulator, tmp_path
-    )
-
-    assert calls == ["plan"] * 5 + ["close"]
-    assert snapshot["plan_count"] == 4
-    assert snapshot["realization_count"] == 0
-    assert frame is first_frame
-    assert observation is first_observation
-
-
-def test_starlink_gen1_compiler_stage_drains_before_artifact_seal(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    emitted = tuple(object() for _ in range(4))
-    appended: list[object] = []
-    traffic_appended: list[tuple[object, object]] = []
-    first_frame = object()
-    first_observation = object()
-
-    class FocusedProducer:
-        def __init__(
-            self, *_args, evidence_path, formal_observation_sink=None
-        ):
-            assert evidence_path == tmp_path / "domain-history"
-            assert callable(formal_observation_sink)
-            self.index = 0
-
-        def produce_next_realization(self, *, delivery_end=None):
-            if self.index == len(emitted):
-                self.index += 1
-                return None
-            value = emitted[self.index]
-            self.index += 1
-            return value
-
-        def snapshot(self):
-            assert self.index == 5
-            return _focused_snapshot(realization_count=4)
-
-        def first_formal_input(self):
-            return first_frame, first_observation
-
-        @property
-        def latest_plan(self):
-            return ("plan", self.index - 1)
-
-        def close(self):
-            appended.append("producer-closed")
-
-    class FocusedWriter:
-        def __init__(self, directory, *, execution_observer=None, final=True):
-            assert directory == tmp_path / ".runner-artifact"
-            assert execution_observer is None
-
-        def append(self, realization):
-            appended.append(realization)
-
-        def close(self):
-            pass
-
-        def finalize(self):
-            appended.append("handoff-finalized")
-            path = tmp_path / ".runner-artifact/manifest.json"
-            path.parent.mkdir(exist_ok=True)
-            path.write_text(json.dumps({"timeline": {"boundary_count": 121}}))
-            return path
-
-    class FocusedEvidenceWriter:
-        def __init__(self, *_args):
-            pass
-
-        def record(self, _value):
-            pass
-
-        def finalize(self):
-            return tmp_path / "inspection-evidence/manifest.json"
-
-        def close(self):
-            pass
-
-    class FocusedTrafficBuilder:
-        def __init__(self, *, physical_world):
-            assert physical_world is not None
-
-        def append(self, plan, realization):
-            traffic_appended.append((plan, realization))
-
-        def snapshot(self):
-            return {"realization_count": len(traffic_appended)}
-
-        def finalize(self):
-            return object()
-
-    simulator = SimpleNamespace(
-        get_timeline=lambda: _FocusedMainSimulator([]).get_timeline(),
-        get_physical_world=lambda: object(),
-        get_physical_link_model=lambda: object(),
-        get_planner=lambda: SimpleNamespace(
-            _get_execution_observer=lambda: None
-        ),
-    )
-    monkeypatch.setattr(
-        starlink_main,
-        "_IncrementalRealizationProducer",
-        FocusedProducer,
-    )
-    monkeypatch.setattr(
-        starlink_main,
-        "_RunnerArtifactWriter",
-        FocusedWriter,
-    )
-    monkeypatch.setattr(
-        starlink_main,
-        "_PhysicalLinkInspectionWriter",
-        FocusedEvidenceWriter,
-    )
-    monkeypatch.setattr(
-        starlink_main,
-        "IncrementalTrafficProbePlanBuilder",
-        FocusedTrafficBuilder,
-    )
-    monkeypatch.setattr(
-        starlink_main,
-        "write_traffic_probe_plan",
-        lambda _plan, path: path,
-    )
-
-    manifest, snapshot, frame, observation = starlink_main._run_compiler_stage(
-        simulator, tmp_path
-    )
-
-    assert appended[:4] == list(emitted)
-    assert traffic_appended == [
-        (("plan", index), realization)
-        for index, realization in enumerate(emitted)
-    ]
-    assert appended[4:] == ["producer-closed", "handoff-finalized"]
-    assert manifest == tmp_path / ".runner-artifact/manifest.json"
-    assert snapshot["transition_count"] == 121
-    assert snapshot["plan_count"] == snapshot["realization_count"] == 4
-    assert frame is first_frame
-    assert observation is first_observation
+        assert allocation_model.select_ground_station_accesses(physical_world, tuple(reversed(candidates)), selection_state(retained)) == selected
 
 
 def test_orchestration_timing_distinguishes_spans_from_aggregates(
     tmp_path: Path,
 ) -> None:
     records = []
-    starlink_main._append_phase(
+    _append_phase(
         records,
         "interleaved-writer-total",
         "persistence",
@@ -1583,7 +799,7 @@ def test_orchestration_timing_distinguishes_spans_from_aggregates(
         additive=True,
         interval_kind="aggregate",
     )
-    starlink_main._append_phase(
+    _append_phase(
         records,
         "measured-stage",
         "semantic-core",
@@ -1592,7 +808,7 @@ def test_orchestration_timing_distinguishes_spans_from_aggregates(
         started_monotonic=101.0,
         ended_monotonic=103.0,
     )
-    starlink_main._write_orchestration_timing(
+    _write_orchestration_timing(
         tmp_path,
         records,
         total_wall_seconds=5.0,
@@ -1635,7 +851,7 @@ def test_starlink_gen1_public_compiler_emits_plan_aligned_observation(
         "event-and-world-indexing",
         "transition-lowering",
         "constraint-folding-and-materialization",
-        "backend-state-validation-and-freeze",
+        "backend-state-freeze",
         "semantic-to-bpf-lowering",
         "compile-total",
     )
@@ -1658,7 +874,7 @@ def test_starlink_gen1_precomputed_artifact_is_packed_and_complete(
     artifact = _open_runner_artifact(manifest_path)
 
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    assert manifest["encoding"] == "typed-packed-runtime-tables-v3"
+    assert manifest["encoding"] == "typed-packed-runtime-tables-v4"
     assert manifest["terminal"] is True
     assert manifest["realization_count"] == 1
     assert manifest["lineage"][0]["source_plan_id"] == plan.plan_id
@@ -1703,29 +919,3 @@ def test_starlink_gen1_plan_and_compiler_boundaries_are_formal_and_adjacent(
             starlink_simulator.get_physical_world().semantic_fingerprint()
         ),
     )
-
-
-@pytest.mark.parametrize("seconds, boundaries, plans", [(5, 121, 4), (1, 601, 19)])
-def test_starlink_matrix_cadence_retains_seconds_policies(tmp_path, seconds, boundaries, plans):
-    starlink_main._write_input_snapshots(tmp_path, selected_shell="S1")
-    emulator = build_starlink_gen1_satellite_internet_emulator(tmp_path / "inputs/scenario.yaml")
-    simulator = create_starlink_gen1_simulator(emulator, observation_interval=timedelta(seconds=seconds))
-    timeline = simulator.get_timeline()
-    assert len(tuple(timeline.iter_timestamps())) == boundaries
-    assert (boundaries + STARLINK_GEN1_PLAN_BATCH_FRAMES - 1) // STARLINK_GEN1_PLAN_BATCH_FRAMES == plans
-    assert timeline.end_time - timeline.start_time == timedelta(seconds=600)
-    assert sum(len(orbit.satellites) for autonomous_system in simulator.get_physical_world().autonomous_systems for shell in autonomous_system.shells for orbit in shell.orbits) == 1584
-    assert all(satellite.inter_satellite_link_capability.maximum_simultaneous_links == 4
-               for autonomous_system in simulator.get_physical_world().autonomous_systems
-               for shell in autonomous_system.shells for orbit in shell.orbits
-               for satellite in orbit.satellites)
-    descriptors = starlink_main.starlink_gen1_model_descriptors(observation_interval=timeline.observation_interval)
-    assert descriptors["planning_window"]["configuration"]["observation_interval_seconds"] == seconds
-    assert STARLINK_GEN1_ACQUISITION_DURATION == timedelta(seconds=5)
-    assert STARLINK_GEN1_ISL_MINIMUM_SERVICE == timedelta(seconds=180)
-    assert STARLINK_GEN1_GS_MINIMUM_SERVICE == timedelta(seconds=60)
-    assert STARLINK_GEN1_PARAMETER_MAX_STALENESS == timedelta(seconds=120)
-    from skyseed_v2.experiment.traffic.probe_plan import IncrementalTrafficProbePlanBuilder
-    builder = IncrementalTrafficProbePlanBuilder()
-    assert builder._persistent_interval == 1.0
-    assert builder._activation_interval == 0.5

@@ -1,54 +1,51 @@
 """Expose the Simulator-owned PhysicalWorld domain and Zone layout."""
 
-from .capability import InterSatelliteLinkCapability
-from .physical_frame import PhysicalFrame
-from .physical_link import (
+from skyseed_v2.simulator.physical.world.capability import InterSatelliteLinkCapability
+from skyseed_v2.simulator.physical.queries.position import PhysicalPositionSnapshot
+from skyseed_v2.simulator.physical.queries.physical_link import (
     GroundStationAccessCandidate,
     InterSatelliteLinkCandidate,
-    PhysicalLinkModel,
-    PhysicalLinkObservation,
+    PhysicalLinkQueryResult,
     PhysicalLinkRequest,
     PhysicalContactWindow,
     PhysicalLinkWorkCounts,
     ZoneServiceCandidate,
 )
-from .position import PositionModel
+from .models import PositionModel, PhysicalLinkModel, ZoneMembershipModel, DefaultZoneMembershipModel
 
 from .world import (
-    GroundStation,
-    Orbit,
-    Satellite,
-    Shell,
-    SkyseedAutonomousSystem,
+    PhysicalGroundStation,
+    PhysicalOrbit,
+    PhysicalSatellite,
+    PhysicalShell,
+    PhysicalAutonomousSystem,
     PhysicalWorld,
 )
-from .zone import (
-    DefaultZoneMembershipModel,
+from skyseed_v2.simulator.physical.world.zone import (
     LatitudeLongitudeRectangle,
     SphericalCap,
     Zone,
     ZoneLayout,
-    ZoneMembershipModel,
 )
 
 __all__ = [
     "DefaultZoneMembershipModel",
-    "GroundStation",
+    "PhysicalGroundStation",
     "GroundStationAccessCandidate",
     "InterSatelliteLinkCapability",
     "InterSatelliteLinkCandidate",
     "LatitudeLongitudeRectangle",
-    "Orbit",
-    "PhysicalFrame",
+    "PhysicalOrbit",
+    "PhysicalPositionSnapshot",
     "PhysicalLinkModel",
-    "PhysicalLinkObservation",
+    "PhysicalLinkQueryResult",
     "PhysicalLinkRequest",
     "PhysicalContactWindow",
     "PhysicalLinkWorkCounts",
     "PositionModel",
-    "Satellite",
-    "Shell",
-    "SkyseedAutonomousSystem",
+    "PhysicalSatellite",
+    "PhysicalShell",
+    "PhysicalAutonomousSystem",
     "SphericalCap",
     "PhysicalWorld",
     "Zone",

@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from .._html import write_json, write_text
+from .._presentation.html import write_json, write_text
 def write_zone_artifacts(
     data: dict[str, Any],
     page: str,

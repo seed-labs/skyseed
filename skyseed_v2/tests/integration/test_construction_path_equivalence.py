@@ -3,7 +3,7 @@ from pathlib import Path
 
 from yaml import safe_load
 
-from examples.complete_static_emulator.emu import build_emulator
+from examples.Sky00_tiny_network.tiny_network import build_emulator
 from seedemu.compiler import Docker
 from seedemu.layers import Base
 from skyseed_v2.emulator.construction import create_static_emulator
@@ -24,8 +24,8 @@ from skyseed_v2.configuration.emulator import (
     StaticEmulatorConfig,
     load_static_emulator_config,
 )
-from skyseed_v2.emulator.seedemu import SkyseedAutonomousSystem
-from skyseed_v2.emulator_to_simulator import create_simulator_static_input
+from skyseed_v2.emulator.seedemu import EmulatorAutonomousSystem
+from skyseed_v2.adapters.emulator_to_simulator import create_simulator_static_input
 
 
 FIXTURE = Path(__file__).parents[1] / "fixtures/complete_equivalent.yaml"
@@ -55,13 +55,13 @@ def entity_semantics(compose: dict) -> dict[str, dict]:
 
 def skyseed_autonomous_systems(
     base: Base,
-) -> tuple[SkyseedAutonomousSystem, ...]:
+) -> tuple[EmulatorAutonomousSystem, ...]:
     return tuple(
         autonomous_system
         for asn in sorted(base.getAsns())
         if isinstance(
             (autonomous_system := base.getAutonomousSystem(asn)),
-            SkyseedAutonomousSystem,
+            EmulatorAutonomousSystem,
         )
     )
 

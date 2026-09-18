@@ -12,9 +12,9 @@ from hashlib import sha256
 import json
 from pathlib import Path
 
-from skyseed_v2.shared._domain_history import _read_domain_history_manifest, _iter_verified_domain_history_stream
-from skyseed_v2.simulator import apply_plan_transition, ReachableRouteOutcome, GroundStationRouteDemandTarget
-from .reader import iter_planner_history
+from skyseed_v2.experiment.output.history import _read_domain_history_manifest, _iter_verified_domain_history_stream, _reading_completed_range
+from skyseed_v2.simulator import apply_plan_transition, planned_operational_state_fingerprint, ReachableRouteOutcome, GroundStationRouteDemandTarget
+from .reader import _iter_projection_planner_history
 from tools.traffic.export import write_traffic_export
 from tools._inspection_evidence import iter_physical_link_inspection
 
@@ -46,10 +46,17 @@ def _zone_feature(zone):
 
 
 def write_network_export(generated: Path, output: Path) -> dict:
+    generated = Path(generated)
+    publication = json.loads((generated/'results/experiment/completed.json').read_text())
+    with _reading_completed_range(generated, publication):
+        return _write_network_export(generated, output)
+
+
+def _write_network_export(generated: Path, output: Path) -> dict:
     generated, output = Path(generated), Path(output)
     if output.exists() and any(output.iterdir()):
         raise FileExistsError('export destination must be empty')
-    physical = json.loads((generated/'inspection/physical-world/physical-world.json').read_text())
+    physical = json.loads((generated/'visualizations/physical-world/physical-world.json').read_text())
     satellites = {}; orbits = []
     for ring in physical['orbit_rings']:
         orbit = {k:ring[k] for k in ('asn','shell_id','orbit_id','altitude_km','inclination_deg','right_ascension_deg','epoch_utc')}
@@ -70,14 +77,16 @@ def write_network_export(generated: Path, output: Path) -> dict:
     nodes = set(satellites)|set(stations); zones = {z['zone_id'] for z in physical['zones']}
     _write(output/'network/world.json', {'schema_version':1,'satellites':list(satellites.values()),'orbits':orbits,'ground_stations':list(stations.values())})
     _write(output/'network/zones.geojson', {'type':'FeatureCollection','features':[_zone_feature(z) for z in physical['zones']]})
-    manifest = _read_domain_history_manifest(generated/'domain-history/planning.jsonl.gz', minimum_through='planner')
+    manifest = _read_domain_history_manifest(generated/'results/planner/planning.jsonl.gz', minimum_through='planner')
     positions = _iter_verified_domain_history_stream(manifest,'physical_frames'); next(positions)
-    candidate_source = generated/'inspection-evidence/physical-link-observations.jsonl.gz'
+    candidate_source = generated/'results/physical-world/candidates/physical-link-observations.jsonl.gz'
     candidate_frames = iter_physical_link_inspection(candidate_source) if candidate_source.exists() else None
     candidate_nodes = next(candidate_frames)['nodes'] if candidate_frames is not None else ()
     path_ids = {}; paths = []; demand_ids = {}; demands = []; frame_index = []; state = None; origin = None
     metrics = []; previous_edges = set(); gaps = []; gap_starts = {}
-    for publication in iter_planner_history(generated/'domain-history/planning.jsonl.gz'):
+    for publication in _iter_projection_planner_history(generated/'results/planner/planning.jsonl.gz'):
+        if state is not None and planned_operational_state_fingerprint(state) != publication.plan.input_state_fingerprint:
+            raise ValueError('network export Plan input fingerprint mismatch')
         for transition, evidence in zip(publication.plan.transitions, publication.frames, strict=True):
             state = apply_plan_transition(state,transition)
             frame = next(positions)
@@ -159,19 +168,20 @@ def write_network_export(generated: Path, output: Path) -> dict:
                 'withdrawn_gsl':sum(a in stations or b in stations for a,b in previous_edges-edge_set),
                 'established_connections':len(edge_set-previous_edges),'withdrawn_connections':len(previous_edges-edge_set)})
             previous_edges=edge_set
+        if planned_operational_state_fingerprint(state) != publication.plan.output_state_fingerprint:
+            raise ValueError('network export Plan output fingerprint mismatch')
     if next(positions,None) is not None:raise ValueError('unmatched formal position frames')
     if candidate_frames is not None and next(candidate_frames,None) is not None:raise ValueError('unmatched candidate frames')
     gaps.extend({'ground_station_id':g,'start_seconds':start,'end_seconds':frame_index[-1]['elapsed_seconds'],'recovered':False} for g,start in gap_starts.items())
-    expected=manifest.data['timeline']['formal_frame_count'] if 'formal_frame_count' in manifest.data['timeline'] else len(frame_index)
+    expected=manifest.data['counts']['formal_frames']
     if len(frame_index)!=expected:raise ValueError('formal frame coverage differs')
-    if [f['timestamp_utc'] for f in frame_index] != [f['timestamp'] for f in physical['frame_index']]:raise ValueError('physical Tool frame coverage differs')
     _write(output/'network/demands.json',{'schema_version':1,'demands':demands})
     path_chunks=[]
     for start in range(0,len(paths),2000):
         filename=f'paths/paths-{start//2000:04d}.json';_write(output/'network'/filename,{'schema_version':1,'first_path_id':start,'paths':paths[start:start+2000]});path_chunks.append({'file':filename,'first_path_id':start,'count':min(2000,len(paths)-start)})
     _write(output/'network/index.json',{'schema_version':1,'authority':'planned-network','coordinate_system':'WGS84 ECEF metres; GeoJSON longitude/latitude degrees',
         'start_utc':origin.isoformat(),'frames':frame_index,'paths':path_chunks,'world':'world.json','zones':'zones.geojson','demands':'demands.json'})
-    _write(generated/'inspection/planner/network-behavior.json',{'schema_version':1,'authority':'formal planned states; reservations do not provide service',
+    _write(generated/'visualizations/planner/network-behavior.json',{'schema_version':1,'authority':'formal planned states; reservations do not provide service',
         'gap_resolution':'formal observation interval; zero-operational-GSL service gaps, not per-satellite all-path outages',
         'service_gaps':gaps,'frames':metrics})
     traffic=write_traffic_export(generated,output/'traffic',origin,path_ids)

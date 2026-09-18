@@ -1,17 +1,25 @@
 """Focused reference checks for the authorized finite computation round."""
-from dataclasses import replace
+from tests._support import selection_state
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from itertools import combinations
 from random import Random
 
+import json
 import pytest
 
 from skyseed_v2.shared import NodeId
-from skyseed_v2.shared._durable_evidence import _OrderedEvidenceWriter, _read_jsonl, _reset_jsonl
-from skyseed_v2.simulator._ground_station_allocation import (
-    _GroundAccessAllocationPreference, _GroundAccessChoice,
+from skyseed_v2.shared._durable_evidence import _OrderedEvidenceWriter, _reset_jsonl
+from skyseed_v2.simulator.planner.ground_station._allocation import (
+    _GroundAccessAllocationPreference,
     _allocate_continuous_ground_station_accesses,
 )
+
+
+@dataclass(frozen=True)
+class _GroundAccessChoice:
+    elevation_deg: float
+    satellite_id: NodeId
 
 
 def test_retained_isl_reuse_matches_fresh_policy_under_pool_and_distance_changes():
@@ -25,11 +33,12 @@ def test_retained_isl_reuse_matches_fresh_policy_under_pool_and_distance_changes
              pool[:-1], pool[:2], pool)
     reused = False
     for candidates in cases:
-        actual = model.select_inter_satellite_links(world, candidates, retained)
-        reference = RetainFirstInterSatelliteConnectionPlanningModel().select_inter_satellite_links(world, candidates, retained)
+        actual = model.select_inter_satellite_links(world, candidates, selection_state(retained))
+        fresh = RetainFirstInterSatelliteConnectionPlanningModel()
+        reference = fresh.select_inter_satellite_links(world, candidates, selection_state(retained))
         assert actual.selected_candidates == reference.selected_candidates
-        assert set(actual.decisions) == set(reference.decisions)
-        assert actual.underfilled_slots == reference.underfilled_slots
+        assert set(model.selection_diagnostics().decisions) == set(fresh.selection_diagnostics().decisions)
+        assert model.selection_diagnostics().underfilled_slots == fresh.selection_diagnostics().underfilled_slots
         reused |= bool(model._selection_work['isl_retained_selection_reused'])
         retained = frozenset((c.endpoint_a, c.endpoint_b) for c in actual.selected_candidates)
     assert reused
@@ -98,10 +107,10 @@ def test_retained_flow_prefix_still_replaces_incumbent_to_restore_coverage():
 
 def test_route_reuse_invalidates_only_relevant_ground_access_dependencies():
     from types import MappingProxyType
-    from skyseed_v2.simulator._routing_core import (
-        _RoutingCoreContext, _required_ground_next_hops, _required_zone_next_hops,
+    from skyseed_v2.simulator.planner.routing._graph import (
+        _RoutingCoreContext,
     )
-    from skyseed_v2.simulator._route_computation import _GroupedRouteEngine, _RoutePathRequest
+    from skyseed_v2.simulator.planner.routing._computation import _GroupedRouteEngine, _RoutePathRequest
 
     satellites = tuple(NodeId(1, 'satellite', str(i)) for i in range(3))
     grounds = tuple(NodeId(1, 'ground-station', str(i)) for i in range(2))
@@ -123,9 +132,7 @@ def test_route_reuse_invalidates_only_relevant_ground_access_dependencies():
         changed_context = context(b)
         actual = engine.compute(changed_context, tuple(reversed(requests)))
         assert engine.last_compute_observation.reused_request_count == 2
-        reference = engine.compute(changed_context, requests,
-            choice_resolvers=(_required_ground_next_hops, _required_zone_next_hops))
-        assert actual == reference
+        assert actual == {0: (c, b, g), 1: (a, b, c, h), 2: (g, b), 3: (h, c, b)}
         assert actual[0] != first[0] and actual[2] != first[2]
         assert actual[1] == first[1] and actual[3] == first[3]
     finally:
@@ -140,7 +147,7 @@ def test_evidence_queue_order_bound_and_sticky_failure(tmp_path):
         writer.submit(writer.append, path, {'index': i})
     writer.finish()
     assert writer.peak_pending <= 2
-    assert _read_jsonl(path) == ({'header': 1}, *({'index': i} for i in range(11)))
+    assert tuple(json.loads(line) for line in __import__('gzip').open(path, 'rt')) == ({'header': 1}, *({'index': i} for i in range(11)))
     failed = _OrderedEvidenceWriter(1)
     def fail():
         raise OSError('required serialization failed')
@@ -151,10 +158,10 @@ def test_evidence_queue_order_bound_and_sticky_failure(tmp_path):
         failed.finish()
 
 
-def test_batched_geometry_and_contact_proofs_against_dense_scalar_reference():
+def test_batched_geometry_and_contact_proofs_against_independent_geometry():
     from skyseed_v2.simulator import CircularOrbitPositionModel, SimulationDefinition, SimulationTimeline, Simulator
     from skyseed_v2.simulator.input import SatelliteSimulationInput, GroundStationSimulationInput, SimulatorStaticInput
-    from skyseed_v2.simulator.models import GeometricPhysicalLinkModel
+    from skyseed_v2.simulator.physical.models import GeometricPhysicalLinkModel
     from skyseed_v2.simulator.physical import PhysicalLinkRequest
     epoch = datetime(2026, 1, 1, tzinfo=timezone.utc)
     satellites = tuple(SatelliteSimulationInput(
@@ -186,22 +193,39 @@ def test_batched_geometry_and_contact_proofs_against_dense_scalar_reference():
     for seconds in range(0, 6186, 10):
         timestamp = epoch + timedelta(seconds=seconds)
         frame = world.frame_at(timestamp)
-        scalar = core._compute_scalar(timestamp, frame.positions, request)
+        # Independent small all-pairs reference: public coordinate mathematics,
+        # no core, candidate builder, spatial pruning or prediction implementation.
+        from math import ceil
+        from skyseed_v2.simulator.geometry import ecef_distance_m, elevation_deg, has_earth_line_of_sight
+        positions = frame.positions
+        expected_isl = {
+            (a, b): ecef_distance_m(positions[a], positions[b])
+            for a, b in request.inter_satellite_pairs
+            if ecef_distance_m(positions[a], positions[b]) <= 1_000_000
+            and has_earth_line_of_sight(positions[a], positions[b])
+        }
+        expected_ground = {
+            (satellite.node_id, ground.node_id): ecef_distance_m(positions[satellite.node_id], positions[ground.node_id])
+            for satellite in satellites
+            if elevation_deg(positions[ground.node_id], positions[satellite.node_id]) >= 10
+            and has_earth_line_of_sight(positions[ground.node_id], positions[satellite.node_id])
+        }
         batched = links.compute_observation(world, frame, request)
-        for name in ('inter_satellite_candidates', 'ground_station_access_candidates'):
-            left, right = getattr(scalar, name), getattr(batched, name)
-            assert len(left) == len(right)
-            for a, b in zip(left, right):
-                assert a.propagation_delay_us == b.propagation_delay_us
-                assert a.distance_m == pytest.approx(b.distance_m, abs=1e-7)
-        feasible = {(c.endpoint_a, c.endpoint_b) for c in scalar.inter_satellite_candidates}
+        actual_isl = {(c.endpoint_a, c.endpoint_b): c for c in batched.inter_satellite_candidates}
+        actual_ground = {(c.satellite_id, c.ground_station_id): c for c in batched.ground_station_access_candidates}
+        for expected, actual in ((expected_isl, actual_isl), (expected_ground, actual_ground)):
+            assert actual.keys() == expected.keys()
+            for pair, distance in expected.items():
+                assert actual[pair].distance_m == pytest.approx(distance, abs=1e-7)
+                assert actual[pair].propagation_delay_us == ceil(distance / 299_792_458 * 1_000_000)
+        feasible = expected_isl.keys()
         cross_feasibility.add(request.inter_satellite_pairs[1] in feasible)
         for key, pair in enumerate(request.inter_satellite_pairs):
             window = prediction.window('isl', key, timestamp)
             if window is not None:
                 proven += 1
                 assert pair in feasible
-        feasible_ground = {(c.satellite_id, c.ground_station_id) for c in scalar.ground_station_access_candidates}
+        feasible_ground = expected_ground.keys()
         for key, satellite in enumerate(core._batch.satellites):
             window = prediction.window('ground', key, timestamp)
             if window is not None:
@@ -215,7 +239,7 @@ def test_batched_geometry_and_contact_proofs_against_dense_scalar_reference():
 def test_empty_contact_prediction_and_invalid_time_bounds():
     from skyseed_v2.simulator import CircularOrbitPositionModel, SimulationDefinition, SimulationTimeline, Simulator
     from skyseed_v2.simulator.input import SimulatorStaticInput
-    from skyseed_v2.simulator.models import GeometricPhysicalLinkModel
+    from skyseed_v2.simulator.physical.models import GeometricPhysicalLinkModel
     from skyseed_v2.simulator.physical import PhysicalLinkRequest
 
     start = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -236,8 +260,8 @@ def test_empty_contact_prediction_and_invalid_time_bounds():
 
 def test_route_component_reuse_shortcuts_merges_splits_and_multiple_accesses():
     from types import MappingProxyType
-    from skyseed_v2.simulator._routing_core import _RoutingCoreContext
-    from skyseed_v2.simulator._route_computation import _GroupedRouteEngine, _RoutePathRequest
+    from skyseed_v2.simulator.planner.routing._graph import _RoutingCoreContext
+    from skyseed_v2.simulator.planner.routing._computation import _GroupedRouteEngine, _RoutePathRequest
     sats = tuple(NodeId(1, 'satellite', str(i)) for i in range(7))
     gs = tuple(NodeId(1, 'ground-station', str(i)) for i in range(2))
     a,b,c,d,e,f,g = sats

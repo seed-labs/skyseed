@@ -11,7 +11,7 @@ from tools.planner.projection import _pair_index
 from tools.planner._route_display import _ROUTE_SCRIPT, _PAIR_SCRIPT
 from tools.traffic._spatial import _browser_index
 from tools.traffic._spatial_renderer import _traffic_spatial_script
-from tools._shell_display import _SHELL_SCRIPT
+from tools._presentation.shell_display import _SHELL_SCRIPT
 
 
 def _node():
@@ -35,7 +35,7 @@ def test_stable_pair_uses_typed_demand_and_resolves_independent_handover_paths(t
     with pytest.raises(ValueError, match='multiple recorded demands'):
         _pair_index([routes[0], routes[0]], nodes)
     records = {
-        0: {'gs-zone': {'timeline': [[0, ['reachable', 1, [0, 1]]], [2, ['unreachable', 'NO_OPERATIONAL_PATH']]], 'demand': {'typed': 'forward'}}},
+        0: {'gs-zone': {'timeline': [[0, ['reachable', 1, [0, 1]]], [2, ['unreachable', 'NO_ELIGIBLE_PATH']]], 'demand': {'typed': 'forward'}}},
         1: {'s1-gs': {'timeline': [[0, ['reachable', 3, [1, 3, 0]]], [2, None]], 'demand': {'typed': 'reverse-s1'}}},
         2: {'s2-gs': {'timeline': [[2, ['reachable', 0, [2, 0]]]], 'demand': {'typed': 'reverse-s2'}}},
     }
@@ -47,7 +47,7 @@ const window={SKYSEED_PLANNER_ROUTE_SHARDS:{}},pending=[];
 const document={getElementById(){return null},createElement(){return{remove(){}}},body:{append(s){pending.push(s)}}};
 function render(){ensurePairRoutes()}
 function finish(shard){const i=pending.findIndex(s=>s.src===`data/routes-${String(shard).padStart(2,'0')}.js`);assert.ok(i>=0);const script=pending.splice(i,1)[0];window.SKYSEED_PLANNER_ROUTE_SHARDS[shard]=records[shard];script.onload()}
-render();finish(0);finish(1);const key=pairFocus.key;
+render();assert.equal(pairFocus,null);assert.equal(pending.length,0);selectPair(DATA.pair_index[0]);finish(0);finish(1);const key=pairFocus.key;
 assert.equal(pairFocus.key,DATA.pair_index[0].key);assert.deepEqual(pairEdges().map(e=>[e.a,e.b]),[[0,1],[1,3],[3,0]]); // Return is not reversed forward.
 index=1;render();assert.equal(pairFocus.key,key);assert.equal(pending.length,0);assert.equal(pairEdges().length,3);
 frame={zone_assignments:[['Z',2]],operational_connections:[['access',0,1],['isl',1,3]]};index=2;render();assert.equal(pairFocus.key,key);finish(2);
@@ -176,3 +176,28 @@ assert.equal(plannerPairVisible(pair,refs,()=>false,true,s=>s==='S1'),true);
     path=tmp_path/'scope-data-check.js';path.write_text(script)
     result=subprocess.run([_node(),str(path)],capture_output=True,text=True)
     assert result.returncode==0,result.stderr
+
+
+def test_planner_model_panel_resolves_actual_assembly_and_historical_descriptors(tmp_path):
+    # Execute the panel's selection expression, including the GS validation gate.
+    # The renderer is a Python f-string; only the literal braces need unescaping.
+    import re
+    from tools.planner import renderer
+    source = Path(renderer.__file__).read_text()
+    expression = re.search(r'const descriptors=(.*?);modelDetail', source).group(1)
+    expression = expression.replace('{{', '{').replace('}}', '}')
+    program = 'const assert=require("node:assert/strict");\n'
+    program += 'function select(DATA,stage,gsStep){const descriptors=' + expression + ';return model;}\n'
+    program += '''
+const current={implementation:'actual injected ISL',configuration:{maximum_cross_plane_separation:3}};
+const past={implementation:'recorded historical ISL',configuration:{maximum_cross_plane_separation:1}};
+const data=v=>({model_provenance:{descriptors:v}});
+for(const stage of ['isl','lifecycle']){
+  assert.equal(select(data({inter_satellite:current}),stage,''),current);
+  assert.equal(select(data({isl_selection:past}),stage,''),past);
+}
+assert.equal(select(data({ground_station:current}),'gs','allocation'),current);
+assert.equal(select(data({ground_station:current}),'gs','validation').planning_model_invoked,'no');
+'''
+    result = subprocess.run([_node(), '-e', program], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr

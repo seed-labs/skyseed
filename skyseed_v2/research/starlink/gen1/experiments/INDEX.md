@@ -1,5 +1,10 @@
 # Experiment references
 
+Historical path note (Phase 4b-1): `skyseed_v1/` and
+`skyseed_v2/examples/reference/` were removed from the working tree. References
+below describe Git paths at revision `375501cfba5ee385486105f382324729914dc3b1`
+(or an explicitly recorded older revision), not current runnable locations.
+
 | Reference | Location / link | Relevance | Authority role |
 | --- | --- | --- | --- |
 | Historical Skyseed S1-S5 generated shells | `skyseed_v1/src/skyseed_v1/topology/shell.py` | Establishes the local S1-S5 names and historical generated RAAN/alternating-phase conventions compared in `shells/S1-S5-MAPPING.md`. | Internal historical reconstruction, not external orbital authority. |

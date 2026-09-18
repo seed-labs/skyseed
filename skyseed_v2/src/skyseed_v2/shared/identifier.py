@@ -1,4 +1,4 @@
-"""Validate stable identifiers shared across Skyseed layers."""
+"""Validate stable identifiers shared across SkySEED layers."""
 
 from __future__ import annotations
 

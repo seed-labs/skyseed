@@ -120,7 +120,7 @@ def project_runner_inspection(
         "authority": {
             "status": "non-authoritative-view",
             "runner": (
-                "detached BpfRunner lifecycle summary and supplied durable/recent "
+                "detached Runner lifecycle summary and supplied durable/recent "
                 "event evidence"
             ),
             "dataplane": "evidence already returned during normal Runner lifecycle",

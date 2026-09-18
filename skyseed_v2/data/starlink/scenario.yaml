@@ -1,0 +1,6 @@
+# Shared Starlink Gen1 inventory; each entry selects its Shells explicitly.
+schema_version: skyseed-static-emulator/v1
+skyseed_autonomous_systems:
+  - asn: 65040
+    shells_file: shells.yaml
+    ground_stations_file: ground_stations.yaml

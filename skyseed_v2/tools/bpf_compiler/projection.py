@@ -57,9 +57,7 @@ def project_bpf_compiler_data(
         summary = {
             "activation_boundaries": len(realization["activation_boundaries"]),
             "plan_transition_changes": transition_changes,
-            "semantic_precedences": len(
-                source_plan["semantic_event_precedences"]
-            ),
+            "semantic_precedences": sum(len(t["semantic_event_precedences"]) for t in source_plan["transitions"]),
             "resource_intents": len(intents["resources"]),
             "parameter_intents": len(intents["parameters"]),
             "forwarding_intents": len(intents["forwarding"]),

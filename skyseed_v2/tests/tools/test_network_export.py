@@ -26,17 +26,35 @@ def test_date_line_zone_is_two_bounded_geojson_polygons():
         assert all(abs(a[0]-b[0])<=180 for a,b in zip(ring,ring[1:]))
 
 
-def test_offline_export_matches_sealed_formal_frames_and_has_no_runtime_timing(tmp_path):
+def test_offline_export_matches_sealed_formal_frames_and_has_no_runtime_timing(tmp_path, monkeypatch):
     import json
-    from examples.complete_static_emulator.emu import build_emulator
-    from examples.complete_static_emulator.simu import create_complete_static_simulator,run_complete_static_chain
+    from examples.Sky00_tiny_network.tiny_network import build_emulator
+    from examples.Sky00_tiny_network.tiny_network import create_simulator as create_complete_static_simulator
+    from skyseed_v2.experiment import ExperimentController
+    from tools.planner import read_planner_history
+    from examples.Sky00_tiny_network import tiny_network as tiny
+    from pathlib import Path
     from tools.physical_world import write_physical_world_tool
     from tools.planner.export import write_network_export
-    generated=tmp_path/'generated';generated.mkdir()
-    simulator=create_complete_static_simulator(build_emulator())
-    plans,_,_=run_complete_static_chain(simulator,evidence_path=generated/'domain-history')
-    write_physical_world_tool(simulator.get_physical_world(),generated/'inspection/physical-world',physical_frames_path=generated/'domain-history/physical-frames.jsonl')
+    generated=tmp_path/'generated'
+    network=build_emulator()
+    simulator=create_complete_static_simulator(network)
+    ExperimentController(network,simulator,generated,entry_path=Path(tiny.__file__),
+        through='planner',traffic_enabled=False).generate()
+    plans=tuple(record.plan for record in read_planner_history(generated/'results/planner/planning.jsonl.gz'))
+    write_physical_world_tool(simulator.get_physical_world(),generated/'visualizations/physical-world',physical_frames_path=generated/'results/physical-world/physical-frames.jsonl')
+    from tools.planner import export, reader
+    calls = []
+    original = export.apply_plan_transition
+    def counted(*args, **kwargs):
+        calls.append(1)
+        return original(*args, **kwargs)
+    def forbidden(*args, **kwargs):
+        raise AssertionError('export reader must not replay transitions')
+    monkeypatch.setattr(export, 'apply_plan_transition', counted)
+    monkeypatch.setattr(reader, 'apply_plan', forbidden)
     result=write_network_export(generated,tmp_path/'delivery')
+    assert len(calls) == sum(len(p.transitions) for p in plans)
     assert result['formal_frames']==sum(len(p.transitions) for p in plans)
     assert result['traffic']['status']=='unavailable'
     index=json.loads((tmp_path/'delivery/network/index.json').read_text())
@@ -53,7 +71,7 @@ def test_traffic_export_keeps_executor_cases_without_fabricating_request_time(tm
     from datetime import datetime, timezone
     import json
     from tools.traffic.export import write_traffic_export
-    generated=tmp_path/'generated';source=generated/'inspection/traffic';source.mkdir(parents=True)
+    generated=tmp_path/'generated';source=generated/'visualizations/traffic';source.mkdir(parents=True)
     (source/'traffic-replay.json').write_text(json.dumps({'transactions':[], 'inventory':{'packet_observations':0},
         'qualification':{'summary':{'sent':1,'received':0,'loss':1,'status':'WARN','runner_lag_seconds':99},
         'episodes':[{'episode_id':'e1','probe_id':'p1','sent':1,'received':0,'loss':1,

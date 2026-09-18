@@ -1,6 +1,6 @@
 """Flow-first replay over bounded, retained evidence; no runtime or Models."""
-from tools._html import json_for_script
-from tools._spatial_display import _evidence_globe_script
+from tools._presentation.html import json_for_script
+from tools._presentation.spatial_display import _evidence_globe_script
 from ._spatial import _browser_index
 
 _SPATIAL_BODY = '''<section class="card"><h2>Continuous communication replay · 3D</h2>
@@ -59,7 +59,7 @@ function drawProgression(){
  for(let i=1;i<planned.length;i++)if(planned[i-1]!=null&&planned[i]!=null)overlay.push({a:planned[i-1],b:planned[i],color:'#c59bff',dash:[5,5],width:1.7});
  const current=steps[at];globe.setOverlay(frameIndex===requestedFrame?[...overlay,...animation.edges]:[],manualInspection?current?.node:null,frameIndex===requestedFrame?animation.markers:[]);
  visibility.focus([...animation.edges.flatMap(v=>[v.a,v.b]),...planned]);
- document.getElementById('traffic-geometry-basis').textContent=frameIndex!==requestedFrame?'Loading selected retained frame; overlays withheld until it arrives.':`Geometry: retained PhysicalFrame ${TRAFFIC_TIMES[frameIndex]}. Latest sample at/before replay time; no continuous position measurement. Schematic markers use these sampled endpoints.`;
+ document.getElementById('traffic-geometry-basis').textContent=frameIndex!==requestedFrame?'Loading selected retained frame; overlays withheld until it arrives.':`Geometry: retained PhysicalPositionSnapshot ${TRAFFIC_TIMES[frameIndex]}. Latest sample at/before replay time; no continuous position measurement. Schematic markers use these sampled endpoints.`;
  const row=TRAFFIC_ROWS[selectedIndex];document.getElementById('traffic-selection-status').textContent=loadFailure||(selectedTransaction?`${row.label} · ${row.classification} · evidence through ${row.evidence_time||'unknown time'}`+(selectedTransaction.association_uncertainty.length?' · AMBIGUOUS: '+selectedTransaction.association_uncertainty.join('; '):'')+(!selectedTransaction.reply.length?' · NO REPLY OBSERVATIONS':'')+([...selectedTransaction.request,...selectedTransaction.reply].some(v=>v.gap_before||v.gap_after)?' · GAP in retained observations; inspect hops':'')+(!active?' · No exchange observation at this time; last evidence shown only in details.':''):selectedIndex!=null?'Loading selected exchange…':'No exchange observation at this time; no path is inferred.');
  const key=[selectedIndex,!!selectedTransaction,direction.value,at,filterRevision].join(':');if(key!==detailKey){detailKey=key;renderTransactionDetails(steps,at)}
 }

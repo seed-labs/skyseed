@@ -8,7 +8,7 @@ from typing import Any
 
 from skyseed_v2.simulator import PublishedPlanningEvidence
 from tools._history import read_sealed_physical_frames
-from tools._html import write_text
+from tools._presentation.html import write_text
 
 from .artifact_writer import write_planner_artifacts
 from .projection import project_planner_data
@@ -115,9 +115,14 @@ def write_planner_history_tool(
         frame_chunk_sink=write_chunk,
         retain_internal_detail=False,
     )
-    return write_planner_artifacts(
-        data, render_planner_page(data), output
-    )
+    provenance = Path(planner_history_path).parents[2] / 'inputs/provenance.json'
+    if provenance.is_file():
+        labels = json.loads(provenance.read_text()).get('scenario_parameters', {}).get('node_labels', {})
+        for node in data['spatial_index']['nodes']:
+            label = labels.get(node['node_id'])
+            if isinstance(label, str) and label:
+                node['display_name'] = label
+    return write_planner_artifacts(data, render_planner_page(data), output)
 
 
 __all__ = [

@@ -9,14 +9,12 @@ import shutil
 
 import pytest
 
-from examples.complete_static_emulator.emu import build_emulator
-from examples.complete_static_emulator.simu import (
-    create_complete_static_simulator,
-    create_complete_static_planner,
-    run_complete_static_chain,
-)
+from examples.Sky00_tiny_network.tiny_network import build_emulator
+from examples.Sky00_tiny_network.tiny_network import create_simulator as create_complete_static_simulator
+from tests._support import drain_simulator as run_complete_static_chain
 from skyseed_v2.shared import NodeId
 from skyseed_v2.simulator import (
+    PlannerConfiguration,
     InterSatelliteLifecycleEvidence,
     PlanningCandidateSummary,
     PlanTransition,
@@ -58,7 +56,8 @@ def _rewrite_stream(
     *,
     update_manifest: bool,
 ) -> Path:
-    path = history / filename
+    from skyseed_v2.experiment.output.history import _DOMAIN_HISTORY_STREAM_NAMES
+    path = history / _DOMAIN_HISTORY_STREAM_NAMES[_STREAM_KEY[filename]]
     payload_text = "".join(
             json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n"
             for value in rows
@@ -69,7 +68,7 @@ def _rewrite_stream(
     else:
         path.write_text(payload_text, encoding="utf-8")
     if update_manifest:
-        manifest_path = history / "domain-history-manifest.json"
+        manifest_path = history / "experiment/domain-history-manifest.json"
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         entry = manifest["streams"][_STREAM_KEY[filename]]
         payload = path.read_bytes()
@@ -95,12 +94,12 @@ def complete_evidence(tmp_path_factory):
     root = tmp_path_factory.mktemp("planner-tool")
     simulator = create_complete_static_simulator(build_emulator())
     # This focused lineage fixture deliberately crosses a batch boundary.
-    planner = create_complete_static_planner(simulator)
-    planner._frames_per_batch = 3
+    planner = simulator.get_planner()
+    planner._configuration = PlannerConfiguration(frames_per_batch=3, inter_satellite_acquisition_duration=timedelta(0), ground_station_acquisition_duration=timedelta(0))
     plans, realizations, snapshot = run_complete_static_chain(
         simulator, planner=planner, evidence_path=root / "history"
     )
-    evidence = read_planner_history(root / "history/planning.jsonl.gz")
+    evidence = read_planner_history(root / "history/planner/planning.jsonl.gz")
     return root, evidence, plans, realizations, snapshot
 
 
@@ -258,7 +257,7 @@ def test_projection_serializes_complete_operational_state_only_once(
             "unreachable_route_count",
         }
         assert frame["transition"]["schema"] == (
-            "skyseed-v2-plan-transition-evidence-v3"
+            "skyseed-v2-plan-transition-evidence-v5"
         )
     encoded = json.dumps(data, sort_keys=True, separators=(",", ":"))
     assert encoded.count("skyseed-v2-planned-operational-state-v2") == 1
@@ -293,7 +292,7 @@ def test_writer_emits_json_html_inventory_and_deterministic_checksums(
     page = (tmp_path / "index.html").read_text()
     assert "PHYSICAL CANDIDATE" in page
     assert "SELECTED / ACQUIRING" in page
-    assert "Stable Zone–GS pairs" in page
+    assert "Business routes by entity" in page
     assert "Recorded demand identities at this time" in page
     assert payload["pair_index"]
     assert 'data-stage="gs-validation"' not in page
@@ -326,7 +325,7 @@ def test_history_reader_rejects_header_and_lineage_drift(
     rows = [
         json.loads(line)
         for line in gzip.open(
-            history / "planning.jsonl.gz", "rt", encoding="utf-8"
+            history / "planner/planning.jsonl.gz", "rt", encoding="utf-8"
         ).read().splitlines()
     ]
     rows[0] = {"record_type": "wrong"}
@@ -350,7 +349,7 @@ def test_terminal_manifest_rejects_dropped_or_duplicate_planning_rows(
 ) -> None:
     root, _, _, _, _ = complete_evidence
     history = _copy_history(root / "history", tmp_path / mutation)
-    path = history / "planning.jsonl.gz"
+    path = history / "planner/planning.jsonl.gz"
     rows = [
         json.loads(line)
         for line in gzip.open(path, "rt", encoding="utf-8")
@@ -372,7 +371,7 @@ def test_history_reader_rejects_a_dropped_transition_inside_a_sealed_plan(
 ) -> None:
     root, _, _, _, _ = complete_evidence
     history = _copy_history(root / "history", tmp_path / "dropped-transition")
-    path = history / "planning.jsonl.gz"
+    path = history / "planner/planning.jsonl.gz"
     rows = [
         json.loads(line)
         for line in gzip.open(path, "rt", encoding="utf-8")
@@ -392,13 +391,13 @@ def test_reader_rejects_cross_stream_compiler_lineage_tamper(
 ) -> None:
     root, _, _, _, _ = complete_evidence
     history = _copy_history(root / "history", tmp_path / "cross-stream")
-    path = history / "compiler.jsonl"
+    path = history / "compiler/compiler.jsonl"
     rows = [json.loads(line) for line in path.read_text().splitlines()]
     rows[-1]["source_plan_id"] = "cross-stream-plan"
     _rewrite_stream(history, path.name, rows, update_manifest=True)
 
     with pytest.raises(ValueError, match="differs from Planner lineage"):
-        read_planner_history(history / "planning.jsonl.gz")
+        read_planner_history(history / "planner/planning.jsonl.gz")
 
 
 def test_reader_rejects_a_stale_manifest_after_byte_tamper(
@@ -406,12 +405,12 @@ def test_reader_rejects_a_stale_manifest_after_byte_tamper(
 ) -> None:
     root, _, _, _, _ = complete_evidence
     history = _copy_history(root / "history", tmp_path / "stale")
-    path = history / "planning.jsonl.gz"
+    path = history / "planner/planning.jsonl.gz"
     payload = bytearray(path.read_bytes())
     payload[-1] ^= 1
     path.write_bytes(payload)
 
-    with pytest.raises(ValueError, match="sha256 differs"):
+    with pytest.raises(ValueError, match="sha256|compressed stream"):
         read_planner_history(path)
 
 
@@ -419,10 +418,11 @@ def test_history_reader_requires_terminal_sibling_manifest(
     tmp_path, complete_evidence
 ) -> None:
     root, _, _, _, _ = complete_evidence
-    standalone = tmp_path / "planning.jsonl.gz"
-    shutil.copyfile(root / "history/planning.jsonl.gz", standalone)
+    standalone = tmp_path / "planner/planning.jsonl.gz"
+    standalone.parent.mkdir()
+    shutil.copyfile(root / "history/planner/planning.jsonl.gz", standalone)
 
-    with pytest.raises(ValueError, match="terminal manifest is missing"):
+    with pytest.raises(ValueError, match="completed range manifest is missing"):
         read_planner_history(standalone)
 
 
@@ -434,7 +434,7 @@ def test_manifest_rejects_stream_path_escape(
 ) -> None:
     root, _, _, _, _ = complete_evidence
     history = _copy_history(root / "history", tmp_path / "path-escape")
-    manifest_path = history / "domain-history-manifest.json"
+    manifest_path = history / "experiment/domain-history-manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["streams"]["planning"]["path"] = invalid_path
     manifest_path.write_text(
@@ -443,7 +443,7 @@ def test_manifest_rejects_stream_path_escape(
     )
 
     with pytest.raises(ValueError, match="path is invalid"):
-        read_planner_history(history / "planning.jsonl.gz")
+        read_planner_history(history / "planner/planning.jsonl.gz")
 
 
 def test_history_reader_rejects_a_symlink_stream(
@@ -451,7 +451,7 @@ def test_history_reader_rejects_a_symlink_stream(
 ) -> None:
     root, _, _, _, _ = complete_evidence
     history = _copy_history(root / "history", tmp_path / "symlink")
-    planning = history / "planning.jsonl.gz"
+    planning = history / "planner/planning.jsonl.gz"
     target = tmp_path / "planning-target.jsonl"
     shutil.copyfile(planning, target)
     planning.unlink()

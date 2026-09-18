@@ -195,7 +195,7 @@ def test_zone_yaml_error_contract_is_owned_by_simulator_configuration() -> None:
 
     assert exported_error is ZoneLayoutDefinitionLoadError
     assert exported_error is not StaticEmulatorConfigLoadError
-    assert exported_error.__module__ == "skyseed_v2.configuration.simulator.yaml"
+    assert exported_error.__module__ == "skyseed_v2.configuration.simulator.zones.yaml"
 
 
 def test_rectangle_contains_normal_boundaries_corners_and_dateline() -> None:
@@ -515,3 +515,33 @@ def test_zone_public_types_remain_with_owner_modules_not_root() -> None:
         "DefaultZoneMembershipModel",
     ):
         assert not hasattr(skyseed_v2, name)
+
+
+@pytest.mark.parametrize("alignment", ("antimeridian-centered", "prime-meridian-centered"))
+def test_coarse_global_grid_has_two_cells_in_every_band(alignment):
+    from skyseed_v2.configuration.simulator.zones import build_global_zone_layout
+
+    definition = build_global_zone_layout(equatorial_cells=2, alignment=alignment)
+    assert len(definition.zones) == 48
+    assert not definition.allow_overlap
+    _, world = create_zone_physical_world(definition)
+    layout = world.get_zone_layout()
+    for band in range(24):
+        cells = layout.zones[band * 2:band * 2 + 2]
+        assert [zone.zone_id for zone in cells] == [f"zone-b{band:02d}-c000", f"zone-b{band:02d}-c001"]
+        for zone in cells:
+            assert zone.geometry.west_longitude_deg != zone.geometry.east_longitude_deg
+            assert zone.contains(*zone.representative_point)
+        latitude = -90 + (band + .5) * 7.5
+        for longitude in (-180, -135, -90, -45, 0, 45, 90, 135, 180):
+            assert layout.find_zones(latitude, longitude)
+    assert layout.find_zones(-90, 180)
+    assert layout.find_zones(90, -180)
+
+
+@pytest.mark.parametrize("value,error", ((True, TypeError), (2.0, TypeError), (1, ValueError), (0, ValueError), (-1, ValueError)))
+def test_global_grid_rejects_fewer_than_two_equatorial_cells(value, error):
+    from skyseed_v2.configuration.simulator.zones import build_global_zone_layout
+
+    with pytest.raises(error, match="equatorial_cells"):
+        build_global_zone_layout(equatorial_cells=value)

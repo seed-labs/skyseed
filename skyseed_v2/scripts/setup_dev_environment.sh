@@ -4,6 +4,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 ENVIRONMENT_NAME="skyseed_dev"
+# An explicit prefix isolates release checks from the ordinary development env.
+if [[ -n "${SKYSEED_ENV_PREFIX:-}" ]]; then
+    ENVIRONMENT_ARGS=(--prefix "$SKYSEED_ENV_PREFIX")
+else
+    ENVIRONMENT_ARGS=(--name "$ENVIRONMENT_NAME")
+fi
 DEFAULT_SEED_EMULATOR_ROOT="$(cd -- "$PROJECT_ROOT/../.." && pwd)/seed-emulator"
 SEED_EMULATOR_ROOT="${SEED_EMULATOR_CHECKOUT:-$DEFAULT_SEED_EMULATOR_ROOT}"
 
@@ -22,30 +28,28 @@ else
     exit 1
 fi
 
-"$CONDA_COMMAND" --version
-if "$CONDA_COMMAND" env list | awk '{print $1}' | grep -Fxq "$ENVIRONMENT_NAME"; then
-    "$CONDA_COMMAND" env update \
-        --name "$ENVIRONMENT_NAME" \
-        --file environment.yml \
-        --prune
-else
-    "$CONDA_COMMAND" env create --file environment.yml
-fi
-
 if [[ ! -f "$SEED_EMULATOR_ROOT/setup.py" ]]; then
-    echo "The pinned seedemu dependency is unavailable from the package index." >&2
-    echo "Expected a seed-emulator checkout at: $SEED_EMULATOR_ROOT" >&2
-    echo "Set SEED_EMULATOR_CHECKOUT to an equivalent checkout path." >&2
+    echo "Required SEED ExtensionNode checkout not found: $SEED_EMULATOR_ROOT" >&2
+    echo "Clone https://github.com/EMLionHeart/seed-emulator (development)." >&2
+    echo "Set SEED_EMULATOR_CHECKOUT to that checkout; see docs/user-guides/getting-started.md." >&2
     exit 1
 fi
+export SEED_EMULATOR_CHECKOUT="$SEED_EMULATOR_ROOT"
 
-echo "Installing pinned seedemu from $SEED_EMULATOR_ROOT"
-"$CONDA_COMMAND" run -n "$ENVIRONMENT_NAME" \
+"$CONDA_COMMAND" --version
+if { [[ -n "${SKYSEED_ENV_PREFIX:-}" ]] && [[ -f "$SKYSEED_ENV_PREFIX/conda-meta/history" ]]; } ||
+   { [[ -z "${SKYSEED_ENV_PREFIX:-}" ]] && "$CONDA_COMMAND" env list | awk '{print $1}' | grep -Fxq "$ENVIRONMENT_NAME"; }; then
+    "$CONDA_COMMAND" env update "${ENVIRONMENT_ARGS[@]}" --file environment.yml --prune
+else
+    "$CONDA_COMMAND" env create "${ENVIRONMENT_ARGS[@]}" --file environment.yml
+fi
+
+echo "Installing required SEED fork from $SEED_EMULATOR_ROOT"
+"$CONDA_COMMAND" run "${ENVIRONMENT_ARGS[@]}" \
     python -m pip install --editable "$SEED_EMULATOR_ROOT"
-"$CONDA_COMMAND" run -n "$ENVIRONMENT_NAME" \
+"$CONDA_COMMAND" run "${ENVIRONMENT_ARGS[@]}" \
     python -m pip install --editable '.[test]'
 
-echo "Skyseed development environment is ready:"
-"$CONDA_COMMAND" run -n "$ENVIRONMENT_NAME" python -m pip --version
-"$CONDA_COMMAND" run -n "$ENVIRONMENT_NAME" \
-    python scripts/check_dev_environment.py
+echo "Skyseed development environment is ready: ${SKYSEED_ENV_PREFIX:-$ENVIRONMENT_NAME}"
+"$CONDA_COMMAND" run "${ENVIRONMENT_ARGS[@]}" python -m pip --version
+"$CONDA_COMMAND" run "${ENVIRONMENT_ARGS[@]}" python scripts/check_dev_environment.py

@@ -14,21 +14,23 @@ def test_package_exposes_no_retired_satellite_node_alias() -> None:
     assert not hasattr(package, "SatelliteNode")
     assert not hasattr(seed_integration, "SatelliteNode")
     assert set(seed_integration.__all__) == {
-        "SkyseedAutonomousSystem",
+        "EmulatorAutonomousSystem",
         "get_skyseed_autonomous_systems",
     }
 
 
-def test_root_exports_only_high_frequency_entities_and_values() -> None:
+def test_root_exports_responsibility_modules_and_retained_entities() -> None:
     package = importlib.import_module("skyseed_v2")
 
     assert set(package.__all__) == {
-        "GroundStation",
+        "emulator", "simulator", "experiment", "configuration",
+        "adapters", "backend", "deployment",
+        "EmulatorGroundStation",
         "GroundStationLocation",
-        "Orbit",
+        "EmulatorOrbit",
         "OrbitParameters",
-        "Satellite",
-        "Shell",
+        "EmulatorSatellite",
+        "EmulatorShell",
     }
     for module_owned_name in (
         "GroundStationConfig",
@@ -59,7 +61,7 @@ def test_identity_and_generation_exports_stay_with_their_owner_modules() -> None
         "skyseed_v2.simulator.input"
     )
     generation = importlib.import_module(
-        "skyseed_v2.emulator_to_simulator"
+        "skyseed_v2.adapters.emulator_to_simulator"
     )
     emulator = importlib.import_module("skyseed_v2.emulator")
     simulator_configuration = importlib.import_module(
@@ -69,29 +71,35 @@ def test_identity_and_generation_exports_stay_with_their_owner_modules() -> None
     assert node_id.__all__ == ["NodeId"]
     assert bpf.__all__ == [
         "BpfCompiledActivationBoundary",
-        "BpfCompiledRealization",
-        "BpfRunner",
+        "BpfCompilationResult",
+        "Runner",
         "compile_bpf",
+        "compiler",
+        "runner",
     ]
     assert set(simulator.__all__) == {
+        "physical", "planner",
         "AccumulatedDeadbandParameterPlanningModel",
         "CandidateDecision",
         "CandidateDecisionKind",
         "CircularOrbitPositionModel",
         "ConnectionParameterObservation",
-        "CoordinationPolicy",
-        "DefaultCoordinationPolicy",
+        "DefaultSimulatorConfiguration",
+        "create_default_simulator",
         "DefaultZoneMembershipModel",
         "EarthFixedPosition",
         "EffectiveConnectionParameters",
         "GatewayHopCountRoutePlanningModel",
         "GeometricPhysicalLinkModel",
-        "GroundStation",
+        "PhysicalGroundStation",
         "GroundStationAccessCandidate",
         "GroundStationAccessPlanningModel",
+        "GroundStationCandidateSearch",
+        "GroundStationCandidateSearchModel",
         "GroundStationRouteDemandTarget",
         "HighestElevationZoneServicePlanningModel",
         "InterSatelliteConnectionPlanningModel",
+        "InterSatelliteCandidateSearchModel",
         "InterSatelliteLifecycleEvidence",
         "GroundStationLifecycleEvidence",
         "InterSatelliteLinkCapability",
@@ -101,14 +109,14 @@ def test_identity_and_generation_exports_stay_with_their_owner_modules() -> None
         "OperationalConnection",
         "OperationalConnectionId",
         "OperationalConnectionKind",
-        "Orbit",
+        "PhysicalOrbit",
         "ParameterKindConfiguration",
-        "ParameterPlanningMemory",
+        "DeadbandConnectionMemory",
         "ParameterPlanningModel",
         "ParameterPlanningResult",
-        "PhysicalFrame",
+        "PhysicalPositionSnapshot",
         "PhysicalLinkModel",
-        "PhysicalLinkObservation",
+        "PhysicalLinkQueryResult",
         "PhysicalContactWindow",
         "PhysicalLinkRequest",
         "PhysicalLinkWorkCounts",
@@ -121,7 +129,7 @@ def test_identity_and_generation_exports_stay_with_their_owner_modules() -> None
         "PlanningFrontiers",
         "PlanningHistogramBin",
         "PlanningInspection",
-        "PlanningWindowPolicy",
+        "PlannerConfiguration",
         "PlanTransition",
         "PlannedOperationalState",
         "PositionModel",
@@ -137,17 +145,17 @@ def test_identity_and_generation_exports_stay_with_their_owner_modules() -> None
         "RoutePlanningModel",
         "RoutePlanningResult",
         "RouteUnreachableReason",
-        "Satellite",
+        "PhysicalSatellite",
         "SemanticEventKind",
         "SemanticEventPrecedence",
         "SemanticEventReference",
-        "Shell",
+        "PhysicalShell",
         "SimulationDefinition",
         "SimulationTimeline",
         "Simulator",
-        "SkyseedAutonomousSystem",
+        "PhysicalAutonomousSystem",
         "SphericalCap",
-        "FrameBatchPlanningWindowPolicy",
+        "PlannerConfiguration",
         "UnreachableRouteOutcome",
         "Zone",
         "ZoneLayout",
@@ -206,8 +214,8 @@ def test_identity_and_generation_exports_stay_with_their_owner_modules() -> None
         "Slicer",
         "Planner",
         "Plan",
-        "BpfCompiledRealization",
-        "BpfRunner",
+        "BpfCompilationResult",
+        "Runner",
         "compile_bpf",
     ):
         assert not hasattr(package, simulator_owned_name)

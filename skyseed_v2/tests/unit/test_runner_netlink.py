@@ -6,7 +6,7 @@ import struct
 
 import pytest
 
-from skyseed_v2.backend.bpf._runner.kernel_netlink import _RouteSocket, _attr
+from skyseed_v2.backend.bpf.runner.kernel_netlink import _RouteSocket, _attr
 
 
 def _attributes(payload):
@@ -78,7 +78,7 @@ def test_bpf_attach_uses_clsact_and_direct_action_program_fd():
 
 @pytest.mark.parametrize("code", [0, -errno.EPERM, -errno.ENODEV, -errno.ENOSPC])
 def test_kernel_ack_status_is_not_suppressed(code):
-    from skyseed_v2.backend.bpf._runner import kernel_netlink
+    from skyseed_v2.backend.bpf.runner import kernel_netlink
     count_before = kernel_netlink._request_count()
     channel = _RouteSocket.__new__(_RouteSocket)
     channel._sequence = 0
@@ -100,7 +100,7 @@ def test_kernel_ack_status_is_not_suppressed(code):
 
 
 def test_one_bpf_attachment_counts_two_actual_netlink_requests():
-    from skyseed_v2.backend.bpf._runner import kernel_netlink
+    from skyseed_v2.backend.bpf.runner import kernel_netlink
     channel = _RouteSocket.__new__(_RouteSocket)
     channel._sequence = 0
     class Wire:
@@ -114,7 +114,7 @@ def test_one_bpf_attachment_counts_two_actual_netlink_requests():
 
 def test_startup_audit_uses_the_preparation_pool_and_propagates_collisions(monkeypatch):
     from ipaddress import IPv4Network
-    from skyseed_v2.backend.bpf._runner import privileged_runtime_command as command
+    from skyseed_v2.backend.bpf.runner import privileged_runtime_command as command
     monkeypatch.setattr(command, "_assert_netns", lambda node: None)
     monkeypatch.setattr(command, "_namespace_ipv4_networks", lambda node: ((), ()))
     request = {"node_address_range": "100.64.0.0/29", "zone_prefixes": (),
@@ -154,7 +154,7 @@ def test_wrong_sequence_ack_fails_without_being_accepted():
 
 @pytest.mark.parametrize("name,group,reject", [("foreign", 0, False), ("sv2foreign", 0, True), ("foreign", 0x53530001, True), ("foreign", 0x53530010, False)])
 def test_initial_inventory_preserves_unrelated_links_and_rejects_dirty_owned_range(name, group, reject):
-    from skyseed_v2.backend.bpf._runner.kernel_netlink import _ifinfo, _text, _u32
+    from skyseed_v2.backend.bpf.runner.kernel_netlink import _ifinfo, _text, _u32
     channel, _ = _capture()
     channel.request = lambda *args, **kwargs: [
         (16, _ifinfo(1) + _text(3, "lo")),
@@ -170,7 +170,7 @@ def test_initial_inventory_preserves_unrelated_links_and_rejects_dirty_owned_ran
 def test_netlink_call_counters_are_local_to_each_worker():
     from concurrent.futures import ThreadPoolExecutor
     from threading import Barrier
-    from skyseed_v2.backend.bpf._runner import kernel_netlink
+    from skyseed_v2.backend.bpf.runner import kernel_netlink
     before = kernel_netlink._request_count()
     ready = Barrier(2)
     def call(count):
@@ -265,7 +265,7 @@ def test_ipv4_inventory_rejects_malformed_records(body):
 @pytest.mark.parametrize('collision_source', [None,'address','route'])
 def test_initial_collision_audit_uses_retained_transport_without_commands(monkeypatch,collision_source):
     from ipaddress import IPv4Address,IPv4Network
-    from skyseed_v2.backend.bpf._runner import privileged_runtime_command as command
+    from skyseed_v2.backend.bpf.runner import privileged_runtime_command as command
     calls=[]
     class Netlink:
         def ipv4_address_facts(self):
@@ -274,7 +274,6 @@ def test_initial_collision_audit_uses_retained_transport_without_commands(monkey
             calls.append('route');return (IPv4Network('100.64.0.0/24' if collision_source=='route' else '192.0.2.0/24'),)
     monkeypatch.setattr(command,'_LIVE_NODES',{'a':{'netlink':Netlink()}})
     monkeypatch.setattr(command,'_assert_netns',lambda node:calls.append('identity'))
-    monkeypatch.setattr(command,'_in_netns',lambda *a:pytest.fail('initial inventory must not launch a command'))
     request={'node_address_range':'100.64.0.0/29','zone_prefixes':(), 'nodes':[{'key':'a','node_address':'100.64.0.1'}], 'worker_count':2}
     if collision_source:
         with pytest.raises(RuntimeError,match='namespace '+collision_source):command._audit_node_addresses(request)

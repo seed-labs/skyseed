@@ -1,3 +1,4 @@
+from skyseed_v2.backend.bpf.runner import deployment as deployment_module
 """Finite deliveries preserve one semantic history and bounded runtime ownership."""
 from contextlib import closing
 from datetime import timedelta
@@ -6,25 +7,26 @@ import json
 
 import pytest
 
-from examples.complete_static_emulator.emu import build_emulator
-from examples.complete_static_emulator.simu import create_complete_static_simulator, create_complete_static_planner
-from skyseed_v2.backend.bpf._runner_artifact import _RunnerArtifactWriter, _open_runner_artifact
-from skyseed_v2.backend.bpf._runner.runtime_realization import _TcBpfRuntimeRealization
-from skyseed_v2.backend.bpf import runner as runner_module
-from skyseed_v2.experiment._realization_producer import _IncrementalRealizationProducer
-from skyseed_v2.shared._execution_observation import _ExecutionObserver
-from skyseed_v2.simulator.planning.values import plan_transition_fingerprint
+from examples.Sky00_tiny_network.tiny_network import build_emulator
+from examples.Sky00_tiny_network.tiny_network import create_simulator as create_complete_static_simulator
+from skyseed_v2.backend.bpf.execution_materials.sealing import _RunnerArtifactWriter
+from skyseed_v2.backend.bpf.execution_materials.codec import _open_runner_artifact
+from skyseed_v2.backend.bpf.runner.runtime_realization import _TcBpfRuntimeRealization
+from skyseed_v2.backend.bpf.runner import lifecycle as runner_module
+from skyseed_v2.experiment.producer import Producer
+from skyseed_v2.experiment.output.observation import _ExecutionObserver
+from skyseed_v2.simulator.planner.values import plan_transition_fingerprint
 from test_runner_runtime_optimization import _Kernel
 
 
 def _produce(directory, offsets):
     simulator = create_complete_static_simulator(build_emulator())
-    planner = create_complete_static_planner(simulator)
+    planner = simulator.get_planner()
     observer = _ExecutionObserver()
     planner._set_execution_observer(observer)
     timeline = simulator.get_timeline()
     transitions, paths, previous = [], [], None
-    with _IncrementalRealizationProducer(timeline, simulator.get_physical_world(),
+    with Producer(timeline, simulator.get_physical_world(),
             simulator.get_physical_link_model(), planner, evidence_path=directory / "history") as producer:
         for index, offset in enumerate(offsets):
             writer = _RunnerArtifactWriter(directory / f"batch-{index}", continuation=previous,
@@ -68,13 +70,13 @@ def test_delivery_flush_preserves_continuous_transitions_and_compiler_lineage(de
 
 def test_append_rejects_reordered_replaced_and_terminal_deliveries(deliveries):
     _, _, _, paths = deliveries
-    runner = runner_module.BpfRunner(compose_project_name="batches", runtime_artifact=paths[0])
+    runner = runner_module.Runner(compose_project_name="batches", runtime_artifact=paths[0])
     with pytest.raises(ValueError, match="non-contiguous"):
         runner.append_batch(paths[2])
     runner.append_batch(paths[1])
     with pytest.raises(RuntimeError, match="one next"):
         runner.append_batch(paths[2])
-    runner = runner_module.BpfRunner(compose_project_name="batches", runtime_artifact=paths[2])
+    runner = runner_module.Runner(compose_project_name="batches", runtime_artifact=paths[2])
     with pytest.raises(ValueError, match="non-contiguous"):
         runner.append_batch(paths[1])
 
@@ -122,21 +124,21 @@ def test_three_deliveries_reuse_foundation_ports_and_reclaim_only_old_readers(mo
 
 def _runner_with_real_maintenance(monkeypatch, paths):
     import time
-    from skyseed_v2.backend.bpf.runner import _RuntimeBinding
+    from skyseed_v2.backend.bpf.runner.deployment import _RunnerRuntimeBinding
     kernel = _Kernel(monkeypatch)
     with closing(_open_runner_artifact(paths[0])) as artifact:
         nodes = artifact.physical_world_projection.node_ids
-    bindings = {node: _RuntimeBinding(node, "service", "container", "name", "image", i + 100, i + 200, i + 300, "now")
+    bindings = {node: _RunnerRuntimeBinding(node, "service", "container", "name", "image", i + 100, i + 200, i + 300, "now")
                 for i, node in enumerate(nodes)}
-    monkeypatch.setattr(runner_module.BpfRunner, "_discover_runtime_bindings", lambda self, projection: bindings)
-    monkeypatch.setattr(runner_module.BpfRunner, "_record_resource_health_checkpoint", lambda *args: None)
+    monkeypatch.setattr(deployment_module._Deployment, "discover", lambda self, projection: bindings)
+    monkeypatch.setattr(runner_module.Runner, "_record_resource_health_checkpoint", lambda *args: None)
     monkeypatch.setattr(runner_module._PrivilegedHelper, "start", lambda self: None)
     monkeypatch.setattr(runner_module._PrivilegedHelper, "stop", lambda self: None)
     monkeypatch.setattr(runner_module._PrivilegedHelper, "execute", lambda self, action, request: kernel.execute(action, request))
     monotonic, sleep = time.monotonic, time.sleep
     monkeypatch.setattr(runner_module, "monotonic", lambda: monotonic() * 10)
     monkeypatch.setattr(runner_module, "sleep", lambda seconds: sleep(seconds / 10))
-    runner = runner_module.BpfRunner(compose_project_name="batches", runtime_artifact=paths[0], batch_capacity_factor=4)
+    runner = runner_module.Runner(compose_project_name="batches", runtime_artifact=paths[0], batch_capacity_factor=4)
     return runner, kernel
 
 
@@ -167,14 +169,121 @@ def test_automatic_runner_loads_two_successors_without_reset_or_duplicate_b0(mon
         runner.cleanup()
 
 
-def test_missing_delivery_fails_at_fixed_deadline_without_waiting(monkeypatch, deliveries):
+def test_missing_delivery_waits_and_pause_is_independent(monkeypatch, deliveries):
+    from threading import Thread
     runner, _ = _runner_with_real_maintenance(monkeypatch, deliveries[3])
+    errors = []
+    def run():
+        try:
+            runner.run()
+        except BaseException as error:
+            errors.append(error)
     try:
         runner.prepare()
-        with pytest.raises(RuntimeError, match="not ready by its activation deadline"):
-            runner.run()
-        assert runner._state == "failed"
+        thread = Thread(target=run)
+        thread.start()
+        _await(lambda: "material" in runner.status()["wait_reasons"])
         assert runner._active_count == 1
-        assert any(event["event"] == "batch_exhausted" for event in runner._events)
+        runner.pause()
+        _await(lambda: runner.status()["paused"])
+        runner.append_batch(deliveries[3][1])
+        _await(lambda: runner.status()["next_batch"] == "READY")
+        assert runner._active_count == 1
+        assert runner.status()["paused"]
+        runner.resume()
+        _await(lambda: runner._active_count == 2)
+        _await(lambda: "material" in runner.status()["wait_reasons"])
+        runner.resume()
+        assert runner.status()["waiting_for_material"]
+        runner.cancel_runtime()
+        thread.join()
+        assert not errors
+        assert runner._state == "prepared"
+        assert runner.status()["clock"]["shift_seconds"] > 0
     finally:
+        runner.cancel_runtime()
         runner.cleanup()
+
+
+def _await(predicate):
+    import time
+    end = time.monotonic() + 10  # Test failure bound only, never a production deadline.
+    while not predicate():
+        assert time.monotonic() < end, "fixture did not reach the expected state"
+        time.sleep(0.005)
+
+
+def test_preparation_may_finish_after_target(monkeypatch, deliveries):
+    from threading import Thread, Event
+    runner, _ = _runner_with_real_maintenance(monkeypatch, deliveries[3])
+    runner.prepare()
+    entered, release = Event(), Event()
+    original = runner._prepare_delivery
+    def delayed(*a, **kw):
+        entered.set()
+        release.wait()
+        return original(*a, **kw)
+    monkeypatch.setattr(runner, "_prepare_delivery", delayed)
+    errors = []
+    def run():
+        try:
+            runner.run()
+        except BaseException as error:
+            errors.append(error)
+    runner.append_batch(deliveries[3][1])
+    thread = Thread(target=run)
+    thread.start()
+    try:
+        assert entered.wait(5)
+        _await(lambda: "material" in runner.status()["wait_reasons"])
+        release.set()
+        _await(lambda: runner._active_count == 2)
+        ready = [event for event in runner._events if event["event"] == "batch_ready"]
+        assert ready[0]["readiness_margin_seconds"] < 0
+        assert runner._active_frontier.isoformat() == runner._batch_end.isoformat()
+    finally:
+        runner.cancel_runtime()
+        release.set()
+        thread.join()
+        runner.cleanup()
+    assert not errors
+
+
+def test_cancel_during_preparation_joins_owner_before_cleanup(monkeypatch, deliveries):
+    from threading import Thread, Event
+    runner, _ = _runner_with_real_maintenance(monkeypatch, deliveries[3])
+    runner.prepare()
+    entered, release, finished = Event(), Event(), Event()
+    original = runner._prepare_delivery
+    def delayed(*args, **kwargs):
+        entered.set()
+        release.wait()
+        try:
+            return original(*args, **kwargs)
+        finally:
+            finished.set()
+    monkeypatch.setattr(runner, "_prepare_delivery", delayed)
+    errors = []
+    def run():
+        try:
+            runner.run()
+        except BaseException as error:
+            errors.append(error)
+    runner.append_batch(deliveries[3][1])
+    thread = Thread(target=run)
+    thread.start()
+    try:
+        assert entered.wait(5)
+        assert runner.status()["next_batch"] == "PREPARING"
+        runner.cancel_runtime()
+        _await(lambda: runner._maintenance_stop)
+        assert thread.is_alive() and not finished.is_set()
+        assert runner._active_count == 1
+    finally:
+        runner.cancel_runtime()
+        release.set()
+        thread.join()
+        assert finished.is_set()
+        runner.cleanup()
+    assert not errors
+    assert runner._state == "cleaned"

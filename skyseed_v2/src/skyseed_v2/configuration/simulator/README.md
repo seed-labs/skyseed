@@ -1,85 +1,9 @@
-# Simulator configuration
+# Simulator geography configuration
 
-This package owns immutable Zone-layout declarations, their YAML loader, and
-the Simulator-specific `ZoneLayoutDefinitionLoadError`. It owns no runtime
-`Zone`/`ZoneLayout` and does not import Emulator configuration.
+Zone definitions belong to Simulator configuration, independently of Emulator
+network input. [zones](zones/README.md) defines rectangle layouts, YAML loading
+and deterministic equal-area-style band generation. Simulator materializes those
+values with an injected membership Model. A disabled layout is a deliberate option.
 
-## Local assembly / ownership map
-
-Legend: `-->` is the ordered configuration and creation handoff. Only
-`Simulator.create_physical_world(position_model=...)` materializes the runtime
-physical `PhysicalWorld` and its optional `ZoneLayout`.
-
-```mermaid
-flowchart LR
-    SOURCE["YAML / handwritten Zone definitions"] --> DEF["ZoneLayoutDefinition"]
-    DEF --> CREATE["Simulator.create_physical_world(position_model=...)"]
-    CREATE --> PHYSICAL_WORLD["PhysicalWorld"]
-    PHYSICAL_WORLD --> LAYOUT["ZoneLayout"]
-```
-
-Standalone public values expanded below are `ZoneDefinition`,
-`LatitudeLongitudeRectangleDefinition`, and
-`ZoneLayoutDefinitionLoadError`.
-
-## Detailed public class/member diagrams
-
-Legend: `A *-- B` means immutable declaration A is composed of B. The error is
-shown as a standalone public boundary.
-
-```mermaid
-classDiagram
-    direction LR
-    class ZoneLayoutDefinition {
-        <<immutable Zone-layout declaration>>
-        +zones
-        +allow_overlap
-    }
-    class ZoneDefinition {
-        <<immutable Zone declaration>>
-        +zone_id
-        +priority
-        +geometry
-    }
-    class LatitudeLongitudeRectangleDefinition {
-        <<immutable rectangle declaration>>
-        +south_latitude_deg
-        +north_latitude_deg
-        +west_longitude_deg
-        +east_longitude_deg
-    }
-    class ZoneLayoutDefinitionLoadError {
-        <<Zone YAML failure boundary>>
-    }
-    ZoneLayoutDefinition "1" *-- "1..*" ZoneDefinition : contains
-    ZoneDefinition "1" *-- "1" LatitudeLongitudeRectangleDefinition : geometry
-```
-
-| Diagram class | Public contract | Required public members |
-|---|---|---|
-| `LatitudeLongitudeRectangleDefinition` | `skyseed_v2.configuration.simulator.LatitudeLongitudeRectangleDefinition` | `south_latitude_deg`, `north_latitude_deg`, `west_longitude_deg`, `east_longitude_deg` |
-| `ZoneDefinition` | `skyseed_v2.configuration.simulator.ZoneDefinition` | `zone_id`, `priority`, `geometry` |
-| `ZoneLayoutDefinition` | `skyseed_v2.configuration.simulator.ZoneLayoutDefinition` | `zones`, `allow_overlap` |
-| `ZoneLayoutDefinitionLoadError` | `skyseed_v2.configuration.simulator.ZoneLayoutDefinitionLoadError` | — |
-
-## Entry points
-
-`zone.py` owns the declarations; `yaml.py` owns
-`load_zone_layout_definition()` and the Simulator-specific load error.
-
-## Dependencies
-
-This package depends on configuration parsing primitives only. `Simulator`
-consumes its declarations while creating `PhysicalWorld`; it does not depend on
-Emulator configuration.
-
-## Examples and tests
-
-The dynamic example supplies a Zone layout. `test_zone.py` covers declaration,
-YAML, creation, membership, and failure behavior.
-
-## Maintenance checklist
-
-When this package changes, update the local map and detailed diagram,
-PhysicalWorld/Zone and failure contracts, public imports, YAML fixtures, and Zone
-tests.
+[Inputs and scenes](../../../../docs/user-guides/inputs-and-scenes.md) shows file,
+generated and disabled layouts. Timeline and Model assembly live in Simulator.

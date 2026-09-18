@@ -9,7 +9,7 @@ from yaml import safe_load
 from yaml.nodes import MappingNode, Node, SequenceNode
 
 from skyseed_v2.emulator.entities import OrbitParameters
-from skyseed_v2.emulator.seedemu import SkyseedAutonomousSystem
+from skyseed_v2.emulator.seedemu import EmulatorAutonomousSystem
 
 
 METADATA_PREFIX = "org.seedsecuritylabs.seedemu.meta."
@@ -22,7 +22,7 @@ def compile_two_satellites(
 ):
     emulator = Emulator()
     base = Base()
-    satellite_as = SkyseedAutonomousSystem(65000)
+    satellite_as = EmulatorAutonomousSystem(65000)
     base.setAutonomousSystem(satellite_as)
     orbit = satellite_as.create_shell("shell-1").create_orbit(
         "orbit-1",

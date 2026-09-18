@@ -413,7 +413,7 @@ const timeline=document.getElementById('compiler-timeline'),global=document.getE
     return result | {"dimensions": dimensions, "linked_cursor": linked_cursor}
 
 
-def _observation(base: str, session: str, page: Path) -> dict[str, object]:
+def _performance(base: str, session: str, page: Path) -> dict[str, object]:
     _navigate(base, session, page)
     probe: dict[str, object] = {}
     for _ in range(20):
@@ -429,7 +429,7 @@ const canvas=document.getElementById('execution-timeline');return {x:canvas?.dat
         time.sleep(0.1)
     if not probe.get("x") or not probe.get("y"):
         raise AssertionError(
-            f"Observation timeline did not expose a selectable span: {probe}"
+            f"Performance timeline did not expose a selectable span: {probe}"
         )
     _click_first_canvas_point(
         base,
@@ -469,7 +469,7 @@ const canvas=document.getElementById('execution-timeline'),outer=document.getEle
         or result["errors"]
     ):
         raise AssertionError(
-            f"Observation browser mechanics failed: {result=} {zoom=}"
+            f"Performance browser mechanics failed: {result=} {zoom=}"
         )
     return result | {"zoom": zoom}
 
@@ -808,15 +808,15 @@ def run_commit_prep_browser_gate(
                 method="POST",
                 value={"width": 1600, "height": 1200},
             )
-            observation = _observation(
-                base, session, root / "observation/index.html"
+            observation = _performance(
+                base, session, root / "performance/index.html"
             )
             if (
                 (root / "orchestration-timing.json").is_file()
                 and observation["outerSpans"] < 1
             ):
                 raise AssertionError(
-                    "Observation omitted measured orchestration spans: "
+                    "Performance omitted measured orchestration spans: "
                     f"{observation}"
                 )
             result: dict[str, object] = {
@@ -831,7 +831,7 @@ def run_commit_prep_browser_gate(
                     base, session, root / "bpf-compiler/index.html"
                 ),
                 "zone": _generic(base, session, root / "zone/index.html", "Zone"),
-                "observation": observation,
+                "performance": observation,
             }
             for optional, phrase in (
                 ("runner", "Runner lifecycle"),

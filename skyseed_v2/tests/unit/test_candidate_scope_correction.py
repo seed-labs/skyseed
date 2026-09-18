@@ -1,9 +1,10 @@
 """Capacity policy and search scope do not redefine physical capabilities."""
+from tests._support import selection_state
 from dataclasses import replace
 from datetime import timedelta
 import pytest
 
-from skyseed_v2.simulator.planning import CoverageFirstGroundStationAccessPlanningModel, RetainFirstInterSatelliteConfiguration, RetainFirstInterSatelliteConnectionPlanningModel
+from skyseed_v2.simulator.planner import CoverageFirstGroundStationAccessPlanningModel, RetainFirstInterSatelliteConfiguration, RetainFirstInterSatelliteConnectionPlanningModel
 from skyseed_v2.simulator.physical import PhysicalLinkRequest
 from test_network_planner_semantic_core import _world, _satellite, _station, _ground_candidate, _planner, _observation, EPOCH
 
@@ -14,9 +15,9 @@ def test_explicit_station_capability_overrides_fallback_and_policy_is_separate(c
         stations=(replace(_station(), max_simultaneous_satellite_accesses=capacity),))
     candidates = tuple(_ground_candidate(stations[0], satellite) for satellite in satellites)
     model = CoverageFirstGroundStationAccessPlanningModel(default_ground_station_limit=4)
-    assert len(model.select_ground_station_accesses(world, candidates)) == (4 if capacity is None else capacity)
+    assert len(model.select_ground_station_accesses(world, candidates, state=selection_state())) == (4 if capacity is None else capacity)
     ceiling = CoverageFirstGroundStationAccessPlanningModel(default_ground_station_limit=4, ground_station_policy_limit=2)
-    assert len(ceiling.select_ground_station_accesses(world, candidates)) == 2
+    assert len(ceiling.select_ground_station_accesses(world, candidates, state=selection_state())) == 2
 
 
 @pytest.mark.parametrize('size', [1, 2, 3, 5])
@@ -38,13 +39,13 @@ def test_ground_search_expands_for_competition_and_keeps_reservations():
     model = CoverageFirstGroundStationAccessPlanningModel(default_ground_station_limit=4, initial_candidate_count=1)
     planner, _ = _planner(world, ground_station_model=model)
     try:
-        request = planner._candidate_search_request(PhysicalLinkRequest())
+        request = planner._candidate_search_request(PhysicalLinkRequest(), supports_ground_station_limits=True)
         observation = _observation(EPOCH, ground=(_ground_candidate(stations[0], satellites[0]),))
-        observation = replace(observation, work_counts=replace(observation.work_counts, ground_station_pairs_not_returned=3))
+        observation = replace(observation, ground_station_search_complete=False, work_counts=None)
         expanded = planner._expanded_candidate_request(request, observation)
         assert expanded.ground_station_candidate_limit == 2
         planner.observe(world.frame_at(EPOCH), observation)
-        next_request = planner._candidate_search_request(PhysicalLinkRequest())
+        next_request = planner._candidate_search_request(PhysicalLinkRequest(), supports_ground_station_limits=True)
         assert (stations[0].node_id, satellites[0].node_id) in next_request.retained_ground_station_pairs
     finally:
         planner.shutdown()

@@ -446,7 +446,7 @@ def test_external_ground_station_file_is_scoped_versioned_and_required(
     payload["skyseed_autonomous_systems"][0][
         "ground_stations_file"
     ] = "../outside.yaml"
-    with pytest.raises(StaticEmulatorConfigLoadError, match="example root"):
+    with pytest.raises(StaticEmulatorConfigLoadError, match="cannot read"):
         load_static_emulator_config(
             write_payload(tmp_path, payload, "outside-reference.yaml")
         )
@@ -495,8 +495,8 @@ def test_external_shell_file_fail_closed_contracts(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    with pytest.raises(StaticEmulatorConfigLoadError, match="selected_shell"):
-        load_static_emulator_config(write_payload(tmp_path, payload, "missing.yaml"))
+    loaded = load_static_emulator_config(write_payload(tmp_path, payload, "all.yaml"))
+    assert len(loaded.skyseed_autonomous_systems[0].shells) == len(shells)
 
     autonomous_system["selected_shell"] = "shell-a"
     duplicate = [shells[0], shells[0].copy()]
@@ -533,7 +533,7 @@ def test_external_shell_file_fail_closed_contracts(tmp_path: Path) -> None:
         load_static_emulator_config(write_payload(tmp_path, payload, "malformed.yaml"))
 
 
-@pytest.mark.parametrize("reference", ("../shells.yaml", "/tmp/shells.yaml"))
+@pytest.mark.parametrize("reference", ("/tmp/shells.yaml",))
 def test_external_shell_file_rejects_unscoped_paths(
     tmp_path: Path,
     reference: str,
@@ -544,7 +544,7 @@ def test_external_shell_file_rejects_unscoped_paths(
     autonomous_system["selected_shell"] = "shell-a"
     autonomous_system["shells_file"] = reference
 
-    with pytest.raises(StaticEmulatorConfigLoadError, match="example root"):
+    with pytest.raises(StaticEmulatorConfigLoadError, match="relative path"):
         load_static_emulator_config(write_payload(tmp_path, payload))
 
 
@@ -571,3 +571,20 @@ def test_sequence_and_mapping_order_do_not_change_the_result(tmp_path: Path) -> 
         write_payload(tmp_path, second_payload, "second.yaml")
     )
     assert first == second
+
+
+def test_relative_parent_data_loads_same_config_from_unrelated_cwd(tmp_path, monkeypatch):
+    inline = valid_payload()
+    expected = load_static_emulator_config(write_payload(tmp_path, inline, 'inline.yaml'))
+    payload = valid_payload()
+    system = payload['skyseed_autonomous_systems'][0]
+    data = tmp_path / 'data'
+    example = tmp_path / 'example'
+    data.mkdir()
+    example.mkdir()
+    for field, schema in (('shells', SHELLS_SCHEMA_VERSION), ('ground_stations', 'skyseed-ground-stations/v1')):
+        (data / (field + '.yaml')).write_text(safe_dump({'schema_version': schema, field: system.pop(field)}))
+        system[field + '_file'] = '../data/' + field + '.yaml'
+    source = write_payload(example, payload)
+    monkeypatch.chdir(tmp_path.parent)
+    assert load_static_emulator_config(source) == expected

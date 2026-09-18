@@ -1,11 +1,11 @@
-"""Expose Skyseed extensions of upstream SEED."""
+"""Expose SkySEED extensions of upstream SEED."""
 
-from .skyseed_autonomous_system import (
-    SkyseedAutonomousSystem,
+from skyseed_v2.emulator.seedemu.emulator_autonomous_system import (
+    EmulatorAutonomousSystem,
     get_skyseed_autonomous_systems,
 )
 
 __all__ = [
-    "SkyseedAutonomousSystem",
+    "EmulatorAutonomousSystem",
     "get_skyseed_autonomous_systems",
 ]

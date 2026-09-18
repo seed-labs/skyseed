@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from skyseed_v2.shared._execution_observation import _ExecutionObserver
+from skyseed_v2.experiment.output.observation import _ExecutionObserver
 
 
 def test_execution_observer_detaches_metadata_records_and_persists_jsonl(

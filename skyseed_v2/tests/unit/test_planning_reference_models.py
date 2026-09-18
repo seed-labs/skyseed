@@ -1,11 +1,12 @@
 from __future__ import annotations
+from tests._support import MODEL_TIMESTAMP
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
-import skyseed_v2.simulator._route_computation as route_computation
+import skyseed_v2.simulator.planner.routing._computation as route_computation
 from skyseed_v2.configuration.simulator import (
     LatitudeLongitudeRectangleDefinition,
     ZoneDefinition,
@@ -16,7 +17,6 @@ from skyseed_v2.simulator import (
     AccumulatedDeadbandParameterPlanningModel,
     CircularOrbitPositionModel,
     ConnectionParameterObservation,
-    DefaultCoordinationPolicy,
     EffectiveConnectionParameters,
     GatewayHopCountRoutePlanningModel,
     GroundStationRouteDemandTarget,
@@ -34,7 +34,7 @@ from skyseed_v2.simulator import (
     SimulationDefinition,
     SimulationTimeline,
     Simulator,
-    FrameBatchPlanningWindowPolicy,
+    PlannerConfiguration,
     UnreachableRouteOutcome,
     ZoneRouteDemandTarget,
     ZoneServiceAssignment,
@@ -207,11 +207,11 @@ def test_gateway_candidates_are_static_ordered_bounded_and_two_way() -> None:
         demands = model.create_route_demands(
             scenario.physical_world,
             (assignment,),
-        )
+         timestamp=MODEL_TIMESTAMP)
         assert demands is model.create_route_demands(
             scenario.physical_world,
             (assignment,),
-        )
+         timestamp=MODEL_TIMESTAMP)
         assert set(demands) == {
             RouteDemand(first_station, ZoneRouteDemandTarget("zone")),
             RouteDemand(second_station, ZoneRouteDemandTarget("zone")),
@@ -239,7 +239,7 @@ def test_gateway_candidates_are_static_ordered_bounded_and_two_way() -> None:
             (assignment,),
             demands,
             (),
-        )
+         timestamp=MODEL_TIMESTAMP)
         by_demand = {value.demand: value for value in outcomes.outcomes}
         assert by_demand[
             RouteDemand(first_station, ZoneRouteDemandTarget("zone"))
@@ -259,37 +259,36 @@ def test_gateway_candidates_are_static_ordered_bounded_and_two_way() -> None:
                 GroundStationRouteDemandTarget(second_station),
             )
         ].path == (second_satellite, second_station)
-        assert len(outcomes.transitions) == len(outcomes.outcomes) == 4
+        assert len(outcomes.outcomes) == 4
         repeated = model.plan_route_outcomes(
             scenario.physical_world,
             _connected_operational_graph(scenario),
             (assignment,),
             demands,
             outcomes.outcomes,
-        )
+         timestamp=MODEL_TIMESTAMP)
         assert repeated.outcomes == outcomes.outcomes
         assert all(a is b for a, b in zip(repeated.outcomes, outcomes.outcomes))
-        assert repeated.transitions == ()
         assert model._construction_work["route_request_objects_reused"] == 4
 
         changed_assignment_demands = model.create_route_demands(
             scenario.physical_world,
             (ZoneServiceAssignment("zone", first_satellite),),
-        )
+         timestamp=MODEL_TIMESTAMP)
         assert changed_assignment_demands is not demands
         changed = model.plan_route_outcomes(scenario.physical_world,
             _connected_operational_graph(scenario),
-            (ZoneServiceAssignment("zone", first_satellite),), changed_assignment_demands, outcomes.outcomes)
+            (ZoneServiceAssignment("zone", first_satellite),), changed_assignment_demands, outcomes.outcomes, timestamp=MODEL_TIMESTAMP)
         reference = GatewayHopCountRoutePlanningModel(gateway_candidate_count=2)
         try:
             expected = reference.plan_route_outcomes(scenario.physical_world,
                 _connected_operational_graph(scenario),
-                (ZoneServiceAssignment("zone", first_satellite),), changed_assignment_demands, outcomes.outcomes)
+                (ZoneServiceAssignment("zone", first_satellite),), changed_assignment_demands, outcomes.outcomes, timestamp=MODEL_TIMESTAMP)
             assert changed == expected
             removed = model.plan_route_outcomes(scenario.physical_world, (),
-                (ZoneServiceAssignment("zone", first_satellite),), changed_assignment_demands, changed.outcomes)
+                (ZoneServiceAssignment("zone", first_satellite),), changed_assignment_demands, changed.outcomes, timestamp=MODEL_TIMESTAMP)
             assert removed == reference.plan_route_outcomes(scenario.physical_world, (),
-                (ZoneServiceAssignment("zone", first_satellite),), changed_assignment_demands, expected.outcomes)
+                (ZoneServiceAssignment("zone", first_satellite),), changed_assignment_demands, expected.outcomes, timestamp=MODEL_TIMESTAMP)
         finally:
             reference.shutdown()
         assert {
@@ -303,7 +302,7 @@ def test_gateway_candidates_are_static_ordered_bounded_and_two_way() -> None:
             model.create_route_demands(
                 foreign.physical_world,
                 (ZoneServiceAssignment("zone", foreign.satellites[0]),),
-            )
+             timestamp=MODEL_TIMESTAMP)
     finally:
         model.shutdown()
 
@@ -320,7 +319,7 @@ def test_gateway_count_distance_and_explicit_unreachable_outcomes() -> None:
         tied_demands = tie_model.create_route_demands(
             tied.physical_world,
             (ZoneServiceAssignment("zone", tied.satellites[1]),),
-        )
+         timestamp=MODEL_TIMESTAMP)
         assert {
             demand.source
             for demand in tied_demands
@@ -329,7 +328,7 @@ def test_gateway_count_distance_and_explicit_unreachable_outcomes() -> None:
         assert distance_model.create_route_demands(
             tied.physical_world,
             (ZoneServiceAssignment("zone", tied.satellites[1]),),
-        ) == ()
+         timestamp=MODEL_TIMESTAMP) == ()
     finally:
         tie_model.shutdown()
         distance_model.shutdown()
@@ -343,7 +342,7 @@ def test_gateway_count_distance_and_explicit_unreachable_outcomes() -> None:
         demands = model.create_route_demands(
             scenario.physical_world,
             (assignment,),
-        )
+         timestamp=MODEL_TIMESTAMP)
         disconnected = (
             _operational_connection(
                 OperationalConnectionKind.INTER_SATELLITE,
@@ -362,11 +361,11 @@ def test_gateway_count_distance_and_explicit_unreachable_outcomes() -> None:
             (assignment,),
             demands,
             (),
-        )
+         timestamp=MODEL_TIMESTAMP)
         assert len(outcomes.outcomes) == 2
         assert all(
             isinstance(value, UnreachableRouteOutcome)
-            and value.reason is RouteUnreachableReason.NO_OPERATIONAL_PATH
+            and value.reason is RouteUnreachableReason.NO_ELIGIBLE_PATH
             for value in outcomes.outcomes
         )
 
@@ -374,7 +373,7 @@ def test_gateway_count_distance_and_explicit_unreachable_outcomes() -> None:
         unserved_demands = model.create_route_demands(
             scenario.physical_world,
             unserved_assignments,
-        )
+         timestamp=MODEL_TIMESTAMP)
         assert unserved_demands == (
             RouteDemand(first_station, ZoneRouteDemandTarget("zone")),
         )
@@ -384,7 +383,7 @@ def test_gateway_count_distance_and_explicit_unreachable_outcomes() -> None:
             unserved_assignments,
             unserved_demands,
             (),
-        )
+         timestamp=MODEL_TIMESTAMP)
         assert unserved.outcomes == (
             UnreachableRouteOutcome(
                 unserved_demands[0],
@@ -407,59 +406,33 @@ def test_gateway_routes_reuse_one_tree_for_a_shared_service_satellite(
         for zone_id in zone_ids
     )
     model = GatewayHopCountRoutePlanningModel(gateway_candidate_count=2)
-    original_ground = route_computation._required_ground_next_hops
-    original_zone = route_computation._required_zone_next_hops
-    calls = []
+    original_compute = route_computation._compute_indexed_route_jobs
+    jobs = []
 
-    def _ground(context, terminal, required_sources):
-        calls.append(("ground", terminal, required_sources))
-        return original_ground(context, terminal, required_sources)
+    def compute(payload_and_jobs):
+        jobs.extend(payload_and_jobs[1])
+        return original_compute(payload_and_jobs)
 
-    def _zone(context, terminal, required_sources):
-        calls.append(("zone", terminal, required_sources))
-        return original_zone(context, terminal, required_sources)
-
-    monkeypatch.setattr(
-        route_computation,
-        "_required_ground_next_hops",
-        _ground,
-    )
-    monkeypatch.setattr(
-        route_computation,
-        "_required_zone_next_hops",
-        _zone,
-    )
+    monkeypatch.setattr(route_computation, "_compute_indexed_route_jobs", compute)
     try:
         demands = model.create_route_demands(
             scenario.physical_world,
             assignments,
-        )
+         timestamp=MODEL_TIMESTAMP)
         result = model.plan_route_outcomes(
             scenario.physical_world,
             _connected_operational_graph(scenario),
             assignments,
             demands,
             (),
-        )
+         timestamp=MODEL_TIMESTAMP)
     finally:
         model.shutdown()
 
     assert len(demands) == len(result.outcomes) == 8
     assert all(isinstance(value, ReachableRouteOutcome) for value in result.outcomes)
-    context = model._routing_context
-    requests = tuple(route_computation._RoutePathRequest(i,
-        isinstance(d.target, GroundStationRouteDemandTarget), d.source,
-        d.target.ground_station_id if isinstance(d.target, GroundStationRouteDemandTarget)
-        else second_satellite) for i, d in enumerate(sorted(demands,
-            key=lambda d: (d.source.value, str(d.target)))))
-    engine = route_computation._GroupedRouteEngine()
-    try:
-        reference = engine.compute(context, requests, choice_resolvers=(_ground, _zone))
-        compact = engine.compute(context, requests)
-        assert compact == reference
-        assert len(calls) == 3
-    finally:
-        engine.shutdown()
+    assert len(jobs) == 3
+    assert sum(len(requests) for _, _, requests in jobs) == 8
     zone_paths = {
         (value.demand.source, value.demand.target.zone_id): value.path
         for value in result.outcomes
@@ -510,8 +483,8 @@ def test_relative_delay_accumulates_equals_rebases_and_handles_zero(values, expe
         result = model.plan_effective_parameters(START+timedelta(seconds=5*i),
             _parameter_observation(candidate), memory)
         actual.append(result.memory[0].effective.delay_us)
-        if i:
-            assert bool(result.parameter_updated_connections) == (actual[-1] != actual[-2])
+        assert result.connections[0].endpoint_a_to_b.delay_us == actual[-1]
+        assert result.connections[0].endpoint_a_to_b == result.connections[0].endpoint_b_to_a
         memory = result.memory
     assert actual == expected
 
@@ -525,10 +498,10 @@ def test_maximum_refresh_is_first_formal_sample_and_noop_updates_memory():
     refreshed = model.plan_effective_parameters(START+timedelta(seconds=120),
         _parameter_observation(109), before.memory)
     assert refreshed.memory[0].effective.delay_us == 109
-    assert refreshed.parameter_updated_connections == refreshed.connections
+    assert refreshed.connections != before.connections
     noop = model.plan_effective_parameters(START+timedelta(seconds=240),
         _parameter_observation(109), refreshed.memory)
-    assert not noop.parameter_updated_connections
+    assert noop.connections == refreshed.connections
     assert noop.memory[0].last_update == START+timedelta(seconds=240)
     assert noop.memory[0].effective.bandwidth_bps == 1_000_000
     assert noop.memory[0].effective.packet_loss_ppm == 20
@@ -538,11 +511,11 @@ def test_parameter_removal_and_reestablishment_reset_baseline():
     model = _parameter_model()
     first = model.plan_effective_parameters(START, _parameter_observation(100), ())
     removed = model.plan_effective_parameters(START+timedelta(seconds=5), (), first.memory)
-    assert removed.withdrawn_connection_ids == (PARAMETER_CONNECTION_ID,)
+    assert removed.connections == ()
     assert removed.memory == ()
     new = model.plan_effective_parameters(START+timedelta(seconds=10),
         _parameter_observation(103), removed.memory)
-    assert new.established_connections == new.connections
+    assert new.connections[0].connection_id == PARAMETER_CONNECTION_ID
     assert new.memory[0].effective.delay_us == 103
 
 
@@ -553,34 +526,9 @@ def test_relative_threshold_rejects_invalid_configuration(value):
 
 
 def test_frame_batch_policy_is_independent_of_sampling_cadence():
-    policy = FrameBatchPlanningWindowPolicy(frames_per_batch=32)
-    assert policy.validate_observation_interval(timedelta(seconds=7)) is None
+    policy = PlannerConfiguration(frames_per_batch=32, inter_satellite_acquisition_duration=timedelta(0), ground_station_acquisition_duration=timedelta(0))
+    assert policy.frames_per_batch == 32
+    assert not hasattr(policy, "observation_interval")
     for invalid in (0, -1, True, 1.5):
         with pytest.raises(ValueError):
-            FrameBatchPlanningWindowPolicy(frames_per_batch=invalid)
-    with pytest.raises(ValueError):
-        policy.validate_observation_interval(timedelta(0))
-
-
-def test_default_coordination_returns_only_caller_required_precedence() -> None:
-    connection = _operational_connection(
-        OperationalConnectionKind.GROUND_STATION_ACCESS,
-        PARAMETER_SATELLITE,
-        PARAMETER_STATION,
-    )
-    transition = PlanTransition(
-        START,
-        established_connections=(connection,),
-    )
-    events = semantic_event_references(transition)
-    by_kind = {value.kind: value for value in events}
-    required = (
-        SemanticEventPrecedence(
-            by_kind[SemanticEventKind.CONNECTION_ESTABLISH],
-            by_kind[SemanticEventKind.PARAMETER_READY],
-        ),
-    )
-    policy = DefaultCoordinationPolicy()
-
-    assert policy.coordinate(transition, events, required) is required
-    assert policy.coordinate(transition, events, ()) == ()
+            PlannerConfiguration(frames_per_batch=invalid, inter_satellite_acquisition_duration=timedelta(0), ground_station_acquisition_duration=timedelta(0))

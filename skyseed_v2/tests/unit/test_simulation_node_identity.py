@@ -7,13 +7,13 @@ import pytest
 
 import skyseed_v2
 from skyseed_v2.emulator.entities import (
-    GroundStation,
+    EmulatorGroundStation,
     GroundStationLocation,
-    Orbit,
+    EmulatorOrbit,
     OrbitParameters,
-    Satellite,
+    EmulatorSatellite,
 )
-from skyseed_v2.emulator_to_simulator import (
+from skyseed_v2.adapters.emulator_to_simulator import (
     create_ground_station_simulation_input,
     create_satellite_simulation_input,
 )
@@ -24,7 +24,7 @@ from skyseed_v2.simulator.input import (
     SimulatorStaticInput,
 )
 from skyseed_v2.emulator.seedemu import (
-    SkyseedAutonomousSystem,
+    EmulatorAutonomousSystem,
 )
 from seedemu.layers import Base
 
@@ -151,19 +151,19 @@ def test_input_generators_accept_only_the_data_needed_for_each_snapshot() -> Non
 
 
 def test_emulator_entities_do_not_hold_or_accept_node_id() -> None:
-    assert not hasattr(Satellite, "node_id")
-    assert not hasattr(GroundStation, "node_id")
-    assert "node_id" not in signature(Satellite).parameters
-    assert "node_id" not in signature(GroundStation).parameters
-    assert "node_id" not in signature(Orbit.create_satellite).parameters
+    assert not hasattr(EmulatorSatellite, "node_id")
+    assert not hasattr(EmulatorGroundStation, "node_id")
+    assert "node_id" not in signature(EmulatorSatellite).parameters
+    assert "node_id" not in signature(EmulatorGroundStation).parameters
+    assert "node_id" not in signature(EmulatorOrbit.create_satellite).parameters
     assert "node_id" not in signature(
-        SkyseedAutonomousSystem.create_ground_station
+        EmulatorAutonomousSystem.create_ground_station
     ).parameters
 
 
 def test_existing_owners_provide_narrow_lookup_without_a_global_index() -> None:
     base = Base()
-    autonomous_system = SkyseedAutonomousSystem(65001)
+    autonomous_system = EmulatorAutonomousSystem(65001)
     base.setAutonomousSystem(autonomous_system)
     shell = autonomous_system.create_shell("shell-1")
     orbit = shell.create_orbit(

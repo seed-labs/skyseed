@@ -5,8 +5,8 @@ from __future__ import annotations
 from html import escape
 from typing import Any
 
-from tools._html import standalone_page, json_for_script
-from tools._shell_display import _SHELL_CONTROLS, _SHELL_SCRIPT
+from tools._presentation.html import standalone_page, json_for_script
+from tools._presentation.shell_display import _SHELL_CONTROLS, _SHELL_SCRIPT
 from ._spatial_renderer import _SPATIAL_BODY, _traffic_spatial_script
 
 
@@ -40,7 +40,7 @@ code {{ overflow-wrap:anywhere; }}
 </style>
 <section class="card"><span class="status {escape(str(overview.get('qualification_status') or ('PASS' if overview['telemetry_complete'] else 'WARN')))}">{escape(str(overview.get('qualification_status') or ('COMPLETE' if overview['telemetry_complete'] else 'INCOMPLETE')))}</span>
   <h2>Physical evidence + planned intent + runtime telemetry</h2>
-  <p>Formal PhysicalFrame positions provide the physical presentation. Self-contained Plan replay provides explicit planned reachability. Compiled evidence provides activation and lineage. Packet/Runner records provide runtime facts.</p>
+  <p>Formal PhysicalPositionSnapshot positions provide the physical presentation. Self-contained Plan replay provides explicit planned reachability. Compiled evidence provides activation and lineage. Packet/Runner records provide runtime facts.</p>
   <p>Telemetry evidence: {'complete' if overview['telemetry_complete'] else 'incomplete'}. Planned unreachability is informational and requires explicit planned evidence. Handover disturbance requires an actual relevant transition and bounded recovery; other reachable loss remains unexplained.</p>
   <pre>PhysicalWorld fingerprint: {escape(str(overview['physical_world_fingerprint']))}\nCompiler evidence: {escape(str(overview['compiler_evidence']))}\nclassification counts: {escape(str(overview['classification_counts']))}</pre>
 </section>
@@ -57,7 +57,7 @@ code {{ overflow-wrap:anywhere; }}
   <div class="scroll"><table><thead><tr><th>Select transaction</th><th>Observed time</th><th>Formal boundary</th><th>Observed</th><th>Classification</th></tr></thead><tbody id="traffic-transactions"></tbody></table></div>
 </details></section>
 <section class="card"><h2>Formal planning and physical evidence coverage</h2>
-  <p>{inventory['physical_frames']} PhysicalFrames align exactly with {len(data['planned_evidence']['formal_transitions'])} planned boundaries.</p>
+  <p>{inventory['physical_frames']} PhysicalPositionSnapshots align exactly with {len(data['planned_evidence']['formal_transitions'])} planned boundaries.</p>
   <div class="scroll"><table><thead><tr><th>Timestamp</th><th>Plan</th><th>Operational connections</th><th>Zones served / unserved</th><th>Routes reachable / unreachable</th><th>State fingerprint</th></tr></thead><tbody>{boundary_rows}</tbody></table></div>
 </section>
 <section class="card"><h2>Probe qualification</h2>{qualification_body}</section>

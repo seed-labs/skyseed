@@ -16,7 +16,7 @@ from skyseed_v2.configuration.emulator.ground_station import (
 )
 from skyseed_v2.emulator.entities import GroundStationLocation, OrbitParameters
 from skyseed_v2.emulator.seedemu import (
-    SkyseedAutonomousSystem,
+    EmulatorAutonomousSystem,
     get_skyseed_autonomous_systems,
 )
 
@@ -64,8 +64,8 @@ def create_static_emulator(config: StaticEmulatorConfig) -> Emulator:
 def _create_skyseed_autonomous_system(
     base: Base,
     config: SkyseedAutonomousSystemConfig,
-) -> SkyseedAutonomousSystem:
-    autonomous_system = SkyseedAutonomousSystem(config.asn)
+) -> EmulatorAutonomousSystem:
+    autonomous_system = EmulatorAutonomousSystem(config.asn)
     autonomous_system.setIbgpMode("disabled")
     base.setAutonomousSystem(autonomous_system)
 
@@ -160,7 +160,7 @@ def _add_routing_layers(
         emulator.addLayer(layer)
 
 def _expand_orbit_inputs(config: ShellConfig) -> tuple[_OrbitInput, ...]:
-    """Expand one immutable Shell Config without creating an entity."""
+    """Expand one immutable EmulatorShell Config without creating an entity."""
 
     if config.generated_orbit_layout is None:
         return tuple(

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from skyseed_v2.simulator import PlannerConfiguration
+
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
@@ -11,12 +13,9 @@ import shutil
 
 import pytest
 
-from examples.complete_static_emulator.emu import build_emulator
-from examples.complete_static_emulator.simu import (
-    create_complete_static_simulator,
-    create_complete_static_planner,
-    run_complete_static_chain,
-)
+from examples.Sky00_tiny_network.tiny_network import build_emulator
+from examples.Sky00_tiny_network.tiny_network import create_simulator as create_complete_static_simulator
+from tests._support import drain_simulator as run_complete_static_chain
 from tools.bpf_compiler import write_bpf_compiler_tool
 from tools.planner import collect_planner_data
 from tools.planner.reader import read_planner_history
@@ -29,7 +28,7 @@ from tools.traffic.reader import (
     read_traffic_replay,
 )
 from tools.traffic.renderer import render_traffic_replay_page
-from skyseed_v2.experiment.traffic.probe_plan import (
+from tools.traffic.active.probe_plan import (
     TrafficProbePlanBuilder,
     write_traffic_probe_plan,
 )
@@ -40,24 +39,45 @@ TOOL_SOURCES = tuple(sorted((PROJECT_ROOT / "tools/traffic").glob("*.py")))
 START_AT = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 
+def test_packet_alignment_uses_wait_and_resume_clock_segments(evidence_set, tmp_path):
+    from tools.traffic.reader import _read_telemetry
+    rows = [json.loads(line) for line in evidence_set["telemetry"].read_text().splitlines()]
+    anchor = next(row for row in rows if row["record_type"] == "simulation_clock_anchor")
+    origin = anchor["monotonic_origin_ns"]
+    hold = {**anchor, "effective_monotonic_ns": origin + 1_000_000_000,
+            "held_since": (origin + 1_000_000_000) / 1e9,
+            "active_frontier": anchor["nominal_origin"], "revision": 0, "action": "hold"}
+    resume = {**anchor, "effective_monotonic_ns": origin + 2_500_000_000,
+              "monotonic_origin_ns": origin + 1_500_000_000,
+              "held_since": None, "revision": 1, "action": "resume"}
+    rows.extend((hold, resume))
+    path = tmp_path / "clock-segments.jsonl"
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    packets = _read_telemetry(path)["packets"]
+    assert packets[0]["logical_clock_held"]
+    assert packets[0]["simulation_timestamp"] == anchor["nominal_origin"]
+    assert packets[-1]["clock_revision"] == 1
+    assert packets[-1]["simulation_timestamp"] == (START_AT + timedelta(seconds=1.5)).isoformat()
+
+
 @pytest.fixture(scope="module")
 def evidence_set(tmp_path_factory):
     root = tmp_path_factory.mktemp("traffic-tool")
     history = root / "history"
     simulator = create_complete_static_simulator(build_emulator())
     # This focused lineage fixture deliberately crosses a batch boundary.
-    planner = create_complete_static_planner(simulator)
-    planner._frames_per_batch = 3
+    planner = simulator.get_planner()
+    planner._configuration = PlannerConfiguration(frames_per_batch=3, inter_satellite_acquisition_duration=timedelta(0), ground_station_acquisition_duration=timedelta(0))
     plans, realizations, _ = run_complete_static_chain(
         simulator, planner=planner, evidence_path=history
     )
     compiler_output = root / "compiler"
     write_bpf_compiler_tool(plans, realizations, compiler_output)
-    evidence = read_planner_history(history / "planning.jsonl.gz")
+    evidence = read_planner_history(history / "planner/planning.jsonl.gz")
     planner_data = collect_planner_data(evidence)
     telemetry = _telemetry(
         root / "traffic-telemetry.jsonl",
-        history / "physical-frames.jsonl",
+        history / "physical-world/physical-frames.jsonl",
         planner_data,
         json.loads(
             (compiler_output / "bpf-compiler-inspection.json").read_text()
@@ -66,10 +86,10 @@ def evidence_set(tmp_path_factory):
     return {
         "root": root,
         "telemetry": telemetry,
-        "frames": history / "physical-frames.jsonl",
-        "planning": history / "planning.jsonl.gz",
+        "frames": history / "physical-world/physical-frames.jsonl",
+        "planning": history / "planner/planning.jsonl.gz",
         "compiler_json": compiler_output / "bpf-compiler-inspection.json",
-        "compiler_jsonl": history / "compiler.jsonl",
+        "compiler_jsonl": history / "compiler/compiler.jsonl",
         "plans": plans,
         "realizations": realizations,
     }
@@ -405,6 +425,22 @@ def _read_observation(evidence_set) -> TrafficReplayRead:
     )
 
 
+def test_compiler_history_preserves_zone_route_association(evidence_set) -> None:
+    def collect(compiler):
+        return collect_traffic_replay_data(
+            evidence_set["telemetry"],
+            evidence_set["frames"],
+            evidence_set["planning"],
+            evidence_set[compiler],
+        )
+
+    inspection = collect("compiler_json")
+    history = collect("compiler_jsonl")
+    assert inspection["inventory"]["planned_reachable_transactions"] > 0
+    assert history["transactions"] == inspection["transactions"]
+    assert history["inventory"] == inspection["inventory"]
+
+
 def test_ping_pairing_separates_reverse_flows_with_reused_icmp_identity() -> None:
     def packet(
         timestamp: int, source: str, destination: str, icmp_type: int
@@ -448,7 +484,7 @@ def test_ping_pairing_separates_reverse_flows_with_reused_icmp_identity() -> Non
 def test_replay_uses_physical_frames_and_explicit_planned_route_truth(
     evidence_set, monkeypatch,
 ) -> None:
-    from skyseed_v2.simulator.planning import values
+    from skyseed_v2.simulator.planner import values
     from tools.traffic import reader
     original = values.apply_plan_transition
     replayed = []
@@ -485,7 +521,7 @@ def test_replay_uses_physical_frames_and_explicit_planned_route_truth(
     }
 
 
-def test_compact_compiler_history_retains_lineage_without_inventing_zone_prefix(
+def test_compact_compiler_history_retains_lineage_and_recorded_zone_prefixes(
     evidence_set,
 ) -> None:
     data = collect_traffic_replay_data(
@@ -498,8 +534,8 @@ def test_compact_compiler_history_retains_lineage_without_inventing_zone_prefix(
         "compact-producer-lineage"
     )
     assert data["transactions"][0]["planned_reachability"] == "reachable"
-    assert data["transactions"][1]["planned_reachability"] == "unknown"
-    assert data["transactions"][1]["classification"] == "unclassified"
+    assert data["transactions"][1]["planned_reachability"] == "unreachable"
+    assert data["transactions"][1]["classification"] == "expected-unreachable"
 
 
 def test_compact_compiler_inspection_format_four_is_explicitly_supported(
@@ -544,10 +580,10 @@ def test_reader_rejects_physical_frame_coverage_drift(
 ) -> None:
     history = Path(
         shutil.copytree(
-            evidence_set["frames"].parent, tmp_path / "corrupt-history"
+            evidence_set["frames"].parent.parent, tmp_path / "corrupt-history"
         )
     )
-    corrupt = history / "physical-frames.jsonl"
+    corrupt = history / "physical-world/physical-frames.jsonl"
     rows = [
         json.loads(line)
         for line in corrupt.read_text().splitlines()
@@ -560,7 +596,7 @@ def test_reader_rejects_physical_frame_coverage_drift(
         ),
         encoding="utf-8",
     )
-    manifest_path = history / "domain-history-manifest.json"
+    manifest_path = history / "experiment/domain-history-manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     payload = corrupt.read_bytes()
     manifest["streams"]["physical_frames"].update(
@@ -578,7 +614,7 @@ def test_reader_rejects_physical_frame_coverage_drift(
         collect_traffic_replay_data(
             evidence_set["telemetry"],
             corrupt,
-            history / "planning.jsonl.gz",
+            history / "planner/planning.jsonl.gz",
             evidence_set["compiler_json"],
         )
 
@@ -588,14 +624,14 @@ def test_replay_rejects_mixed_domain_history_roots(
 ) -> None:
     copied = Path(
         shutil.copytree(
-            evidence_set["frames"].parent, tmp_path / "other-history"
+            evidence_set["frames"].parent.parent, tmp_path / "other-history"
         )
     )
 
     with pytest.raises(ValueError, match="one sealed domain-history root"):
         collect_traffic_replay_data(
             evidence_set["telemetry"],
-            copied / "physical-frames.jsonl",
+            copied / "physical-world/physical-frames.jsonl",
             evidence_set["planning"],
             evidence_set["compiler_json"],
         )
@@ -1425,7 +1461,7 @@ def test_qualification_inputs_project_plan_execution_and_runner_evidence(
         {
             "record_type": "history_header",
             "format_version": 2,
-            "owner": "BpfRunner",
+            "owner": "Runner",
             "capture": "bounded-nonblocking",
         },
         *(
@@ -1588,7 +1624,7 @@ def test_direct_collection_reuses_reader_replay_with_identical_projection(eviden
 
 
 def test_json_stream_preserves_bytes_and_previous_file_on_failure(tmp_path):
-    from tools._html import _write_compact_json, write_json
+    from tools._presentation.html import _write_compact_json, write_json
     path = tmp_path / "evidence.json"
     data = {"多语言": [1, {"ordered": "yes", "missing": None}], "empty": ()}
     expected = json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
@@ -1667,7 +1703,7 @@ def test_browser_data_is_lazy_and_transaction_controls_work_without_a_browser(tm
     import os
     import shutil
     import subprocess
-    from tools._shell_display import _SHELL_SCRIPT
+    from tools._presentation.shell_display import _SHELL_SCRIPT
     from tools.traffic._spatial import _write_spatial_assets, _browser_index
     from tools.traffic._spatial_renderer import _traffic_spatial_script
     node = os.environ.get('SKYSEED_TEST_NODE') or shutil.which('node')

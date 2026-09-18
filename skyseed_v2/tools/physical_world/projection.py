@@ -5,7 +5,6 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
-from .display_analysis import add_physical_world_display_analysis
 from .reader import PhysicalWorldRead
 from tools._inspection_evidence import PhysicalLinkInspectionIndex
 
@@ -35,7 +34,7 @@ def _project_owned_snapshot(
     timestamps = tuple(value["timestamp"] for value in frames)
     if candidate_index is not None and candidate_index.timestamps != timestamps:
         raise ValueError(
-            "physical-link inspection and PhysicalFrame timestamps differ"
+            "physical-link inspection and PhysicalPositionSnapshot timestamps differ"
         )
     if candidate_index is None:
         node_ids = tuple(
@@ -108,7 +107,7 @@ def _project_owned_snapshot(
             "operational, routed, compiled, or realized."
         ),
         "history_limit": (
-            "Only formal PhysicalFrames sealed in the supplied history are "
+            "Only formal PhysicalPositionSnapshots sealed in the supplied history are "
             "shown. Exact candidate identities live in per-frame Tool chunks; "
             "the browser loads only the selected timestamp and draws only the "
             "selected entity's adjacency."
@@ -118,3 +117,14 @@ def _project_owned_snapshot(
 
 
 __all__ = ["project_physical_world_data"]
+
+
+def add_physical_world_display_analysis(data: dict[str, object]) -> None:
+    data["display_notes"] = {
+        "orbit": "轨道图显示静态轨道平面，不表示任一时刻的卫星位置。",
+        "earth_radius": (
+            "Tool 私有球面显示使用 IUGG 平均 Earth 半径 6371.0088 km，"
+            "把正式 altitude_km 按比例映射为轨道环半径；不属于 "
+            "Simulator 轨道传播合同。"
+        ),
+    }

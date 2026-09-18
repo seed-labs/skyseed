@@ -1,4 +1,4 @@
-"""Define a static Satellite entity with SEED Node capability."""
+"""Define a static EmulatorSatellite entity with SEED Node capability."""
 
 from __future__ import annotations
 
@@ -12,11 +12,11 @@ from skyseed_v2.shared.identifier import validate_identifier
 from .validation import _validate_angle
 
 
-class Satellite(ExtensionNode):
-    """Represent one Satellite and the same instance's SEED Node capability.
+class EmulatorSatellite(ExtensionNode):
+    """Represent one EmulatorSatellite and the same instance's SEED Node capability.
 
     Layer: approved Emulator entity plus SEED capability.
-    `Orbit.create_satellite` creates it; its Orbit/AS, SEED lifecycle, Simulator
+    `EmulatorOrbit.create_satellite` creates it; its EmulatorOrbit/AS, SEED lifecycle, Simulator
     input generation and the standard SEED compiler use it. It is not a Config,
     container or runtime topology state. It is root public because it is an
     approved user-visible entity. Its optional simultaneous-ISL maximum is a

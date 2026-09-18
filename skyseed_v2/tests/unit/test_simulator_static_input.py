@@ -165,7 +165,7 @@ def test_static_input_contains_only_logical_static_values() -> None:
         "registry",
         "compiler",
         "docker",
-        "compose",
+        "deployment",
         "container",
         "namespace",
     ):

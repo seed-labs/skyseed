@@ -1,15 +1,15 @@
 """Expose static Emulator entities and their bound value objects."""
 
-from .ground_station import GroundStation, GroundStationLocation
-from .orbit import Orbit, OrbitParameters
-from .satellite import Satellite
-from .shell import Shell
+from .ground_station import EmulatorGroundStation, GroundStationLocation
+from .orbit import EmulatorOrbit, OrbitParameters
+from .satellite import EmulatorSatellite
+from .shell import EmulatorShell
 
 __all__ = [
-    "GroundStation",
+    "EmulatorGroundStation",
     "GroundStationLocation",
-    "Orbit",
+    "EmulatorOrbit",
     "OrbitParameters",
-    "Satellite",
-    "Shell",
+    "EmulatorSatellite",
+    "EmulatorShell",
 ]

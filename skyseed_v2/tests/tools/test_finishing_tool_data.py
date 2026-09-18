@@ -12,7 +12,7 @@ from tools.traffic.export import _request_timestamps, write_traffic_export
 from tools.traffic._spatial import _observed_steps, _browser_index, _write_spatial_assets
 from tools.planner.projection import _route_activity
 from tools.planner._route_display import _ROUTE_SCRIPT
-from tools._shell_display import _SHELL_SCRIPT
+from tools._presentation.shell_display import _SHELL_SCRIPT
 
 
 def test_export_associates_episode_segment_and_sequence_without_guessing(tmp_path):
@@ -32,7 +32,7 @@ def test_export_associates_episode_segment_and_sequence_without_guessing(tmp_pat
     assert times['b', 1, 7].endswith('09+00:00')
     assert all(times['a', 1, n] is None for n in (8, 9, 10))
     assert times.get(('a', 1, 11)) is None
-    source = tmp_path / 'source/inspection/traffic'; source.mkdir(parents=True)
+    source = tmp_path / 'source/visualizations/traffic'; source.mkdir(parents=True)
     cases = [{'segment_index': segment, 'sequence': seq, 'classification': 'unclassified'}
              for segment, seq in ((1, 7), (2, 7), (1, 8), (1, 9), (1, 10), (1, 11))]
     (source/'traffic-replay.json').write_text(json.dumps({'transactions': transactions,

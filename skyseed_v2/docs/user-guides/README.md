@@ -1,9 +1,9 @@
-# User guides
+# Use SkySEED
 
-Operational guidance:
+1. [Install and generate](getting-started.md), with [Linux execution requirements](linux-host.md) and [scale/resource reference](scale-and-resources.md).
+2. [Construct entities and Zones](inputs-and-scenes.md).
+3. [Replace Models](model-extension.md).
+4. [Generate, continue and control execution](computation-and-controls.md).
+5. [Find results and browse Tools](outputs-and-tools.md).
 
-- [getting started](getting-started.md)
-- [Inspection Tools](inspection-tools.md)
-
-Architecture contracts are intentionally kept in `../codex-reference/`.
-Implementation state is recorded only in [`CURRENT.md`](../CURRENT.md).
+The [example index](../../examples/README.md) identifies each teaching purpose.

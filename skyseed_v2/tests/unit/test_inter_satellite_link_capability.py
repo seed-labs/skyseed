@@ -17,7 +17,7 @@ from skyseed_v2.configuration.emulator import (
 )
 from skyseed_v2.emulator import create_static_emulator
 from skyseed_v2.emulator.seedemu import get_skyseed_autonomous_systems
-from skyseed_v2.emulator_to_simulator import create_simulator_static_input
+from skyseed_v2.adapters.emulator_to_simulator import create_simulator_static_input
 from skyseed_v2.shared import NodeId
 from skyseed_v2.simulator import (
     InterSatelliteLinkCapability,
@@ -194,12 +194,14 @@ def test_static_input_rejects_invalid_isl_capability_before_physical_world() -> 
 def test_canonical_starlink_s3_materializes_maximum_four() -> None:
     scenario = (
         Path(__file__).resolve().parents[2]
-        / "examples"
-        / "starlink_gen1_satellite_internet"
+        / "data" / "starlink"
         / "scenario.yaml"
     )
     config = load_static_emulator_config(scenario)
-    selected_shell = config.skyseed_autonomous_systems[0].shells[0]
+    from dataclasses import replace
+    system, = config.skyseed_autonomous_systems
+    selected_shell, = (shell for shell in system.shells if shell.shell_id == "S3")
+    config = replace(config, skyseed_autonomous_systems=(replace(system, shells=(selected_shell,)),))
     configured_satellites = tuple(
         satellite
         for orbit in selected_shell.explicit_orbits

@@ -2,14 +2,15 @@
 from __future__ import annotations
 
 import struct
+from skyseed_v2.backend.bpf.runner.privileged_runtime_command import _ip_key
 
 import pytest
 
-from skyseed_v2.backend.bpf._runner import privileged_runtime_command as command
+from skyseed_v2.backend.bpf.runner import bpf as command
 
 
 def _execute_program(maps, *, ingress=11, destination="198.18.0.1"):
-    code = command._tc_program(10, 11, 12, 13, 14)
+    code = command._tc_program(10, 11, 12, 13, 14, generation_versions_map=15)
     memory = {}
     def write(address, value, size):
         for i, byte in enumerate(int(value).to_bytes(size, "little", signed=False)):
@@ -20,7 +21,7 @@ def _execute_program(maps, *, ingress=11, destination="198.18.0.1"):
     registers[1], registers[10] = 1000, 10000
     write(1076, 2000, 4); write(1080, 2034, 4); write(1040, ingress, 4)
     write(2012, 0x0008, 2)
-    write(2030, command._ip_key(destination), 4)
+    write(2030, _ip_key(destination), 4)
     pc = 0
     lookups = []
     while pc < len(code) // 8:
@@ -68,10 +69,10 @@ def _execute_program(maps, *, ingress=11, destination="198.18.0.1"):
 
 
 def _maps():
-    destination = command._ip_key("198.18.0.1")
+    destination = _ip_key("198.18.0.1")
     return {10: {0: 0}, 11: {(0, 3): 1, (1, 3): 1},
             12: {(0, destination): 1, (1, destination): 2},
-            13: {11: 3}, 14: {1: 21, 2: 22}}
+            13: {11: 3}, 14: {1: 21, 2: 22}, 15: {0: 0, 1: 1}}
 
 
 def test_future_entries_have_no_visibility_until_active_generation_commit():
@@ -81,7 +82,7 @@ def test_future_entries_have_no_visibility_until_active_generation_commit():
     assert _execute_program(maps)[0] == ("redirect", 22)
 
 
-@pytest.mark.parametrize("missing", [10, 11, 12, 13, 14])
+@pytest.mark.parametrize("missing", [10, 11, 12, 13, 14, 15])
 def test_required_generation_link_route_or_live_binding_absence_drops(missing):
     maps = _maps()
     maps[missing].clear()
@@ -90,7 +91,7 @@ def test_required_generation_link_route_or_live_binding_absence_drops(missing):
 
 def test_logical_local_route_zero_preserves_pass_without_egress_binding():
     maps = _maps()
-    maps[12][(0, command._ip_key("198.18.0.1"))] = 0
+    maps[12][(0, _ip_key("198.18.0.1"))] = 0
     maps[14].clear()
     result, lookups = _execute_program(maps)
     assert result == ("action", command._TC_ACT_OK)

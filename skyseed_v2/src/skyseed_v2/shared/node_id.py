@@ -1,4 +1,4 @@
-"""Define stable logical node identity shared across Skyseed layers."""
+"""Define stable logical node identity shared across SkySEED layers."""
 
 from __future__ import annotations
 

@@ -20,7 +20,7 @@ def test_privileged_kernel_accepts_instrumented_sched_cls_program(continued) -> 
     script = r"""
 import json
 import os
-from skyseed_v2.backend.bpf._runner.privileged_runtime_command import (
+from skyseed_v2.backend.bpf.runner.bpf import (
     _BPF_MAP_TYPE_ARRAY,
     _BPF_MAP_TYPE_RINGBUF,
     _create_map,

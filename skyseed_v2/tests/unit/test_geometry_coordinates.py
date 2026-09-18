@@ -143,10 +143,12 @@ def test_production_has_one_elevation_formula_and_no_model_copy() -> None:
         / "src"
         / "skyseed_v2"
         / "simulator"
+        / "physical"
         / "models"
-        / "_geometric_physical.py"
+        / "links"
+        / "_batched_geometry.py"
     ).read_text(encoding="utf-8")
     assert "def _local_up(" not in physical_core_source
     assert "def _elevation_deg_with_distance(" not in physical_core_source
-    assert "_elevation_deg_from_local_up_and_distance(" in physical_core_source
+    assert "_elevation_degrees_array(" in physical_core_source
     assert "_wgs84_local_up_unit_vector(" in physical_core_source

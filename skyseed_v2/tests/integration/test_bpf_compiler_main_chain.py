@@ -2,18 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from examples.complete_static_emulator.emu import build_emulator
-from examples.complete_static_emulator.simu import (
-    create_complete_static_simulator,
-    run_complete_static_chain,
-)
-from examples.mini_satellite_internet.simu import (
-    create_mini_satellite_internet_producer,
-    drain_mini_satellite_internet,
-)
+from examples.Sky00_tiny_network.tiny_network import build_emulator
+from examples.Sky00_tiny_network.tiny_network import create_simulator as create_complete_static_simulator
+from tests._support import drain_simulator as run_complete_static_chain
+from tests.fixtures import small_network
+from tests._support import drain_simulator
 from skyseed_v2.backend.bpf import compile_bpf
-from skyseed_v2.backend.bpf.compiled_realization import _ZoneEdgePhase
-from skyseed_v2.simulator.planning import plan_from_data, plan_to_data
+from skyseed_v2.backend.bpf.execution_materials.actions import _ZoneEdgePhase
+from skyseed_v2.simulator.planner import plan_from_data, plan_to_data
 
 
 def test_complete_chain_compiles_detached_self_contained_plans() -> None:
@@ -38,13 +34,9 @@ def test_complete_chain_compiles_detached_self_contained_plans() -> None:
     )
 
 
-def test_mini_chain_splits_zone_handover_around_route_publication() -> None:
-    simulator, producer = create_mini_satellite_internet_producer(
-        Path("examples/mini_satellite_internet")
-    )
-    plans, realizations, snapshot = drain_mini_satellite_internet(
-        simulator, producer
-    )
+def test_small_chain_splits_zone_handover_around_route_publication() -> None:
+    simulator = small_network.create_simulator(small_network.build_emulator())
+    plans, realizations, snapshot = drain_simulator(simulator)
     zone_intents = tuple(
         value
         for realization in realizations

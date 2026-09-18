@@ -1,4 +1,4 @@
-"""Integration contracts for the static GroundStation slice."""
+"""Integration contracts for the static EmulatorGroundStation slice."""
 
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,10 +10,10 @@ from yaml import compose as compose_yaml
 from yaml import safe_load
 from yaml.nodes import MappingNode, Node, SequenceNode
 
-from skyseed_v2.emulator_to_simulator import create_ground_station_simulation_input
-from skyseed_v2.emulator.entities import GroundStation, GroundStationLocation, OrbitParameters
+from skyseed_v2.adapters.emulator_to_simulator import create_ground_station_simulation_input
+from skyseed_v2.emulator.entities import EmulatorGroundStation, GroundStationLocation, OrbitParameters
 from skyseed_v2.shared import NodeId
-from skyseed_v2.emulator.seedemu import SkyseedAutonomousSystem
+from skyseed_v2.emulator.seedemu import EmulatorAutonomousSystem
 from skyseed_v2.simulator.input import (
     GroundStationSimulationInput,
 )
@@ -24,7 +24,7 @@ def build_rendered_ground_scenario(*, operator: str | None = "Skyseed"):
     base = Base()
     base.createInternetExchange(100, create_rs=False)
 
-    skyseed_as = SkyseedAutonomousSystem(65001)
+    skyseed_as = EmulatorAutonomousSystem(65001)
     skyseed_as.setIbgpMode("disabled")
     base.setAutonomousSystem(skyseed_as)
     orbit = skyseed_as.create_shell("shell-1").create_orbit(
@@ -80,7 +80,7 @@ def ground_station_service(compose: dict) -> tuple[str, dict]:
             "org.seedsecuritylabs.seedemu.meta.skyseed.entity_type"
         ) == "GroundStation":
             return name, service
-    raise AssertionError("GroundStation service is missing")
+    raise AssertionError("EmulatorGroundStation service is missing")
 
 
 def assert_no_duplicate_yaml_keys(node: Node, path: str = "$") -> None:
@@ -119,7 +119,7 @@ def test_ground_station_uses_one_standard_rnode_and_border_router_instance() -> 
     )
     registry = emulator.getRegistry()
 
-    assert isinstance(station, GroundStation)
+    assert isinstance(station, EmulatorGroundStation)
     assert isinstance(station, Router)
     assert station_as.get_ground_station("gs-1") is station
     assert station_as.getRouter("gs-1") is station
@@ -249,7 +249,7 @@ def test_ground_station_compiles_through_standard_router_path_with_metadata(
     assert station.hasAttribute("__soft_install_tiers")
     assert station in compiler.standard_nodes
     assert all(
-        not isinstance(node, GroundStation)
+        not isinstance(node, EmulatorGroundStation)
         or node is station
         for node in compiler.standard_nodes
     )

@@ -7,17 +7,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from examples.complete_static_emulator.emu import build_emulator
-from examples.complete_static_emulator.simu import (
-    DEFAULT_START_TIME,
-    ZONE_LAYOUT_FILE,
-    create_complete_static_planner,
-    create_complete_static_simulator,
-    run_complete_static_chain,
-)
+from examples.Sky00_tiny_network.tiny_network import build_emulator
+from examples.Sky00_tiny_network.tiny_network import DEFAULT_START_TIME, ZONE_LAYOUT_FILE, create_simulator as create_complete_static_simulator
+from tests._support import drain_simulator as run_complete_static_chain
 from skyseed_v2.configuration.simulator import load_zone_layout_definition
-from skyseed_v2.experiment._realization_producer import (
-    _IncrementalRealizationProducer,
+from skyseed_v2.experiment.producer import (
+    Producer,
 )
 from skyseed_v2.simulator import (
     CircularOrbitPositionModel,
@@ -31,28 +26,15 @@ from tools.planner import collect_planner_data, read_planner_history
 
 
 def _bounded_complete_simulator(duration: timedelta) -> Simulator:
-    source = create_complete_static_simulator(build_emulator())
-    timeline = SimulationTimeline(
-        DEFAULT_START_TIME,
-        DEFAULT_START_TIME + duration,
-        timedelta(seconds=10),
-    )
-    simulator = Simulator(
-        SimulationDefinition(source.get_definition().static_input, timeline)
-    )
-    simulator.create_physical_world(
-        position_model=CircularOrbitPositionModel(),
-        zone_layout_definition=load_zone_layout_definition(ZONE_LAYOUT_FILE),
-    )
-    return simulator
+    return create_complete_static_simulator(build_emulator(), duration=duration)
 
 
 @pytest.fixture(scope="module")
 def bounded_300_chain(tmp_path_factory):
     simulator = _bounded_complete_simulator(timedelta(seconds=300))
-    planner = create_complete_static_planner(simulator)
-    history = tmp_path_factory.mktemp("bounded-300") / "domain-history"
-    producer = _IncrementalRealizationProducer(
+    planner = simulator.get_planner()
+    history = tmp_path_factory.mktemp("bounded-300") / "results"
+    producer = Producer(
         simulator.get_timeline(),
         simulator.get_physical_world(),
         simulator.get_physical_link_model(),
@@ -90,13 +72,13 @@ def bounded_300_chain(tmp_path_factory):
             realizations.append(realization)
             if first_pull is None:
                 first_pull = snapshot
-        manifest = history / "domain-history-manifest.json"
+        manifest = history / "experiment/domain-history-manifest.json"
         sealed_bytes = manifest.read_bytes()
         assert producer.produce_next_realization() is None
         assert producer.produce_next_realization() is None
         repeated_terminal = producer.snapshot()
         assert manifest.read_bytes() == sealed_bytes
-        previous_realization = producer._previous_realization
+        previous_result = producer._previous_result
     finally:
         producer.close()
     return SimpleNamespace(
@@ -110,7 +92,7 @@ def bounded_300_chain(tmp_path_factory):
         repeated_terminal=repeated_terminal,
         plans=tuple(plans),
         realizations=tuple(realizations),
-        previous_realization=previous_realization,
+        previous_result=previous_result,
         peaks=peaks,
         manifest_sha256=sha256(sealed_bytes).hexdigest(),
     )
@@ -122,7 +104,7 @@ def test_one_producer_preserves_every_formal_boundary_and_lineage(
     simulator = create_complete_static_simulator(build_emulator())
     timeline = simulator.get_timeline()
     world_fingerprint = simulator.get_physical_world().semantic_fingerprint()
-    history = tmp_path / "domain-history"
+    history = tmp_path / "results"
 
     plans, realizations, snapshot = run_complete_static_chain(
         simulator,
@@ -172,13 +154,13 @@ def test_one_producer_preserves_every_formal_boundary_and_lineage(
         )
         previous_plan = plan
 
-    detached = read_planner_history(history / "planning.jsonl.gz")
-    compiler = read_bpf_compiler_history(history / "compiler.jsonl")
+    detached = read_planner_history(history / "planner/planning.jsonl.gz")
+    compiler = read_bpf_compiler_history(history / "compiler/compiler.jsonl")
     assert tuple(value.plan for value in detached) == plans
     assert len(compiler["realizations"]) == len(realizations)
 
     manifest = json.loads(
-        (history / "domain-history-manifest.json").read_text(
+        (history / "experiment/domain-history-manifest.json").read_text(
             encoding="utf-8"
         )
     )
@@ -254,14 +236,14 @@ def test_bounded_300_seconds_preserves_exact_plan_and_compiler_semantics(
         )
         previous = plan
 
-    detached = read_planner_history(chain.history / "planning.jsonl.gz")
-    compiled = read_bpf_compiler_history(chain.history / "compiler.jsonl")
+    detached = read_planner_history(chain.history / "planner/planning.jsonl.gz")
+    compiled = read_bpf_compiler_history(chain.history / "compiler/compiler.jsonl")
     assert tuple(value.plan for value in detached) == chain.plans
     assert tuple(
         value["source_plan_id"] for value in compiled["realizations"]
     ) == tuple(plan.plan_id for plan in chain.plans)
     manifest = json.loads(
-        (chain.history / "domain-history-manifest.json").read_text(
+        (chain.history / "experiment/domain-history-manifest.json").read_text(
             encoding="utf-8"
         )
     )
@@ -283,6 +265,9 @@ def test_common_producer_is_lazy_bounded_and_terminal_is_idempotent(
 ) -> None:
     chain = bounded_300_chain
     assert chain.initial == {
+        "initial_end": "2026-01-01T00:05:00+00:00",
+        "requested_end": "2026-01-01T00:05:00+00:00",
+        "retained": False,
         "physical_prediction": {},
         "evidence_queue_peak": 0,
         "evidence_queue_wait_seconds": 0.0,
@@ -300,7 +285,10 @@ def test_common_producer_is_lazy_bounded_and_terminal_is_idempotent(
         "domain_history_sealed": False,
         "closed": False,
         "latest_plan_id": None,
-        "first_formal_input_available": False,
+        "computation_range_end": "2026-01-01T00:05:00+00:00",
+        "production_state": "NEW", "sealed_material_end": None,
+        "cancellation_requested": False,
+        "sealed_batches": 0, "packaging_peak": 0, "idle_seconds": 0.0,
         "formal_observation_sink_failure_count": 0,
         "formal_observation_sink_failure": None,
         "formal_observation_sink_seconds": 0.0,
@@ -313,10 +301,10 @@ def test_common_producer_is_lazy_bounded_and_terminal_is_idempotent(
         "evidence": {
             "root": str(chain.history.resolve()),
             "physical_frames": str(
-                (chain.history / "physical-frames.jsonl").resolve()
+                (chain.history / "physical-world/physical-frames.jsonl").resolve()
             ),
-            "planning": str((chain.history / "planning.jsonl.gz").resolve()),
-            "compiler": str((chain.history / "compiler.jsonl").resolve()),
+            "planning": str((chain.history / "planner/planning.jsonl.gz").resolve()),
+            "compiler": str((chain.history / "compiler/compiler.jsonl").resolve()),
             "manifest": None,
         },
     }
@@ -336,14 +324,14 @@ def test_common_producer_is_lazy_bounded_and_terminal_is_idempotent(
     assert chain.terminal["domain_history_sealed"] is True
     assert chain.terminal["buffered_plan_count"] == 0
     assert chain.repeated_terminal == chain.terminal
-    assert chain.previous_realization is chain.realizations[-1]
+    assert chain.previous_result is chain.realizations[-1]
     assert chain.peaks == {
         "buffered_plans": 0,
         "unpublished": 0,
         "published_evidence": 0,
     }
     assert chain.manifest_sha256 == sha256(
-        (chain.history / "domain-history-manifest.json").read_bytes()
+        (chain.history / "experiment/domain-history-manifest.json").read_bytes()
     ).hexdigest()
 
 
@@ -369,11 +357,11 @@ def test_released_durable_history_feeds_tools_without_domain_reexecution(
     monkeypatch.setattr(type(chain.planner), "observe", _forbidden)
     before = {
         path.name: sha256(path.read_bytes()).hexdigest()
-        for path in chain.history.iterdir()
+        for path in chain.history.rglob("*") if path.is_file()
     }
 
-    detached = read_planner_history(chain.history / "planning.jsonl.gz")
-    compiled = read_bpf_compiler_history(chain.history / "compiler.jsonl")
+    detached = read_planner_history(chain.history / "planner/planning.jsonl.gz")
+    compiled = read_bpf_compiler_history(chain.history / "compiler/compiler.jsonl")
     projected = collect_planner_data(detached)
 
     assert tuple(value.plan for value in detached) == chain.plans
@@ -382,14 +370,14 @@ def test_released_durable_history_feeds_tools_without_domain_reexecution(
     assert projected["inventory"]["formal_transitions"] == 31
     assert before == {
         path.name: sha256(path.read_bytes()).hexdigest()
-        for path in chain.history.iterdir()
+        for path in chain.history.rglob("*") if path.is_file()
     }
 
 
 def test_1000_step_common_producer_working_set_remains_bounded() -> None:
     simulator = _bounded_complete_simulator(timedelta(seconds=9_990))
-    planner = create_complete_static_planner(simulator)
-    producer = _IncrementalRealizationProducer(
+    planner = simulator.get_planner()
+    producer = Producer(
         simulator.get_timeline(),
         simulator.get_physical_world(),
         simulator.get_physical_link_model(),
@@ -429,7 +417,7 @@ def test_1000_step_common_producer_working_set_remains_bounded() -> None:
                 peaks["parameter_memory"], len(planner._parameter_memory)
             )
             peaks["route_demands"] = max(
-                peaks["route_demands"], len(planner._route_demands)
+                peaks["route_demands"], len(planner._route_demands or ())
             )
             if snapshot["formal_frame_count"]:
                 state = planner.get_state()
@@ -453,7 +441,7 @@ def test_1000_step_common_producer_working_set_remains_bounded() -> None:
         assert snapshot["formal_input_exhausted"] is True
         assert snapshot["planner_finished"] is True
         assert len(producer._plans) == 0
-        assert producer._previous_realization is not None
+        assert producer._previous_result is not None
         assert len(planner._unpublished) == 0
         assert len(planner._published_evidence) == 0
         assert peaks == {

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "skyseed-v2"
 version = "0.1.0"
-description = "Next-generation Skyseed satellite Internet simulation system"
+description = "Next-generation SkySEED satellite Internet simulation system"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = ["astropy>=8,<9", "PyYAML>=6", "seedemu==0.0.7"]

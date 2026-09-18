@@ -1,4 +1,4 @@
-"""Read traffic telemetry, PhysicalFrame history, and planned intent evidence."""
+"""Read traffic telemetry, PhysicalPositionSnapshot history, and planned intent evidence."""
 
 from __future__ import annotations
 
@@ -16,12 +16,12 @@ from skyseed_v2.simulator import (
     apply_plan_transition,
     planned_operational_state_fingerprint,
 )
-from skyseed_v2.shared._domain_history import (
+from skyseed_v2.experiment.output.history import (
     _DomainHistoryManifest,
     _iter_verified_domain_history_stream,
     _read_domain_history_manifest,
 )
-from skyseed_v2.simulator.planning import (
+from skyseed_v2.simulator.planner import (
     plan_transition_to_data,
     planned_operational_state_to_data,
 )
@@ -84,20 +84,20 @@ def read_traffic_replay(
         value["timestamp"] for value in planning["formal_transitions"]
     ):
         raise ValueError(
-            "PhysicalFrame and planned formal timestamp coverage differ"
+            "PhysicalPositionSnapshot and planned formal timestamp coverage differ"
         )
     _validate_interface_generation_boundaries(
         telemetry["interfaces"], planning["formal_transitions"], telemetry["boundaries"]
     )
     if physical["frames"][0]["timestamp"] != telemetry["nominal_origin"]:
-        raise ValueError("telemetry and formal PhysicalFrame origins differ")
+        raise ValueError("telemetry and formal PhysicalPositionSnapshot origins differ")
     physical_nodes = {
         value["node_id"] for value in physical["frames"][0]["positions"]
     }
     telemetry_nodes = {value["node_id"] for value in telemetry["nodes"]}
     if physical_nodes != telemetry_nodes:
         raise ValueError(
-            "telemetry identities and PhysicalFrame nodes describe different worlds"
+            "telemetry identities and PhysicalPositionSnapshot nodes describe different worlds"
         )
     compiler = _read_compiler(compiler_path, planning=planning)
     workload = (
@@ -108,7 +108,7 @@ def read_traffic_replay(
     qualification = None
     if probe_plan_path is not None:
         qualification = {
-            "plan": _read_json(Path(probe_plan_path), "Traffic probe plan"),
+            "plan": _read_probe_plan(Path(probe_plan_path)),
             "execution": probe_execution,
             "runner_events": read_runner_event_history(
                 Path(runner_events_path)
@@ -146,7 +146,7 @@ def read_traffic_replay(
             "authority": {
                 "status": "non-authoritative-view",
                 "physical_world": (
-                    "Plan provenance fingerprint plus formal PhysicalFrame positions"
+                    "Plan provenance fingerprint plus formal PhysicalPositionSnapshot positions"
                 ),
                 "planned_reachability": (
                     "explicit RouteOutcome values replayed from self-contained Plans"
@@ -178,30 +178,30 @@ def _read_physical_frames(
     try:
         header = next(rows)
     except StopIteration as error:
-        raise ValueError("PhysicalFrame evidence stream is empty") from error
+        raise ValueError("PhysicalPositionSnapshot evidence stream is empty") from error
     if header != {
         "record_type": "physical_frame_history_header",
         "format_version": 1,
         "coordinate_system": "WGS84-ECEF-metres",
         "formal_frames_only": True,
     }:
-        raise ValueError("PhysicalFrame evidence header is invalid")
+        raise ValueError("PhysicalPositionSnapshot evidence header is invalid")
     frames = []
     prior_timestamp = None
     node_set = None
     for row in rows:
         if set(row) != {"record_type", "timestamp", "positions"}:
-            raise ValueError("PhysicalFrame evidence row has unknown fields")
+            raise ValueError("PhysicalPositionSnapshot evidence row has unknown fields")
         if row["record_type"] != "physical_frame":
-            raise ValueError("PhysicalFrame evidence record type is invalid")
-        timestamp = _timestamp(row["timestamp"], "PhysicalFrame timestamp")
+            raise ValueError("PhysicalPositionSnapshot evidence record type is invalid")
+        timestamp = _timestamp(row["timestamp"], "PhysicalPositionSnapshot timestamp")
         if prior_timestamp is not None and timestamp <= prior_timestamp:
-            raise ValueError("PhysicalFrame timestamps must be strictly increasing")
+            raise ValueError("PhysicalPositionSnapshot timestamps must be strictly increasing")
         positions = []
         seen = set()
         raw_positions = row["positions"]
         if not isinstance(raw_positions, list):
-            raise TypeError("PhysicalFrame positions must be a list")
+            raise TypeError("PhysicalPositionSnapshot positions must be a list")
         for value in raw_positions:
             if not isinstance(value, dict) or set(value) != {
                 "node",
@@ -209,11 +209,11 @@ def _read_physical_frames(
                 "y_m",
                 "z_m",
             }:
-                raise ValueError("PhysicalFrame position is malformed")
+                raise ValueError("PhysicalPositionSnapshot position is malformed")
             node = _node(value["node"])
             node_id = _node_id(node)
             if node_id in seen:
-                raise ValueError("PhysicalFrame contains duplicate node positions")
+                raise ValueError("PhysicalPositionSnapshot contains duplicate node positions")
             seen.add(node_id)
             positions.append(
                 {
@@ -229,7 +229,7 @@ def _read_physical_frames(
         if node_set is None:
             node_set = seen
         elif seen != node_set:
-            raise ValueError("PhysicalFrame node coverage changes across history")
+            raise ValueError("PhysicalPositionSnapshot node coverage changes across history")
         frames.append(
             {
                 "timestamp": timestamp.isoformat(),
@@ -240,7 +240,7 @@ def _read_physical_frames(
         )
         prior_timestamp = timestamp
     if not frames:
-        raise ValueError("PhysicalFrame evidence contains no formal frame")
+        raise ValueError("PhysicalPositionSnapshot evidence contains no formal frame")
     return {"frames": tuple(frames)}
 
 
@@ -355,6 +355,11 @@ def _read_compiler(
                 "activation_timestamps": tuple(value["activation_timestamps"]),
                 "intent_counts": dict(value["intent_counts"]),
                 "intended_state_timestamp": None,
+                **(
+                    {"zone_prefixes": value["zone_prefixes"]}
+                    if "zone_prefixes" in value
+                    else {}
+                ),
             }
             for value in records
         )
@@ -445,6 +450,33 @@ def _read_compiler(
     return {"source_kind": source_kind, "realizations": realizations}
 
 
+def _read_probe_plan(path):
+    """Combine delivered observation workloads for inspection, without planning."""
+    output = path.parent.parent.parent
+    catalog = output / "results/compiler/materials.jsonl"
+    if not catalog.is_file():
+        return _read_json(path, "Traffic probe plan")
+    from dataclasses import replace
+    from tools.traffic.active.probe_plan import read_traffic_probe_plan
+    from itertools import islice
+    from skyseed_v2.experiment.output.history import _completed_range
+    publication = _completed_range.get()
+    count = None if publication is None else publication[1]["published_batches"]
+    with catalog.open() as stream:
+        plans = [read_traffic_probe_plan(output / json.loads(line)["traffic"]) for line in islice(stream, count)]
+    identities = {value.probe_id: value for plan in plans for value in plan.probe_identities}
+    combined = replace(plans[0], coverage_end=plans[-1].coverage_end,
+        probe_identities=tuple(identities.values()), episodes=tuple(v for p in plans for v in p.episodes),
+        nominal_boundaries=tuple(v for p in plans for v in p.nominal_boundaries),
+        supplied_realization_count=plans[-1].supplied_realization_count,
+        revision_id="delivered-observation-workloads", planning_duration_seconds=sum(p.planning_duration_seconds for p in plans),
+        global_budget=(sum(p.global_budget[0] for p in plans), max(p.global_budget[1] for p in plans),
+                       sum(p.global_budget[2] for p in plans))).artifact()
+    combined["delivery_plans"] = [p.artifact() for p in plans]
+    combined["authority"] = "detached aggregate of sealed per-delivery Traffic inputs"
+    return combined
+
+
 def _read_telemetry(path: Path, *, probe_execution=()) -> dict[str, object]:
     # Two streaming passes keep packet/loss facts and at most one generation
     # of expanded identity rows, never the complete raw identity history.
@@ -458,13 +490,16 @@ def _read_telemetry(path: Path, *, probe_execution=()) -> dict[str, object]:
         raise ValueError("traffic telemetry must begin with one header")
     headers = _records(rows, "telemetry_header")
     anchors = _records(rows, "simulation_clock_anchor")
-    if len(headers) != 1 or len(anchors) != 1:
+    if len(headers) != 1 or not anchors:
         raise ValueError("traffic telemetry header/clock anchor cardinality is invalid")
     anchor = anchors[0]
     nominal_origin = _timestamp(anchor.get("nominal_origin"), "nominal_origin")
     monotonic_origin = _integer(
         anchor.get("monotonic_origin_ns"), "monotonic_origin_ns"
     )
+    clock_starts = [a.get("effective_monotonic_ns", a["monotonic_origin_ns"]) for a in anchors]
+    if clock_starts != sorted(clock_starts) or any(a["nominal_origin"] != anchor["nominal_origin"] for a in anchors):
+        raise ValueError("Traffic clock segments are not ordered within one invocation")
     nodes = _records(rows, "node_identity")
     by_slot = {}
     by_address = {}
@@ -493,12 +528,12 @@ def _read_telemetry(path: Path, *, probe_execution=()) -> dict[str, object]:
             raise TypeError("packet ICMP evidence must be an object")
         for name in ("source_ipv4", "destination_ipv4"):
             _string(packet.get(name), name)
-        packet["simulation_timestamp"] = (
-            nominal_origin
-            + timedelta(
-                seconds=(monotonic - monotonic_origin) / 1_000_000_000
-            )
-        ).isoformat()
+        segment = anchors[max(0, bisect_right(clock_starts, monotonic) - 1)]
+        held = segment.get("held_since") is not None
+        packet["simulation_timestamp"] = (segment["active_frontier"] if held else
+            (nominal_origin + timedelta(seconds=(monotonic - segment["monotonic_origin_ns"]) / 1e9)).isoformat())
+        packet["logical_clock_held"] = held
+        packet["clock_revision"] = segment.get("revision", 0)
         packet["node_id"] = by_slot[slot]["node_id"]
         packets.append(packet)
     losses = _records(rows, "telemetry_loss")
@@ -572,6 +607,7 @@ def _read_telemetry(path: Path, *, probe_execution=()) -> dict[str, object]:
         "header": dict(headers[0]),
         "nominal_origin": nominal_origin.isoformat(),
         "monotonic_origin_ns": monotonic_origin,
+        "clock_segments": anchors,
         "nodes": tuple(sorted(by_slot.values(), key=lambda value: value["node_slot"])),
         "interfaces": interfaces,
         "boundaries": boundaries,

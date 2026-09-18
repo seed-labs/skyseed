@@ -16,19 +16,20 @@ from skyseed_v2.simulator import (
     planned_operational_state_fingerprint,
     semantic_event_references,
 )
-from skyseed_v2.simulator.planning import (
+from skyseed_v2.simulator.planner import (
     plan_transition_to_data,
     planned_operational_state_to_data,
 )
 
-from skyseed_v2.simulator.planning.evidence import (
+from skyseed_v2.simulator.planner.evidence import (
     _frame_evidence_to_data, _frontiers_to_data, _timedelta_to_data,
     _candidate_summary_to_data, _work_counts_to_data, _inspection_to_data,
 )
 
-from skyseed_v2.simulator.planning.values import _route_demand_material
+from skyseed_v2.simulator.planner.values import _route_demand_material
 
 from .reader import PlannerInspectionRead
+from ._ospf import _prepare_ospf, _ospf_metadata, _ospf_frame
 from tools._inspection_evidence import iter_physical_link_inspection
 
 
@@ -73,6 +74,9 @@ def project_planner_data(
         zone_records = ()
     node_ids = tuple(str(value["node_id"]) for value in node_records)
     node_index = {value: index for index, value in enumerate(node_ids)}
+    ospf = _prepare_ospf(model_descriptors, node_records)
+    if ospf is not None:
+        data['ospf'] = _ospf_metadata(ospf)
     tool_chunks: list[dict[str, Any]] = []
     streamed_chunk_paths: list[Path] = []
     frame_index_rows: list[dict[str, Any]] = []
@@ -273,6 +277,8 @@ def project_planner_data(
                     "semantic_event_count": frame["semantic_event_count"],
                     "stages": frame["stages"],
                 }
+            if ospf is not None:
+                tool_chunk['ospf'] = _ospf_frame(ospf, tool_chunk['operational_connections'])
             frame_index_rows.append(
                 {
                     "frame_index": tool_chunk["frame_index"],
@@ -321,9 +327,9 @@ def project_planner_data(
             event_indexes = {event: i for i, event in enumerate(
                 event for transition in plan.transitions for event in semantic_event_references(transition))}
             precedences = tuple([event_indexes[p.predecessor], event_indexes[p.successor]]
-                                for p in plan.semantic_event_precedences)
+                                for t in plan.transitions for p in t.semantic_event_precedences)
         else:
-            precedences = plan.semantic_event_precedences
+            precedences = tuple(p for t in plan.transitions for p in t.semantic_event_precedences)
         total_precedences += len(precedences)
         publications.append(
             {
@@ -365,7 +371,7 @@ def project_planner_data(
                 else "bounded count/quality/reason summary of feasible facts"
             ),
             "source": (
-                "Tool-owned sealed PhysicalLinkObservation stream"
+                "Tool-owned sealed PhysicalLinkQueryResult stream"
                 if physical_link_inspection_path is not None
                 else "PlanningFrameEvidence candidate summaries"
             ),
@@ -407,7 +413,7 @@ def project_planner_data(
         }
         if tuple(physical_by_timestamp) != tuple(seen_timestamps):
             raise ValueError(
-                "Planner and PhysicalFrame history timestamp coverage differ"
+                "Planner and PhysicalPositionSnapshot history timestamp coverage differ"
             )
         for frame in frames:
             frame["physical_positions"] = physical_by_timestamp[
@@ -809,7 +815,7 @@ def _stage_chain(frame: dict[str, Any], transition, evidence) -> tuple[dict[str,
         {
             "stage": "coordination / semantic precedence",
             "input": {"semantic_events": frame["semantic_event_count"]},
-            "model": "CoordinationModel",
+            "model": "PlanTransition required event ordering",
             "result": {"ordered_events": frame["semantic_event_count"]},
             "change": {},
         },

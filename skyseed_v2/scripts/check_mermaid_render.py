@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 from hashlib import sha256
 from html import escape
 import json
@@ -39,6 +40,7 @@ def _render(
     mermaid_javascript: Path,
     geckodriver: Path,
     timeout: float,
+    evidence_directory: Path | None = None,
 ) -> tuple[int, str, str]:
     script = mermaid_javascript.read_text(encoding="utf-8").replace(
         "</script", "<\\/script"
@@ -55,7 +57,7 @@ def _render(
         raise AssertionError("no Mermaid blocks found")
     containers = "\n".join(
         f'<section data-source="{escape(path)}:{index}">'
-        f'<div id="diagram-{ordinal:03d}"></div></section>'
+        f'<h2>{escape(path)} · {index}</h2><div id="diagram-{ordinal:03d}"></div></section>'
         for ordinal, (path, index, _) in enumerate(diagrams)
     )
     sources = json.dumps(
@@ -68,7 +70,8 @@ def _render(
     ).replace("</", "<\\/")
     page = f"""<!doctype html>
 <meta charset="utf-8">
-<title>Skyseed Mermaid render gate</title>
+<title>SkySEED Mermaid render gate</title>
+<style>body{{margin:24px;font:16px sans-serif}}section{{margin-bottom:40px;max-width:1500px}}svg{{height:auto}}</style>
 {containers}
 <script>{script}</script>
 <script>
@@ -194,6 +197,24 @@ return [...document.querySelectorAll("svg")].map(svg=>({
                     raise AssertionError(
                         f"incomplete SVG render evidence: {svg_evidence}"
                     )
+                if evidence_directory is not None:
+                    evidence_directory.mkdir(parents=True, exist_ok=True)
+                    _request(f"{base_url}/session/{session_id}/window/rect", method="POST",
+                             value={"width":1600,"height":1200})
+                    for ordinal, (source_path, index, _) in enumerate(diagrams):
+                        selector = f"#diagram-{ordinal:03d} svg"
+                        _request(f"{base_url}/session/{session_id}/window/rect", method="POST",
+                                 value={"width":1600,"height":max(1200,int(svg_evidence[ordinal]["height"])+160)})
+                        element = _request(f"{base_url}/session/{session_id}/element", method="POST",
+                                           value={"using":"css selector","value":selector})
+                        element_id = next(iter(element.values()))
+                        png = _request(f"{base_url}/session/{session_id}/element/{element_id}/screenshot")
+                        (evidence_directory/f"diagram-{ordinal:03d}.png").write_bytes(base64.b64decode(png))
+                        svg = _execute(base_url,session_id, f"return document.querySelector('{selector}').outerHTML;")
+                        (evidence_directory/f"diagram-{ordinal:03d}.svg").write_text(svg)
+                    (evidence_directory/'render.json').write_text(json.dumps([
+                        {"source":path,"block":index,**facts}
+                        for (path,index,_),facts in zip(diagrams,svg_evidence)],indent=2)+'\n')
                 capabilities = session["capabilities"]
                 return (
                     len(diagrams),
@@ -224,6 +245,7 @@ def main() -> int:
         default=Path("/snap/bin/geckodriver"),
     )
     parser.add_argument("--timeout", type=float, default=60.0)
+    parser.add_argument("--evidence-directory", type=Path)
     arguments = parser.parse_args()
     javascript_hash = sha256(arguments.mermaid_js.read_bytes()).hexdigest()
     if (
@@ -244,6 +266,7 @@ def main() -> int:
         mermaid_javascript=arguments.mermaid_js.resolve(),
         geckodriver=arguments.geckodriver,
         timeout=arguments.timeout,
+        evidence_directory=arguments.evidence_directory,
     )
     print(f"Mermaid documents: {len(documents)}")
     print(f"Mermaid diagrams rendered to SVG: {count}")

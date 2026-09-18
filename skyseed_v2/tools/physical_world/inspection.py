@@ -5,8 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from skyseed_v2.simulator import PhysicalFrame, PhysicalWorld
-from skyseed_v2.simulator.physical.physical_link import PhysicalLinkObservation
+from skyseed_v2.simulator import PhysicalPositionSnapshot, PhysicalWorld
+from skyseed_v2.simulator.physical.queries.physical_link import PhysicalLinkQueryResult
 
 from tools._history import read_sealed_physical_frames
 from tools._inspection_evidence import read_physical_link_inspection_index
@@ -21,8 +21,8 @@ def collect_physical_world_data(
     physical_world: PhysicalWorld,
     *,
     physical_frames_path: Path | None = None,
-    physical_frame: PhysicalFrame | None = None,
-    physical_link_observation: PhysicalLinkObservation | None = None,
+    physical_frame: PhysicalPositionSnapshot | None = None,
+    physical_link_observation: PhysicalLinkQueryResult | None = None,
     physical_link_model: object | None = None,
     physical_link_inspection_path: Path | None = None,
     model_descriptors: dict[str, object] | None = None,
@@ -63,8 +63,8 @@ def write_physical_world_tool(
     directory: Path,
     *,
     physical_frames_path: Path | None = None,
-    physical_frame: PhysicalFrame | None = None,
-    physical_link_observation: PhysicalLinkObservation | None = None,
+    physical_frame: PhysicalPositionSnapshot | None = None,
+    physical_link_observation: PhysicalLinkQueryResult | None = None,
     physical_link_model: object | None = None,
     physical_link_inspection_path: Path | None = None,
     model_descriptors: dict[str, object] | None = None,

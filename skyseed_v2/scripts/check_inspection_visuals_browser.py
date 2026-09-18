@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise the four manually reviewed inspection visual fixes in Firefox."""
+"""Exercise current inspection views and detached replay controls in Firefox."""
 
 from __future__ import annotations
 
@@ -162,9 +162,9 @@ return {chinese,english:document.title,prose};
 """,
     )
     if (
-        result["chinese"] != "Skyseed v2 工具总览"
-        or result["english"] != "Skyseed v2 Tool Overview"
-        or "先阅读静态结构和精确 PhysicalFrame 事实" not in result["prose"]
+        result["chinese"] != "SkySEED 工具总览"
+        or result["english"] != "SkySEED Tool Overview"
+        or "先阅读静态结构和精确 PhysicalPositionSnapshot 事实" not in result["prose"]
         or "所有 Tool 均分离且只读" not in result["prose"]
     ):
         raise AssertionError(f"Aggregate Chinese explanation regression: {result}")
@@ -565,50 +565,60 @@ return {available,x:available?Math.round(box.left+Number(canvas.dataset.firstZon
 
 
 def _traffic(base_url: str, session_id: str, page: Path) -> dict[str, object]:
+    """Exercise current detached flow replay and its lazy evidence chunks."""
     _navigate(base_url, session_id, page)
-    identity = _execute(
-        base_url,
-        session_id,
-        """
-const canvas=document.getElementById("globe");
-const chinese=document.title,chineseProse=document.querySelector("section.card")?.textContent||"";document.querySelector('[data-language="en"]').click();
-return {chinese,english:document.title};
-""",
-    )
-    def camera() -> dict[str, float]:
-        return _execute(
-            base_url,
-            session_id,
-            """const c=document.getElementById("globe");return {lat:Number(c.dataset.cameraLatitude),lon:Number(c.dataset.cameraLongitude)};""",
-        )
+    initial = _execute(base_url, session_id, """
+return {title:document.title,flows:document.getElementById('traffic-flow').options.length,
+ transactions:document.querySelectorAll('#traffic-transactions button').length,
+ frames:Number(document.getElementById('traffic-time').max)+1,
+ flow:document.getElementById('traffic-flow').value,
+ end:Number(document.getElementById('traffic-seek').max),
+ globe:!!document.getElementById('traffic-globe')};
+""")
+    if initial['title'] != 'Traffic / Path Replay' or initial['frames'] < 1 or not initial['globe']:
+        raise AssertionError(f"Traffic replay did not initialize: {initial}")
 
-    _drag(base_url, session_id, "globe", 0, -400)
-    first = camera()
-    _drag(base_url, session_id, "globe", 0, -300)
-    farther = camera()
-    _drag(base_url, session_id, "globe", 0, 20)
-    reversed_value = camera()
-    _drag(base_url, session_id, "globe", 80, 0)
-    horizontal = camera()
-    result = {
-        **identity,
-        "first": first,
-        "farther": farther,
-        "reversed": reversed_value,
-        "horizontal": horizontal,
-        "maximum": 89 * 3.141592653589793 / 180,
-    }
-    if (
-        result["chinese"] != "Skyseed 流量 / 路径回放"
-        or result["english"] != "Skyseed Traffic / Path Replay"
-        or abs(result["first"]["lat"] - result["maximum"]) > 1e-9
-        or result["farther"] != result["first"]
-        or not result["reversed"]["lat"] < result["farther"]["lat"]
-        or result["reversed"]["lon"] != result["farther"]["lon"]
-        or result["horizontal"]["lon"] == result["reversed"]["lon"]
-    ):
-        raise AssertionError(f"Traffic camera regression: {result}")
-    return result
+    def wait_for(script):
+        # This bounds a browser assertion, not calculation/runtime owner drainage.
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            value = _execute(base_url, session_id, script)
+            if value:
+                return value
+            time.sleep(.05)
+        raise AssertionError('Traffic evidence chunk did not finish loading')
+
+    selected = False
+    if initial['transactions']:
+        _execute(base_url, session_id, "document.querySelector('#traffic-transactions button').click();")
+        wait_for("return document.getElementById('traffic-selected-transaction').textContent.trim();")
+        selected = _execute(base_url, session_id, """
+return document.getElementById('traffic-transaction-details').open
+ && document.getElementById('traffic-step-detail').textContent.length > 20;
+""")
+        if not selected:
+            raise AssertionError('Traffic transaction detail did not open')
+
+    target = initial['end'] / 2
+    _execute(base_url, session_id, f"""
+const seek=document.getElementById('traffic-seek');seek.value={target};
+seek.dispatchEvent(new Event('input'));
+""")
+    geometry = wait_for("const text=document.getElementById('traffic-geometry-basis').textContent;return text.startsWith('Geometry: retained PhysicalPositionSnapshot') && text;")
+    _execute(base_url, session_id, "document.getElementById('traffic-play').click();")
+    if initial['end'] > 0:
+        wait_for(f"return Number(document.getElementById('traffic-seek').value) > {target};")
+    _execute(base_url, session_id, "if(document.getElementById('traffic-play').textContent==='Pause')document.getElementById('traffic-play').click();")
+    moved = _execute(base_url, session_id, """
+return {time:Number(document.getElementById('traffic-seek').value),
+ flow:document.getElementById('traffic-flow').value,
+ status:document.getElementById('traffic-selection-status').textContent};
+""")
+    if moved['flow'] != initial['flow'] or 'failed' in moved['status'].lower():
+        raise AssertionError(f"Traffic flow replay failed: {moved}")
+    return {'frames': initial['frames'], 'flows': initial['flows'],
+            'transaction_selection': 'PASS' if selected else 'no retained transactions in selected flow',
+            'seek_and_playback': 'PASS', 'geometry': geometry}
 
 
 def _planner(base_url: str, session_id: str, page: Path) -> dict[str, object]:
@@ -739,7 +749,7 @@ return {
     }
 
 
-def _observation(base_url: str, session_id: str, page: Path) -> dict[str, object]:
+def _performance(base_url: str, session_id: str, page: Path) -> dict[str, object]:
     _navigate(base_url, session_id, page)
     result = _execute(
         base_url,
@@ -784,15 +794,15 @@ return {
 """,
     )
     if (
-        result["title"] != "System Observation"
+        result["title"] != "Performance"
         or result["heading"] != result["title"]
         or result["status"] != "OBSERVED"
         or "reads records emitted by completed execution" not in result["summary"]
         or result["formal"].get("formal transitions", 0) <= 0
         or result["formal"].get("formal transitions")
-        != result["formal"].get("PhysicalFrames")
-        or "prehistory PhysicalFrames" not in result["formal"]
-        or result["formal"]["prehistory PhysicalFrames"] < 0
+        != result["formal"].get("PhysicalPositionSnapshots")
+        or "prehistory PhysicalPositionSnapshots" not in result["formal"]
+        or result["formal"]["prehistory PhysicalPositionSnapshots"] < 0
         or result["formal"].get("Plans", 0) <= 0
         or result["formal"].get("Plans")
         != result["formal"].get("compiled realizations")
@@ -809,11 +819,11 @@ return {
         or result["filteredRoles"] != ["rollup"]
         or "invocation rows" not in result["rawCount"]
     ):
-        raise AssertionError(f"Observation presentation regression: {result}")
+        raise AssertionError(f"Performance presentation regression: {result}")
     return {
         "formal_transitions": result["formal"]["formal transitions"],
         "prehistory_physical_frames": result["formal"][
-            "prehistory PhysicalFrames"
+            "prehistory PhysicalPositionSnapshots"
         ],
         "plans": result["formal"]["Plans"],
         "compiled_realizations": result["formal"]["compiled realizations"],
@@ -834,7 +844,7 @@ def run_visual_browser_gate(
     root = Path(inspection_root).resolve()
     tool_names = ("physical-world", "zone") if static_only else tuple(
         name
-        for name in ("physical-world", "zone", "planner", "observation", "traffic")
+        for name in ("physical-world", "zone", "planner", "performance", "traffic")
         if (root / name / "index.html").is_file()
     )
     pages = {name: root / name / "index.html" for name in tool_names}
@@ -889,9 +899,9 @@ def run_visual_browser_gate(
                     result["planner"] = _planner(
                         base_url, session_id, pages["planner"]
                     )
-                if "observation" in pages:
-                    result["observation"] = _observation(
-                        base_url, session_id, pages["observation"]
+                if "performance" in pages:
+                    result["performance"] = _performance(
+                        base_url, session_id, pages["performance"]
                     )
                 if "traffic" in pages:
                     result["traffic"] = _traffic(

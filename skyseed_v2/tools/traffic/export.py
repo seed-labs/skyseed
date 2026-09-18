@@ -25,8 +25,8 @@ def write_traffic_export(generated, output, origin, path_ids):
         (output/name).write_text(json.dumps(value,ensure_ascii=False,separators=(',',':'))+'\n')
     def seconds(timestamp):
         return None if timestamp is None else (datetime.fromisoformat(timestamp)-origin).total_seconds()
-    plan_path=Path(generated)/'inspection/traffic/probe-plan.json'
-    plans=list(Path(generated).glob('runtime/**/traffic-probe-plan.json')) if not plan_path.exists() else [plan_path]
+    plan_path=Path(generated)/'results/traffic/probe-plan.json'
+    plans=list(Path(generated).glob('results/traffic/probe-plan*.json')) if not plan_path.exists() else [plan_path]
     plan=None if not plans else json.loads(plans[0].read_text())
     flows=[]
     if plan:
@@ -37,9 +37,9 @@ def write_traffic_export(generated, output, origin, path_ids):
                 'definition':{k:identity[k] for k in ('direction','ground_station_id','zone_id','zone_ipv4','logical_source','logical_destination','selection_reasons','path_stability')},
                 'coverage_cases':episode.get('coverage_cases',[]),
                 'start_seconds':seconds(episode['start_time']),'end_seconds':seconds(episode['end_time'])})
-    replays=sorted(Path(generated).glob('inspection/runtime-runs/*/traffic/traffic-replay.json'))
+    replays=sorted(Path(generated).glob('runs/*/traffic/traffic-replay.json'))
     if not replays:
-        replays=sorted(Path(generated).glob('inspection/traffic/traffic-replay.json'))
+        replays=sorted(Path(generated).glob('visualizations/traffic/traffic-replay.json'))
     rows=[];summary={};status='unavailable';flow_results=[];request_cases=[]
     if replays:
         data=json.loads(replays[-1].read_text());status='available'

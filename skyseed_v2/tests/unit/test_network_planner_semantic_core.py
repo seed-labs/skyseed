@@ -1,4 +1,5 @@
 from __future__ import annotations
+from tests._support import MODEL_TIMESTAMP, PlannerConfiguration, selection_state
 
 from dataclasses import FrozenInstanceError, fields, replace
 from datetime import datetime, timedelta, timezone
@@ -12,7 +13,7 @@ from skyseed_v2.configuration.simulator import (
     ZoneLayoutDefinition,
 )
 from skyseed_v2.shared import NodeId
-from skyseed_v2.shared._execution_observation import _ExecutionObserver
+from skyseed_v2.experiment.output.observation import _ExecutionObserver
 from skyseed_v2.simulator import (
     EarthFixedPosition,
     SimulationDefinition,
@@ -27,15 +28,14 @@ from skyseed_v2.simulator.input import (
 from skyseed_v2.simulator.physical import (
     GroundStationAccessCandidate,
     InterSatelliteLinkCandidate,
-    PhysicalLinkObservation,
+    PhysicalLinkQueryResult,
     PhysicalLinkWorkCounts,
     ZoneServiceCandidate,
 )
-from skyseed_v2.simulator.planning import (
+from skyseed_v2.simulator.planner import (
     AccumulatedDeadbandParameterPlanningModel,
     CandidateDecision,
     CandidateDecisionKind,
-    DefaultCoordinationPolicy,
     EffectiveConnectionParameters,
     GatewayHopCountRoutePlanningModel,
     GroundStationRouteDemandTarget,
@@ -68,7 +68,7 @@ from skyseed_v2.simulator.planning import (
     SemanticEventKind,
     SemanticEventPrecedence,
     SemanticEventReference,
-    FrameBatchPlanningWindowPolicy,
+    PlannerConfiguration,
     UnreachableRouteOutcome,
     ZoneServiceAssignment,
     ZoneServicePlanningResult,
@@ -120,7 +120,6 @@ class _FixedPositionModel:
 
 
 class _NoInterSatelliteModel:
-    acquisition_duration = timedelta(0)
 
     def create_inter_satellite_candidate_pairs(self, physical_world):
         del physical_world
@@ -132,7 +131,7 @@ class _NoInterSatelliteModel:
         del physical_world, retained_pairs
         if candidates:
             raise AssertionError("test Model expected no ISL candidates")
-        return InterSatelliteSelection((), (), 0)
+        return InterSatelliteSelection(())
 
 
 class _NoGroundStationModel:
@@ -154,11 +153,11 @@ class _NoRouteModel:
         zone_service_assignments,
         demands,
         previous_outcomes,
-    ):
+     *, timestamp):
         del physical_world, operational_connections, zone_service_assignments
         if demands or previous_outcomes:
             raise AssertionError("test Model expected no Route demand")
-        return RoutePlanningResult((), ())
+        return RoutePlanningResult(())
 
     def shutdown(self, *, wait: bool = True) -> None:
         self.shutdown_calls.append(wait)
@@ -264,9 +263,10 @@ def _planner(
     zone_service_model=None,
     parameter_model=None,
     route_model=None,
-    coordination_policy=None,
     route_demands=(),
-    planning_window_policy=None,
+    planner_configuration=None,
+    inter_satellite_acquisition_duration=timedelta(0),
+    ground_station_acquisition_duration=timedelta(0),
 ):
     route = route_model or _NoRouteModel()
     planner = Planner(
@@ -281,10 +281,11 @@ def _planner(
         ),
         parameter_model=parameter_model or _parameter_model(),
         route_model=route,
-        coordination_policy=coordination_policy or DefaultCoordinationPolicy(),
         route_demands=route_demands,
-        planning_window_policy=(
-            planning_window_policy or FrameBatchPlanningWindowPolicy()
+        configuration=(
+            replace(planner_configuration or PlannerConfiguration(),
+                inter_satellite_acquisition_duration=inter_satellite_acquisition_duration,
+                ground_station_acquisition_duration=ground_station_acquisition_duration)
         ),
     )
     return planner, route
@@ -296,8 +297,8 @@ def _observation(
     isls=(),
     ground=(),
     zones=(),
-) -> PhysicalLinkObservation:
-    return PhysicalLinkObservation(
+) -> PhysicalLinkQueryResult:
+    return PhysicalLinkQueryResult(
         timestamp=timestamp,
         inter_satellite_candidates=tuple(isls),
         ground_station_access_candidates=tuple(ground),
@@ -354,7 +355,6 @@ def _ground_pairs(candidates) -> tuple[tuple[NodeId, NodeId], ...]:
 
 
 class _InjectedInterSatelliteModel:
-    acquisition_duration = timedelta(0)
 
     def __init__(self, selection_factory, *, pairs=()) -> None:
         self._selection_factory = selection_factory
@@ -386,13 +386,16 @@ class _InjectedZoneServiceModel:
 
     def assign_zone_service(
         self, physical_world, candidates, previous_assignments
-    ):
+    , *, timestamp):
         return self._result_factory(
             physical_world, candidates, previous_assignments
         )
 
 
 class _InjectedRouteModel:
+    def can_reuse_unchanged_inputs(self):
+        return True
+
     def __init__(self, result_factory) -> None:
         self._result_factory = result_factory
         self.calls = 0
@@ -405,7 +408,7 @@ class _InjectedRouteModel:
         zone_service_assignments,
         demands,
         previous_outcomes,
-    ):
+     *, timestamp):
         self.calls += 1
         return self._result_factory(
             physical_world,
@@ -445,14 +448,14 @@ class _FailOnceRouteModel:
         zone_service_assignments,
         demands,
         previous_outcomes,
-    ):
+     *, timestamp):
         del physical_world, operational_connections, zone_service_assignments
         if not self.failed:
             self.failed = True
             raise RuntimeError("injected route failure")
         outcomes = tuple(
             UnreachableRouteOutcome(
-                demand, RouteUnreachableReason.NO_OPERATIONAL_PATH
+                demand, RouteUnreachableReason.NO_ELIGIBLE_PATH
             )
             for demand in demands
         )
@@ -462,7 +465,7 @@ class _FailOnceRouteModel:
             for demand, outcome in zip(demands, outcomes, strict=True)
             if previous.get(demand) != outcome
         )
-        return RoutePlanningResult(outcomes, transitions)
+        return RoutePlanningResult(outcomes)
 
     def shutdown(self, *, wait: bool = True) -> None:
         self.shutdown_calls.append(wait)
@@ -528,9 +531,9 @@ def test_planner_observation_names_validation_and_real_rollups_truthfully():
     physical_world, _, _ = _world()
     planner, _ = _planner(
         physical_world,
-        planning_window_policy=FrameBatchPlanningWindowPolicy(
+        planner_configuration=PlannerConfiguration(
             frames_per_batch=2,
-        ),
+         inter_satellite_acquisition_duration=timedelta(0), ground_station_acquisition_duration=timedelta(0)),
     )
     observer = _ExecutionObserver()
     planner._set_execution_observer(observer)
@@ -614,7 +617,7 @@ def test_public_plan_transition_replay_fingerprints_and_codecs_are_one_truth():
     assert state == _oracle_apply(None, transition)
     assert state.timestamp == EPOCH
     assert plan_transition_fingerprint(transition) == (
-        "6bd40616a64de4f3aaa1304b0428fc57c7994c045961d9e53106606bc185ca63"
+        "c1d8344def300e6879a71a96eb5906cab4e124a3d59aa3dd57836d28c67770e5"
     )
     assert planned_operational_state_fingerprint(state) == (
         "d73485badf2b704909f69cb6faa4bfd29176bbad361cf9b7ef0b8dbfb9a23542"
@@ -657,7 +660,7 @@ def test_plan_has_exact_final_fields_self_contained_lineage_and_no_overlap():
     )
     detached_first = plan_to_data(first)
     assert first.plan_id == (
-        "1d8d285e9bfeafabdbbf63584b5bbaf0871bc21d7e0cacb47e9956df3a959ed7"
+        "ba02cc8df2183fcd007285bfbf42a364c6a85ae25bd43eecc0462b2982829578"
     )
     assert plan_from_data(detached_first) == first
     second_transition = PlanTransition(EPOCH + timedelta(seconds=5))
@@ -680,7 +683,6 @@ def test_plan_has_exact_final_fields_self_contained_lineage_and_no_overlap():
         "start_timestamp",
         "end_timestamp",
         "transitions",
-        "semantic_event_precedences",
     }
     assert second.start_timestamp == second.transitions[0].timestamp
     assert first.end_timestamp < second.start_timestamp
@@ -807,14 +809,7 @@ def test_create_plan_enforces_bootstrap_types_cadence_and_precedence_graph() -> 
     first, second, third = semantic_event_references(transition)[:3]
     duplicate = SemanticEventPrecedence(first, second)
     with pytest.raises(ValueError, match="duplicate"):
-        create_plan(
-            None,
-            previous_plan_id=None,
-            physical_world_fingerprint="a" * 64,
-            observation_interval=timedelta(seconds=5),
-            start_timestamp=EPOCH,
-            transitions=(transition,),
-            semantic_event_precedences=(duplicate, duplicate),
+        replace(transition, semantic_event_precedences=(duplicate, duplicate),
         )
     foreign = SemanticEventReference(
         EPOCH,
@@ -825,27 +820,13 @@ def test_create_plan_enforces_bootstrap_types_cadence_and_precedence_graph() -> 
             NodeId(65001, "satellite", "foreign"),
         ),
     )
-    with pytest.raises(ValueError, match="transition-derived"):
-        create_plan(
-            None,
-            previous_plan_id=None,
-            physical_world_fingerprint="a" * 64,
-            observation_interval=timedelta(seconds=5),
-            start_timestamp=EPOCH,
-            transitions=(transition,),
-            semantic_event_precedences=(
+    with pytest.raises(ValueError, match="canonical event references"):
+        replace(transition, semantic_event_precedences=(
                 SemanticEventPrecedence(first, foreign),
             ),
         )
     with pytest.raises(ValueError, match="acyclic"):
-        create_plan(
-            None,
-            previous_plan_id=None,
-            physical_world_fingerprint="a" * 64,
-            observation_interval=timedelta(seconds=5),
-            start_timestamp=EPOCH,
-            transitions=(transition,),
-            semantic_event_precedences=(
+        replace(transition, semantic_event_precedences=(
                 SemanticEventPrecedence(first, second),
                 SemanticEventPrecedence(second, third),
                 SemanticEventPrecedence(third, first),
@@ -984,8 +965,7 @@ def test_planner_rejects_dropped_formal_frame_atomically_and_window_alignment():
             zone_service_model=HighestElevationZoneServicePlanningModel(),
             parameter_model=_parameter_model(),
             route_model=_NoRouteModel(),
-            coordination_policy=DefaultCoordinationPolicy(),
-        )
+         configuration=PlannerConfiguration(inter_satellite_acquisition_duration=timedelta(0), ground_station_acquisition_duration=timedelta(0)))
     rounded_preparation = Planner(
             physical_world=physical_world,
             observation_interval=timedelta(seconds=5),
@@ -994,15 +974,14 @@ def test_planner_rejects_dropped_formal_frame_atomically_and_window_alignment():
                     desired_same_plane_links=0,
                     desired_cross_plane_links=0,
                     maximum_cross_plane_separation=0,
-                    acquisition_duration=timedelta(seconds=7),
+
                 )
             ),
             ground_station_model=_NoGroundStationModel(),
             zone_service_model=HighestElevationZoneServicePlanningModel(),
             parameter_model=_parameter_model(),
             route_model=_NoRouteModel(),
-            coordination_policy=DefaultCoordinationPolicy(),
-        )
+         configuration=PlannerConfiguration(inter_satellite_acquisition_duration=timedelta(seconds=7), ground_station_acquisition_duration=timedelta(0)))
 
     assert arbitrary_cadence.required_prehistory == timedelta(0)
     assert rounded_preparation.required_prehistory == timedelta(seconds=10)
@@ -1048,12 +1027,12 @@ def test_prime_is_per_frame_strictly_preformal_bounded_and_nonpublishing():
             desired_same_plane_links=0,
             desired_cross_plane_links=0,
             maximum_cross_plane_separation=0,
-            acquisition_duration=timedelta(seconds=20),
+
         )
     )
     planner, route_model = _planner(
         physical_world, inter_satellite_model=isl_model
-    )
+    , inter_satellite_acquisition_duration=timedelta(seconds=20))
     assert planner.required_prehistory == timedelta(seconds=20)
     with pytest.raises(ValueError, match="bounded initialization"):
         timestamp = EPOCH - timedelta(seconds=25)
@@ -1166,17 +1145,17 @@ def test_evidence_carries_exact_candidates_lifecycle_remaining_and_gs_selection(
             desired_same_plane_links=1,
             desired_cross_plane_links=0,
             maximum_cross_plane_separation=0,
-            acquisition_duration=timedelta(seconds=20),
+
         )
     )
     planner, _ = _planner(
         physical_world,
         inter_satellite_model=isl_model,
-        planning_window_policy=FrameBatchPlanningWindowPolicy(frames_per_batch=5),
+        planner_configuration=PlannerConfiguration(frames_per_batch=5, inter_satellite_acquisition_duration=timedelta(0), ground_station_acquisition_duration=timedelta(0)),
         ground_station_model=CoverageFirstGroundStationAccessPlanningModel(
             default_ground_station_limit=1, ground_station_policy_limit=1
         ),
-    )
+     inter_satellite_acquisition_duration=timedelta(seconds=20))
     isl = InterSatelliteLinkCandidate(
         satellites[0].node_id,
         satellites[1].node_id,
@@ -1242,7 +1221,7 @@ def test_evidence_carries_exact_candidates_lifecycle_remaining_and_gs_selection(
         timedelta(0)
     )
     detached = published_planning_evidence_to_data(evidence)
-    assert detached["schema"] == "skyseed-v2-published-planning-evidence-v4"
+    assert detached["schema"] == "skyseed-v2-published-planning-evidence-v5"
     assert set(detached["frames"][0]) == {
         "timestamp",
         "inter_satellite_candidate_summary",
@@ -1287,7 +1266,7 @@ def test_ground_station_selection_is_quality_first_and_deterministic_on_ties():
 
     selected = model.select_ground_station_accesses(
         physical_world, candidates
-    )
+    , state=selection_state())
 
     assert _ground_pairs(selected) == (
         (stations[0].node_id, satellites[0].node_id),
@@ -1295,7 +1274,7 @@ def test_ground_station_selection_is_quality_first_and_deterministic_on_ties():
     )
     assert model.select_ground_station_accesses(
         physical_world, tuple(reversed(candidates))
-    ) == selected
+    , state=selection_state()) == selected
     assert model._prepared_world is physical_world
 
 
@@ -1335,11 +1314,11 @@ def test_ground_station_selection_preserves_global_equal_cost_identity():
 
     selected = model.select_ground_station_accesses(
         physical_world, tuple(reversed(candidates))
-    )
+    , state=selection_state())
 
     assert len(selected) == 8
     assert len({c.satellite_id for c in selected}) == 7
-    assert model.select_ground_station_accesses(physical_world, candidates) == selected
+    assert model.select_ground_station_accesses(physical_world, candidates, state=selection_state()) == selected
 
 
 
@@ -1362,7 +1341,7 @@ def test_ground_station_selection_preserves_primary_coverage_under_caps():
 
     selected = model.select_ground_station_accesses(
         physical_world, candidates
-    )
+    , state=selection_state())
     station_counts = {
         station.node_id: sum(
             value.ground_station_id == station.node_id for value in selected
@@ -1399,9 +1378,9 @@ def test_ground_station_selection_consumes_only_sparse_feasible_input():
         _ground_candidate(stations[-1], satellites[-1]),
     )
 
-    assert model.select_ground_station_accesses(physical_world, ()) == ()
+    assert model.select_ground_station_accesses(physical_world, (), state=selection_state()) == ()
     assert _ground_pairs(
-        model.select_ground_station_accesses(physical_world, sparse)
+        model.select_ground_station_accesses(physical_world, sparse, state=selection_state())
     ) == _ground_pairs(sparse)
     assert len(sparse) == 2
     assert len(stations) * len(satellites) == 200
@@ -1643,7 +1622,7 @@ def test_injected_isl_candidate_truth_and_physical_caps_remain_authoritative():
     foreign = _isl_candidate(satellites[0], satellites[2])
     spoofing = _InjectedInterSatelliteModel(
         lambda physical_world, candidates, retained: InterSatelliteSelection(
-            (foreign,), (), 0
+            (foreign,)
         )
     )
     planner, _ = _planner(
@@ -1661,7 +1640,7 @@ def test_injected_isl_candidate_truth_and_physical_caps_remain_authoritative():
     candidates = (observed, foreign)
     over_cap = _InjectedInterSatelliteModel(
         lambda physical_world, candidates, retained: InterSatelliteSelection(
-            tuple(candidates), (), 0
+            tuple(candidates)
         )
     )
     planner, _ = _planner(
@@ -1691,16 +1670,6 @@ def test_injected_isl_model_is_the_selection_authority_without_replacing_planner
     model = _InjectedInterSatelliteModel(
         lambda physical_world, candidates, retained: InterSatelliteSelection(
             tuple(candidates),
-            tuple(
-                CandidateDecision(
-                    CandidateDecisionKind.SELECTED,
-                    "injected test selection",
-                    value.endpoint_a,
-                    value.endpoint_b,
-                )
-                for value in candidates
-            ),
-            0,
         ),
         pairs=pairs,
     )
@@ -1722,55 +1691,19 @@ def test_injected_isl_model_is_the_selection_authority_without_replacing_planner
     planner.shutdown()
 
 
-@pytest.mark.parametrize("failure", ("contradiction", "underfilled"))
-def test_injected_isl_inspection_evidence_is_validated_atomically(failure):
-    physical_world, satellites, _ = _world()
-    candidate = _isl_candidate(satellites[0], satellites[1])
-
-    def selection_factory(physical_world, candidates, retained):
-        del physical_world, retained
-        if failure == "contradiction":
-            return InterSatelliteSelection(
-                (candidates[0],),
-                (
-                    CandidateDecision(
-                        CandidateDecisionKind.REJECTED,
-                        "contradicts selected relationship",
-                        candidates[0].endpoint_a,
-                        candidates[0].endpoint_b,
-                    ),
-                ),
-                0,
-            )
-        return InterSatelliteSelection(
-            (),
-            (
-                CandidateDecision(
-                    CandidateDecisionKind.REJECTED,
-                    "not selected",
-                    candidates[0].endpoint_a,
-                    candidates[0].endpoint_b,
-                ),
-                CandidateDecision(
-                    CandidateDecisionKind.UNDERFILLED,
-                    "impossible underfill claim",
-                ),
-            ),
-            1_000_000_000,
-        )
-
-    planner, _ = _planner(
-        physical_world,
-        inter_satellite_model=_InjectedInterSatelliteModel(selection_factory),
-    )
-    before = _planner_public_snapshot(planner)
-    expected = "contradicts" if failure == "contradiction" else "exceed"
-    with pytest.raises(ValueError, match=expected):
-        planner.observe(
-            physical_world.frame_at(EPOCH),
-            _observation(EPOCH, isls=(candidate,)),
-        )
-    assert _planner_public_snapshot(planner) == before
+def test_optional_isl_explanations_do_not_admit_or_reject_selection():
+    from skyseed_v2.simulator.planner import InterSatelliteSelectionDiagnostics
+    world, satellites, _ = _world()
+    candidate = _isl_candidate(*satellites)
+    model = _InjectedInterSatelliteModel(lambda world, candidates, state: InterSatelliteSelection(candidates))
+    # Algorithm-specific explanations are not a second correctness contract.
+    model.selection_diagnostics = lambda: InterSatelliteSelectionDiagnostics(
+        (CandidateDecision(CandidateDecisionKind.REJECTED, "illustrative diagnostic", candidate.endpoint_a, candidate.endpoint_b),), 999)
+    planner, _ = _planner(world, inter_satellite_model=model)
+    planner.observe(world.frame_at(EPOCH), _observation(EPOCH, isls=(candidate,)))
+    assert len(planner.get_state().operational_connections) == 1
+    plan, = planner.finish(end_timestamp=EPOCH)
+    assert planner.get_published_evidence(plan.plan_id).inspections[0].underfilled_isl_slots == 999
     planner.shutdown()
 
 
@@ -1786,7 +1719,7 @@ def test_injected_isl_inspection_evidence_is_validated_atomically(failure):
                     ),
                 ),
             ),
-            "falsified authoritative physical values",
+            None,
         ),
         (
             lambda candidates: (candidates[0], candidates[0]),
@@ -1795,26 +1728,27 @@ def test_injected_isl_inspection_evidence_is_validated_atomically(failure):
     ),
     ids=("falsified-delay", "duplicate"),
 )
-def test_injected_isl_model_cannot_falsify_or_duplicate_candidates(
+def test_isl_selection_resolves_supplied_identity_and_rejects_duplicates(
     selection_factory, message
 ):
     physical_world, satellites, _ = _world()
     candidate = _isl_candidate(satellites[0], satellites[1])
     model = _InjectedInterSatelliteModel(
         lambda physical_world, candidates, retained: InterSatelliteSelection(
-            selection_factory(candidates), (), 0
+            selection_factory(candidates)
         )
     )
     planner, _ = _planner(
         physical_world, inter_satellite_model=model
     )
     before = _planner_public_snapshot(planner)
-    with pytest.raises(ValueError, match=message):
-        planner.observe(
-            physical_world.frame_at(EPOCH),
-            _observation(EPOCH, isls=(candidate,)),
-        )
-    assert _planner_public_snapshot(planner) == before
+    if message is None:
+        planner.observe(physical_world.frame_at(EPOCH), _observation(EPOCH, isls=(candidate,)))
+        assert planner.get_state().operational_connections[0].endpoint_a_to_b.delay_us == candidate.propagation_delay_us
+    else:
+        with pytest.raises(ValueError, match=message):
+            planner.observe(physical_world.frame_at(EPOCH), _observation(EPOCH, isls=(candidate,)))
+        assert _planner_public_snapshot(planner) == before
     planner.shutdown()
 
 
@@ -1837,13 +1771,8 @@ def test_injected_ground_candidate_values_and_both_endpoint_caps_are_enforced():
             lambda physical_world, candidates: (falsified,)
         ),
     )
-    before = _planner_public_snapshot(planner)
-    with pytest.raises(ValueError, match="falsified authoritative physical values"):
-        planner.observe(
-            physical_world.frame_at(EPOCH),
-            _observation(EPOCH, ground=(first,)),
-        )
-    assert _planner_public_snapshot(planner) == before
+    planner.observe(physical_world.frame_at(EPOCH), _observation(EPOCH, ground=(first,)))
+    assert planner.get_state().operational_connections[0].endpoint_a_to_b.delay_us == first.propagation_delay_us
     planner.shutdown()
 
     second = _ground_candidate(stations[0], satellites[1])
@@ -1895,12 +1824,12 @@ def test_bounded_prehistory_warms_acquisition_without_preformal_transitions():
             desired_same_plane_links=1,
             desired_cross_plane_links=0,
             maximum_cross_plane_separation=0,
-            acquisition_duration=timedelta(seconds=20),
+
         )
     )
     planner, _ = _planner(
         physical_world, inter_satellite_model=model
-    )
+    , inter_satellite_acquisition_duration=timedelta(seconds=20))
     for seconds in (-20, -15, -10, -5):
         timestamp = EPOCH + timedelta(seconds=seconds)
         planner.prime(
@@ -1931,12 +1860,12 @@ def test_isl_acquisition_resets_after_selection_gap_before_reacquisition():
             desired_same_plane_links=1,
             desired_cross_plane_links=0,
             maximum_cross_plane_separation=0,
-            acquisition_duration=timedelta(seconds=20),
+
         )
     )
     planner, _ = _planner(
         physical_world, inter_satellite_model=model
-    )
+    , inter_satellite_acquisition_duration=timedelta(seconds=20))
     planner.observe(
         physical_world.frame_at(EPOCH),
         _observation(EPOCH, isls=(candidate,)),
@@ -1970,14 +1899,13 @@ def test_isl_acquisition_resets_after_selection_gap_before_reacquisition():
     ("result_factory", "zone_candidates", "message"),
     (
         (
-            lambda satellites: ZoneServicePlanningResult((), ()),
+            lambda satellites: ZoneServicePlanningResult(()),
             lambda satellites: (),
             "exactly one explicit assignment per Zone",
         ),
         (
             lambda satellites: ZoneServicePlanningResult(
                 (ZoneServiceAssignment("foreign-zone", None),),
-                (ZoneServiceTransition("foreign-zone", None, None),),
             ),
             lambda satellites: (),
             "exactly one explicit assignment per Zone",
@@ -1987,11 +1915,6 @@ def test_isl_acquisition_resets_after_selection_gap_before_reacquisition():
                 (
                     ZoneServiceAssignment(
                         "zone-a", satellites[1].node_id
-                    ),
-                ),
-                (
-                    ZoneServiceTransition(
-                        "zone-a", None, satellites[1].node_id
                     ),
                 ),
             ),
@@ -2028,76 +1951,22 @@ def test_injected_zone_model_cannot_forge_assignment_authority(
     planner.shutdown()
 
 
-def test_injected_models_must_surface_exact_compact_semantic_changes():
+def test_planner_derives_changes_from_model_decisions_once():
     physical_world, satellites, stations = _world()
-    missing_zone_delta = _InjectedZoneServiceModel(
-        lambda physical_world, candidates, previous: ZoneServicePlanningResult(
-            (ZoneServiceAssignment("zone-a", None),), ()
-        )
-    )
-    planner, _ = _planner(
-        physical_world, zone_service_model=missing_zone_delta
-    )
-    with pytest.raises(ValueError, match="Zone compact changes"):
-        planner.observe(
-            physical_world.frame_at(EPOCH), _observation(EPOCH)
-        )
-    planner.shutdown()
-
-    ground = _ground_candidate(stations[0], satellites[0])
-
-    class _MissingParameterDelta:
-        def __init__(self) -> None:
-            self.delegate = _parameter_model()
-
-        def plan_effective_parameters(
-            self, timestamp, observations, previous_memory
-        ):
-            result = self.delegate.plan_effective_parameters(
-                timestamp, observations, previous_memory
-            )
-            return replace(result, established_connections=())
-
-    planner, _ = _planner(
-        physical_world,
-        ground_station_model=_InjectedGroundStationModel(
-            lambda physical_world, candidates: tuple(candidates)
-        ),
-        parameter_model=_MissingParameterDelta(),
-    )
-    with pytest.raises(ValueError, match="Parameter compact changes"):
-        planner.observe(
-            physical_world.frame_at(EPOCH),
-            _observation(EPOCH, ground=(ground,)),
-        )
-    planner.shutdown()
-
-    demand = RouteDemand(
-        satellites[0].node_id,
-        GroundStationRouteDemandTarget(stations[0].node_id),
-    )
-    missing_route_delta = _InjectedRouteModel(
-        lambda physical_world, connections, assignments, demands, previous: (
-            RoutePlanningResult(
-                tuple(
-                    UnreachableRouteOutcome(
-                        value, RouteUnreachableReason.NO_OPERATIONAL_PATH
-                    )
-                    for value in demands
-                ),
-                (),
-            )
-        )
-    )
-    planner, _ = _planner(
-        physical_world,
-        route_model=missing_route_delta,
-        route_demands=(demand,),
-    )
-    with pytest.raises(ValueError, match="Route compact changes"):
-        planner.observe(
-            physical_world.frame_at(EPOCH), _observation(EPOCH)
-        )
+    zone = _InjectedZoneServiceModel(lambda world, candidates, previous:
+        ZoneServicePlanningResult((ZoneServiceAssignment("zone-a", None),)))
+    demand = RouteDemand(satellites[0].node_id, GroundStationRouteDemandTarget(stations[0].node_id))
+    route = _InjectedRouteModel(lambda world, connections, assignments, demands, previous:
+        RoutePlanningResult(tuple(UnreachableRouteOutcome(d, RouteUnreachableReason.NO_ELIGIBLE_PATH) for d in demands)))
+    planner, _ = _planner(physical_world, zone_service_model=zone, route_model=route, route_demands=(demand,))
+    planner.observe(physical_world.frame_at(EPOCH), _observation(EPOCH))
+    transition = planner.get_last_transition()
+    assert transition.zone_service_transitions == (ZoneServiceTransition("zone-a", None, None),)
+    assert transition.route_outcome_transitions == (RouteOutcomeTransition(demand, None, planner.get_state().route_outcomes[0]),)
+    planner.set_route_demands(())
+    stamp = EPOCH + timedelta(seconds=5)
+    planner.observe(physical_world.frame_at(stamp), _observation(stamp))
+    assert planner.get_last_transition().route_outcome_transitions == (RouteOutcomeTransition(demand, transition.route_outcome_transitions[0].current, None),)
     planner.shutdown()
 
 
@@ -2109,22 +1978,15 @@ def test_injected_models_must_surface_exact_compact_semantic_changes():
     ),
     ids=("parameter-update", "withdrawal"),
 )
-def test_parameter_model_cannot_omit_update_or_withdrawal_delta(
+def test_planner_derives_parameter_update_or_withdrawal_from_connections(
     field_name, second_ground
 ):
     physical_world, satellites, stations = _world()
 
-    def remove_target_delta(result):
-        if getattr(result, field_name):
-            return replace(result, **{field_name: ()})
-        return result
-
     planner, _ = _planner(
         physical_world,
-        ground_station_model=_InjectedGroundStationModel(
-            lambda physical_world, candidates: tuple(candidates)
-        ),
-        parameter_model=_TransformingParameterModel(remove_target_delta),
+        ground_station_model=_InjectedGroundStationModel(lambda world, candidates: tuple(candidates)),
+        parameter_model=_parameter_model(),
     )
     first = _ground_candidate(stations[0], satellites[0], delay_us=1)
     planner.observe(
@@ -2141,13 +2003,9 @@ def test_parameter_model_cannot_omit_update_or_withdrawal_delta(
         if second_ground == "updated"
         else ()
     )
-    before = _planner_public_snapshot(planner)
-    with pytest.raises(ValueError, match="Parameter compact changes"):
-        planner.observe(
-            physical_world.frame_at(timestamp),
-            _observation(timestamp, ground=candidates),
-        )
-    assert _planner_public_snapshot(planner) == before
+    planner.observe(physical_world.frame_at(timestamp), _observation(timestamp, ground=candidates))
+    assert len(getattr(planner.get_last_transition(), field_name)) == 1
+    assert len(planner.get_state().operational_connections) == int(second_ground == "updated")
     planner.shutdown()
 
 
@@ -2172,7 +2030,6 @@ def test_route_model_cannot_publish_a_path_over_a_nonoperational_edge():
         )
         return RoutePlanningResult(
             (outcome,),
-            (RouteOutcomeTransition(demands[0], prior, outcome),),
         )
 
     route_model = _InjectedRouteModel(invalid_route)
@@ -2216,7 +2073,6 @@ def test_route_model_cannot_terminate_at_the_wrong_ground_station():
         )
         return RoutePlanningResult(
             (outcome,),
-            (RouteOutcomeTransition(demands[0], prior, outcome),),
         )
 
     planner, _ = _planner(
@@ -2237,92 +2093,6 @@ def test_route_model_cannot_terminate_at_the_wrong_ground_station():
     planner.shutdown()
 
 
-def test_coordination_policy_is_precedence_only_and_cannot_reverse_readiness():
-    physical_world, satellites, stations = _world()
-
-    class _EventOwningPolicy:
-        def coordinate(self, transition, canonical_events, required):
-            del transition, required
-            return canonical_events
-
-    planner, _ = _planner(
-        physical_world,
-        ground_station_model=_InjectedGroundStationModel(
-            lambda physical_world, candidates: tuple(candidates)
-        ),
-        coordination_policy=_EventOwningPolicy(),
-    )
-    with pytest.raises(TypeError, match="only SemanticEventPrecedence"):
-        planner.observe(
-            physical_world.frame_at(EPOCH),
-            _observation(
-                EPOCH,
-                ground=(_ground_candidate(stations[0], satellites[0]),),
-            ),
-        )
-    planner.shutdown()
-
-    ground = _ground_candidate(stations[0], satellites[0])
-    demand = RouteDemand(
-        satellites[0].node_id,
-        GroundStationRouteDemandTarget(stations[0].node_id),
-    )
-
-    def valid_route(
-        physical_world, connections, assignments, demands, previous
-    ):
-        del physical_world, assignments
-        assert len(connections) == 1
-        outcome = ReachableRouteOutcome(
-            demands[0],
-            stations[0].node_id,
-            (satellites[0].node_id, stations[0].node_id),
-        )
-        prior = next(
-            (value for value in previous if value.demand == demands[0]), None
-        )
-        return RoutePlanningResult(
-            (outcome,),
-            (RouteOutcomeTransition(demands[0], prior, outcome),),
-        )
-
-    class _ReverseParameterAndRoute:
-        def coordinate(self, transition, canonical_events, required):
-            del transition
-            parameter = next(
-                value
-                for value in canonical_events
-                if value.kind is SemanticEventKind.PARAMETER_READY
-            )
-            route = next(
-                value
-                for value in canonical_events
-                if value.kind is SemanticEventKind.ROUTE_REACHABLE
-            )
-            retained = tuple(
-                value
-                for value in required
-                if value.predecessor != parameter or value.successor != route
-            )
-            return (*retained, SemanticEventPrecedence(route, parameter))
-
-    planner, _ = _planner(
-        physical_world,
-        ground_station_model=_InjectedGroundStationModel(
-            lambda physical_world, candidates: tuple(candidates)
-        ),
-        route_model=_InjectedRouteModel(valid_route),
-        coordination_policy=_ReverseParameterAndRoute(),
-        route_demands=(demand,),
-    )
-    before = _planner_public_snapshot(planner)
-    with pytest.raises(ValueError, match="omitted required semantic event ordering"):
-        planner.observe(
-            physical_world.frame_at(EPOCH),
-            _observation(EPOCH, ground=(ground,)),
-        )
-    assert _planner_public_snapshot(planner) == before
-    planner.shutdown()
 
 
 def test_planner_failure_is_atomic_and_same_timestamp_is_retryable():
@@ -2362,7 +2132,7 @@ def test_route_model_is_not_recomputed_without_route_relevant_change():
         previous_by_demand = {value.demand: value for value in previous}
         outcomes = tuple(
             UnreachableRouteOutcome(
-                demand, RouteUnreachableReason.NO_OPERATIONAL_PATH
+                demand, RouteUnreachableReason.NO_ELIGIBLE_PATH
             )
             for demand in demands
         )
@@ -2376,7 +2146,7 @@ def test_route_model_is_not_recomputed_without_route_relevant_change():
             for demand in set(previous_by_demand) | set(outcome_by_demand)
             if previous_by_demand.get(demand) != outcome_by_demand.get(demand)
         )
-        return RoutePlanningResult(outcomes, transitions)
+        return RoutePlanningResult(outcomes)
 
     route_model = _InjectedRouteModel(unreachable)
     planner, _ = _planner(physical_world, route_model=route_model)
@@ -2429,9 +2199,11 @@ def test_route_model_is_not_recomputed_without_route_relevant_change():
             for outcome in outcomes
             if previous_by_demand.get(outcome.demand) != outcome
         )
-        return RoutePlanningResult(outcomes, transitions)
+        return RoutePlanningResult(outcomes)
 
     route_model = _InjectedRouteModel(direct_route)
+    # This test Model explicitly ignores parameters; custom Models default to dependency.
+    route_model.depends_on_connection_parameters = lambda: False
     planner, _ = _planner(
         physical_world,
         ground_station_model=ground_model,
@@ -2458,7 +2230,7 @@ def test_route_model_is_not_recomputed_without_route_relevant_change():
 
 
 def test_gateway_route_worker_telemetry_is_bounded_reused_and_shutdown(monkeypatch):
-    import skyseed_v2.simulator._route_computation as route_computation
+    import skyseed_v2.simulator.planner.routing._computation as route_computation
 
     monkeypatch.setattr(
         route_computation,
@@ -2497,7 +2269,7 @@ def test_gateway_route_worker_telemetry_is_bounded_reused_and_shutdown(monkeypat
     try:
         first = model.plan_route_outcomes(
             physical_world, connections, assignments, demands, ()
-        )
+        , timestamp=MODEL_TIMESTAMP)
         first_observation = engine.last_compute_observation
         assert first_observation is not None
         assert first_observation.selected_worker_count == 2
@@ -2511,7 +2283,7 @@ def test_gateway_route_worker_telemetry_is_bounded_reused_and_shutdown(monkeypat
             assignments,
             demands,
             first.outcomes,
-        )
+         timestamp=MODEL_TIMESTAMP)
         second_observation = engine.last_compute_observation
         assert second_observation is not None
         assert second_observation.selected_worker_count == 1
@@ -2521,7 +2293,7 @@ def test_gateway_route_worker_telemetry_is_bounded_reused_and_shutdown(monkeypat
         assert second_observation.worker_activities == ()
         assert model._active_compute_worker_count() == 2
         assert second.outcomes == first.outcomes
-        assert second.transitions == ()
+        assert all(a is b for a, b in zip(first.outcomes, second.outcomes))
         assert engine.executor_lifecycle.executor_generation == 1
         changed_connections = (*connections, OperationalConnection(
             OperationalConnectionId(OperationalConnectionKind.INTER_SATELLITE,
@@ -2530,7 +2302,7 @@ def test_gateway_route_worker_telemetry_is_bounded_reused_and_shutdown(monkeypat
         ))
         changed = model.plan_route_outcomes(
             physical_world, changed_connections, assignments, demands, second.outcomes,
-        )
+         timestamp=MODEL_TIMESTAMP)
         assert engine.last_compute_observation.executor_reused
         assert engine.last_compute_observation.reused_request_count == 0
         monkeypatch.setattr(route_computation, "_bounded_route_worker_count", lambda node_count, job_count: 1)
@@ -2538,7 +2310,7 @@ def test_gateway_route_worker_telemetry_is_bounded_reused_and_shutdown(monkeypat
         try:
             serial = reference.plan_route_outcomes(
                 physical_world, changed_connections, assignments, tuple(reversed(demands)), second.outcomes,
-            )
+             timestamp=MODEL_TIMESTAMP)
             assert serial == changed
             assert reference._route_engine.last_compute_observation.reused_request_count == 0
         finally:
@@ -2560,9 +2332,9 @@ def test_forward_admission_reservation_loss_and_real_isl_replacement():
     world, satellites, _ = _world(satellites=tuple(_satellite(i, capability=1) for i in range(3)))
     model = RetainFirstInterSatelliteConnectionPlanningModel(
         RetainFirstInterSatelliteConfiguration(desired_same_plane_links=1,
-            desired_cross_plane_links=0, acquisition_duration=timedelta(seconds=5),
+            desired_cross_plane_links=0,
             minimum_service_duration=timedelta(seconds=10)))
-    planner, _ = _planner(world, inter_satellite_model=model)
+    planner, _ = _planner(world, inter_satellite_model=model, inter_satellite_acquisition_duration=timedelta(seconds=5))
     ab, ac = (_proven(_isl_candidate(satellites[0], satellites[i])) for i in (1, 2))
     def advance(t, candidates):
         timestamp = EPOCH+timedelta(seconds=t)
@@ -2580,22 +2352,22 @@ def test_admission_short_window_cancellation_and_terminal_uncertainty():
     world, satellites, _ = _world()
     model = RetainFirstInterSatelliteConnectionPlanningModel(
         RetainFirstInterSatelliteConfiguration(desired_same_plane_links=1,
-            desired_cross_plane_links=0, acquisition_duration=timedelta(seconds=5),
+            desired_cross_plane_links=0,
             minimum_service_duration=timedelta(seconds=10)))
-    planner, _ = _planner(world, inter_satellite_model=model)
+    planner, _ = _planner(world, inter_satellite_model=model, inter_satellite_acquisition_duration=timedelta(seconds=5))
     candidate = _isl_candidate(*satellites)
     for t, candidates, count in (
         (0, (_proven(candidate, end=14),), 0),  # 5 preparation + 10 service fails.
         (5, (_proven(candidate, end=20),), 0),  # Equality admits at selection time.
         (10, (), 0),                          # Cancel before completion.
-        (15, (candidate,), 0),                # Unknown future cannot admit.
-        (20, (_proven(candidate, end=None),), 0),
+        (15, (candidate,), 0),                # Unknown future admits current feasibility; still preparing.
+        (20, (_proven(candidate, end=None),), 1),
         (25, (_proven(candidate, end=None),), 1),
     ):
         stamp = EPOCH+timedelta(seconds=t)
         planner.observe(world.frame_at(stamp), _observation(stamp, isls=candidates))
         assert len(planner.get_state().operational_connections) == count
-    assert planner._lifecycle_by_pair[_candidate_pair_for_test(candidate)].selected_since == EPOCH+timedelta(seconds=20)
+    assert planner._lifecycle_by_pair[_candidate_pair_for_test(candidate)].selected_since == EPOCH+timedelta(seconds=15)
     planner.shutdown()
 
 
@@ -2607,11 +2379,11 @@ def test_initial_prehistory_prepares_both_kinds_without_extra_formal_transition(
     world, satellites, stations = _world()
     isl_model = RetainFirstInterSatelliteConnectionPlanningModel(
         RetainFirstInterSatelliteConfiguration(desired_same_plane_links=1,
-            desired_cross_plane_links=0, acquisition_duration=timedelta(seconds=5),
+            desired_cross_plane_links=0,
             minimum_service_duration=timedelta(seconds=180)))
     gs_model = CoverageFirstGroundStationAccessPlanningModel(default_ground_station_limit=1, ground_station_policy_limit=1,
-        acquisition_duration=timedelta(seconds=5), minimum_service_duration=timedelta(seconds=60))
-    planner, _ = _planner(world, inter_satellite_model=isl_model, ground_station_model=gs_model)
+         minimum_service_duration=timedelta(seconds=60))
+    planner, _ = _planner(world, inter_satellite_model=isl_model, ground_station_model=gs_model, ground_station_acquisition_duration=timedelta(seconds=5), inter_satellite_acquisition_duration=timedelta(seconds=5))
     isl = _proven(_isl_candidate(*satellites))
     gs = _proven(_ground_candidate(stations[0], satellites[0]))
     assert planner.required_prehistory == timedelta(seconds=5)
@@ -2631,8 +2403,8 @@ def test_gs_coverage_beats_incumbency_and_respects_preparation_capacity(satellit
     stations = tuple(replace(_station(i), max_simultaneous_satellite_accesses=1) for i in range(2))
     world, satellites, stations = _world(satellites=satellites, stations=stations)
     model = CoverageFirstGroundStationAccessPlanningModel(default_ground_station_limit=1, ground_station_policy_limit=1,
-        acquisition_duration=timedelta(seconds=5), minimum_service_duration=timedelta(seconds=60))
-    planner, _ = _planner(world, ground_station_model=model)
+         minimum_service_duration=timedelta(seconds=60))
+    planner, _ = _planner(world, ground_station_model=model, ground_station_acquisition_duration=timedelta(seconds=5))
     ga, gb, ha = (_proven(_ground_candidate(stations[g], satellites[a]))
                   for g, a in ((0,0), (0,1), (1,0)))
     for t, candidates, count in ((0,(ga,),0), (5,(ga,),1),
@@ -2650,8 +2422,8 @@ def test_gs_coverage_beats_incumbency_and_respects_preparation_capacity(satellit
 def test_gs_valid_pending_and_operational_incumbents_ignore_quality_churn():
     world, satellites, stations = _world()
     model = CoverageFirstGroundStationAccessPlanningModel(default_ground_station_limit=1, ground_station_policy_limit=1,
-        acquisition_duration=timedelta(seconds=5), minimum_service_duration=timedelta(seconds=60))
-    planner, _ = _planner(world, ground_station_model=model)
+         minimum_service_duration=timedelta(seconds=60))
+    planner, _ = _planner(world, ground_station_model=model, ground_station_acquisition_duration=timedelta(seconds=5))
     first = _proven(_ground_candidate(stations[0], satellites[0]))
     better = replace(_proven(_ground_candidate(stations[0], satellites[1])), elevation_deg=80)
     for t, candidates in ((0,(first,)), (5,(better,first)), (10,(first,better))):
@@ -2664,7 +2436,9 @@ def test_gs_valid_pending_and_operational_incumbents_ignore_quality_churn():
 
 def test_formal_semantics_and_incremental_compiler_are_batch_independent(tmp_path):
     from skyseed_v2.backend.bpf import compile_bpf
-    from skyseed_v2.backend.bpf._runner_artifact import _RunnerArtifactWriter, _open_runner_artifact, _resolve_nominal_boundaries
+    from skyseed_v2.backend.bpf.execution_materials.sealing import _RunnerArtifactWriter
+    from skyseed_v2.backend.bpf.execution_materials.codec import _open_runner_artifact
+    from skyseed_v2.backend.bpf.execution_materials.boundaries import _resolve_nominal_boundaries
     from skyseed_v2.simulator import PhysicalContactWindow
     world, satellites, stations = _world()
     sequences, compiled = [], []
@@ -2672,26 +2446,21 @@ def test_formal_semantics_and_incremental_compiler_are_batch_independent(tmp_pat
         isl_model = RetainFirstInterSatelliteConnectionPlanningModel(
             RetainFirstInterSatelliteConfiguration(desired_same_plane_links=1,
                 desired_cross_plane_links=0, maximum_cross_plane_separation=0,
-                acquisition_duration=timedelta(seconds=5), minimum_service_duration=timedelta(seconds=30)))
+                 minimum_service_duration=timedelta(seconds=30)))
         planner, _ = _planner(world, inter_satellite_model=isl_model,
             ground_station_model=CoverageFirstGroundStationAccessPlanningModel(default_ground_station_limit=1, ground_station_policy_limit=1,
-                acquisition_duration=timedelta(seconds=5), minimum_service_duration=timedelta(seconds=30)),
-            planning_window_policy=FrameBatchPlanningWindowPolicy(batch_size))
-        previous, reference_previous, state = None, None, None
+                 minimum_service_duration=timedelta(seconds=30)),
+            planner_configuration=PlannerConfiguration(batch_size, inter_satellite_acquisition_duration=timedelta(0), ground_station_acquisition_duration=timedelta(0)), inter_satellite_acquisition_duration=timedelta(seconds=5), ground_station_acquisition_duration=timedelta(seconds=5))
+        previous, state = None, None
         transitions, boundaries, expected_nominal, realizations = [], [], [], []
         writer = _RunnerArtifactWriter(tmp_path / str(batch_size))
         def consume(plans):
-            nonlocal previous, reference_previous, state
+            nonlocal previous, state
             for plan in plans:
                 replay = apply_plan(state, plan, physical_world_fingerprint=world.semantic_fingerprint())
                 realization = compile_bpf(plan, world, previous)
-                # Detached realizations reconstruct full indexes, providing an
-                # independent baseline for the incremental cache path.
-                reference = compile_bpf(plan, world, reference_previous)
-                assert realization == reference
                 assert realization.output_planned_state == replay
-                object.__setattr__(reference, '_incremental_indexes', None)
-                reference_previous, previous, state = reference, realization, replay
+                previous, state = realization, replay
                 writer.append(realization)
                 transitions.extend(plan.transitions)
                 boundaries.extend(realization.compiled_activation_boundaries)

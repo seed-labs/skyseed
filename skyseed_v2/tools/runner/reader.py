@@ -1,4 +1,4 @@
-"""Read complete durable BpfRunner event evidence for the Runner Tool."""
+"""Read complete durable Runner event evidence for the Runner Tool."""
 
 from __future__ import annotations
 
@@ -11,17 +11,11 @@ from tools._history import read_jsonl_records
 def read_runner_event_history(path: Path) -> tuple[dict[str, Any], ...]:
     records = read_jsonl_records(path)
     if not records or records[0] not in (
-        {
-            "record_type": "history_header",
-            "format_version": 1,
-            "owner": "BpfRunner",
-        },
-        {
-            "record_type": "history_header",
-            "format_version": 2,
-            "owner": "BpfRunner",
-            "capture": "bounded-nonblocking",
-        },
+        # The persisted owner label predates the public class rename. Reading
+        # existing evidence does not require a Python alias or rewriting it.
+        {"record_type": "history_header", "format_version": version, "owner": owner,
+         **({"capture": "bounded-nonblocking"} if version == 2 else {})}
+        for owner in ("BpfRunner", "Runner") for version in (1, 2)
     ):
         raise ValueError("Runner durable event history header is invalid")
     events = []

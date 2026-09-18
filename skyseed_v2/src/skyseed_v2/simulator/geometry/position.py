@@ -15,7 +15,7 @@ class EarthFixedPosition:
     """Represent one authoritative WGS84 Earth-fixed Cartesian Position.
 
     Layer: immutable Simulator physical value. PositionModel creates it,
-    PhysicalFrame owns the timestamped mapping, and physical/legacy consumers
+    PhysicalPositionSnapshot owns the timestamped mapping, and physical/legacy consumers
     read it. It is not a geographic state, trajectory, velocity or third-party
     frame value; it is public from
     ``skyseed_v2.simulator`` as the sole formal Position representation.

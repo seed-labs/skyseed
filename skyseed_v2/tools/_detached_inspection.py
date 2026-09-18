@@ -2,30 +2,27 @@
 
 This module is intentionally private and small.  It does not own domain
 progression: callers submit already-frozen immutable values, and a forked
-process first persists a deterministic detached snapshot before projecting,
-rendering, auditing, and atomically publishing one Tool bundle.
+process reads persisted evidence or detaches live values before projecting,
+rendering and publishing one complete Tool bundle.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import datetime, timezone
-import gzip
-from hashlib import sha256
 import json
 import multiprocessing
 import os
 from pathlib import Path
-import pickle
 import resource
 import shutil
+import tempfile
+from uuid import uuid4
 from time import perf_counter, sleep
 from typing import Any
 
 
-_HANDOFF_FORMAT_VERSION = 1
-_SNAPSHOT_ENCODING = "gzip-pickle-v5"
-_SUPPORTED_TASKS = frozenset({"planner", "compiler", "observation"})
+_SUPPORTED_TASKS = frozenset({"planner", "compiler", "performance"})
 
 
 class _DetachedInspectionExecutor:
@@ -40,10 +37,9 @@ class _DetachedInspectionExecutor:
             raise RuntimeError("detached Inspection workers require fork support")
         self._context = multiprocessing.get_context("fork")
         self._evidence_directory = Path(evidence_directory).resolve()
-        self._task_directory = self._evidence_directory / "inspection-tasks"
-        self._handoff_directory = self._evidence_directory / "tool-handoffs"
-        self._task_directory.mkdir(parents=True, exist_ok=True)
-        self._handoff_directory.mkdir(parents=True, exist_ok=True)
+        self._evidence_directory.mkdir(parents=True, exist_ok=True)
+        self._task_directory = Path(tempfile.mkdtemp(prefix="invocation-", dir=self._evidence_directory))
+        self._cancelled = self._context.Event()
         self._max_workers = max_workers
         self._active: list[dict[str, object]] = []
         self._completed: list[dict[str, object]] = []
@@ -70,30 +66,17 @@ class _DetachedInspectionExecutor:
         while len(self._active) >= self._max_workers:
             self._reap(block=True)
 
+        if self._closed:
+            raise RuntimeError("detached Inspection executor is already closed")
         output = Path(output_directory).resolve()
-        _clean_stale_staging(output)
-        handoff_path = self._handoff_directory / f"{task}.json"
-        snapshot_path = self._handoff_directory / f"{task}-source.pickle.gz"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        claim = output.parent / f".{output.name}.publishing"
+        try:
+            claim.mkdir()
+        except FileExistsError as error:
+            raise RuntimeError(f"Tool output already has an active publisher: {output}") from error
+        staging = output.parent / f".{output.name}.staging-{uuid4().hex}"
         result_path = self._task_directory / f"{task}.json"
-        result_path.unlink(missing_ok=True)
-        snapshot_path.unlink(missing_ok=True)
-        _write_json_atomic(
-            handoff_path,
-            {
-                "format_version": _HANDOFF_FORMAT_VERSION,
-                "artifact_type": "inspection-tool-handoff",
-                "tool": task,
-                "artifact_directory": os.path.relpath(
-                    output, self._handoff_directory
-                ),
-                "snapshot": {
-                    "status": "PENDING",
-                    "encoding": _SNAPSHOT_ENCODING,
-                    "path": snapshot_path.name,
-                },
-                "source": _handoff_source_description(task, source),
-            },
-        )
         scheduled_monotonic = perf_counter()
         scheduled_at = _utc_now()
         process = self._context.Process(
@@ -102,13 +85,17 @@ class _DetachedInspectionExecutor:
                 task,
                 dict(source),
                 output,
-                handoff_path,
-                snapshot_path,
+                staging,
                 result_path,
+                self._cancelled,
             ),
             name=f"skyseed-inspection-{task}",
         )
-        process.start()
+        try:
+            process.start()
+        except BaseException:
+            claim.rmdir()
+            raise
         handle: dict[str, object] = {
             "task": task,
             "status": "BUILDING",
@@ -116,7 +103,8 @@ class _DetachedInspectionExecutor:
             "scheduled_at": scheduled_at,
             "scheduled_monotonic": scheduled_monotonic,
             "output_directory": str(output),
-            "handoff_path": str(handoff_path),
+            "claim": str(claim),
+            "staging": str(staging),
             "result_path": str(result_path),
             "process": process,
         }
@@ -142,27 +130,15 @@ class _DetachedInspectionExecutor:
         return records
 
     def terminate(self) -> None:
-        """Stop unfinished side work after a primary domain failure."""
-
-        for handle in tuple(self._active):
-            process = handle.get("process")
-            if isinstance(process, multiprocessing.process.BaseProcess):
-                if process.is_alive():
-                    process.terminate()
-                process.join(timeout=10.0)
-            output = Path(str(handle["output_directory"]))
-            _clean_stale_staging(output)
-            handle.pop("process", None)
-            handle.update(
-                {
-                    "status": "FAILED",
-                    "message": "cancelled after primary domain failure",
-                    "exit_code": getattr(process, "exitcode", None),
-                }
-            )
-            self._active.remove(handle)
-            self._completed.append(handle)
+        """Close admission and drain accepted workers before removing owned staging."""
         self._closed = True
+        self._cancelled.set()
+        while self._active:
+            try:
+                self._reap(block=True)
+            except KeyboardInterrupt:
+                # Repeated cancellation cannot abandon accepted work.
+                continue
         self._discard_control_directory()
 
     def records(self) -> tuple[dict[str, object], ...]:
@@ -220,14 +196,26 @@ class _DetachedInspectionExecutor:
         if process.exitcode != 0:
             payload["status"] = "FAILED"
             payload.setdefault("message", f"worker exited with code {process.exitcode}")
-        try:
-            handoff = _read_handoff(Path(str(handle["handoff_path"])))
-            payload["input_evidence"] = handoff.get("snapshot")
-        except (OSError, ValueError):
-            payload["input_evidence"] = {"status": "UNAVAILABLE"}
         handle.update(payload)
         handle["exit_code"] = process.exitcode
         handle["status"] = str(payload.get("status", "FAILED"))
+        staging = Path(str(handle["staging"]))
+        cleanup_errors = []
+        try:
+            if staging.exists():
+                shutil.rmtree(staging)
+        except OSError as error:
+            cleanup_errors.append(f"staging cleanup: {error}")
+        try:
+            Path(str(handle["claim"])).rmdir()
+        except OSError as error:
+            cleanup_errors.append(f"publication claim cleanup: {error}")
+        process.close()
+        if cleanup_errors:
+            handle["status"] = "FAILED"
+            handle["message"] = "; ".join(filter(None, (str(handle.get("message", "")), *cleanup_errors)))
+        # This worker has actually exited. A local cleanup failure must not leave
+        # a half-reaped handle that prevents draining the other accepted workers.
         self._active.remove(handle)
         self._completed.append(handle)
         print(
@@ -237,40 +225,42 @@ class _DetachedInspectionExecutor:
         )
 
     def _discard_control_directory(self) -> None:
-        if self._evidence_directory.exists():
-            shutil.rmtree(self._evidence_directory)
+        if self._task_directory.exists():
+            shutil.rmtree(self._task_directory)
+        try:
+            self._evidence_directory.rmdir()
+        except OSError:
+            pass  # Other invocations may still own control directories.
 
 
 def _worker_entry(
     task: str,
     source: dict[str, object],
     output: Path,
-    handoff_path: Path,
-    snapshot_path: Path,
+    staging: Path,
     result_path: Path,
+    cancelled,
 ) -> None:
     started = perf_counter()
     started_at = _utc_now()
     pid = os.getpid()
-    staging = _staging_directory(output)
     payload: dict[str, object]
     try:
         staging.mkdir(parents=True)
-        if task == "observation":
+        if task == "performance":
             observation_path = Path(str(source["observation_path"])).resolve()
-            _complete_file_handoff(handoff_path, observation_path)
             result = _build_observation(observation_path, staging)
         else:
             detached = _detach_live_source(task, source)
-            snapshot_metadata = _write_snapshot(snapshot_path, detached)
-            _complete_snapshot_handoff(handoff_path, snapshot_metadata)
             result = _build_from_snapshot(task, detached, staging)
-        _audit_bundle(staging)
-        _publish_staged(staging, output)
+        if cancelled.is_set():
+            shutil.rmtree(staging)
+        else:
+            _publish_staged(staging, output)
         ended = perf_counter()
         payload = {
             "task": task,
-            "status": "COMPLETE",
+            "status": "CANCELLED" if cancelled.is_set() else "COMPLETE",
             "pid": pid,
             "started_at": started_at,
             "ended_at": _utc_now(),
@@ -298,7 +288,7 @@ def _worker_entry(
             "message": str(error),
         }
     _write_json_atomic(result_path, payload)
-    if payload["status"] != "COMPLETE":
+    if payload["status"] == "FAILED":
         raise SystemExit(1)
 
 
@@ -316,7 +306,7 @@ def _detach_live_source(task: str, source: Mapping[str, object]) -> dict[str, An
                 ),
                 "streaming_projection": True,
             }
-        from skyseed_v2.simulator.planning import (
+        from skyseed_v2.simulator.planner import (
             published_planning_evidence_to_data,
         )
         from tools._history import read_sealed_physical_frames
@@ -397,7 +387,7 @@ def _build_from_snapshot(
                     snapshot.get("model_descriptors", {})
                 ),
             )
-        from skyseed_v2.simulator.planning import (
+        from skyseed_v2.simulator.planner import (
             published_planning_evidence_from_data,
         )
         from tools.planner.artifact_writer import write_planner_artifacts
@@ -456,9 +446,17 @@ def _delivered_batch_evidence(definition_path) -> tuple[dict, ...]:
         return ()
     path = Path(definition_path)
     definition = json.loads(path.read_text())
-    output = path.parent.parent
+    output = path.parents[2]
     manifests = [definition["runner_artifact"]["manifest"]]
-    manifests.extend(value["manifest"] for value in definition.get("runner_batches", ()))
+    if definition["runner"].get("keep_alive"):
+        with (output / "results/compiler/materials.jsonl").open() as stream:
+            from itertools import islice
+            from skyseed_v2.experiment.output.history import _completed_range
+            publication = _completed_range.get()
+            count = None if publication is None else publication[1]["published_batches"]
+            manifests = [json.loads(line)["manifest"] for line in islice(stream, count)]
+    else:
+        manifests.extend(value["manifest"] for value in definition.get("runner_batches", ()))
     return tuple({"index": index, "manifest": relative,
                   "timeline": (value := json.loads((output / relative).read_text()))["timeline"],
                   "delivery": value.get("delivery"), "binary": value["binary"]}
@@ -466,133 +464,9 @@ def _delivered_batch_evidence(definition_path) -> tuple[dict, ...]:
 
 
 def _build_observation(path: Path, directory: Path) -> dict[str, object]:
-    from tools.observation import write_observation_tool
+    from tools.performance import write_performance_tool
 
-    return write_observation_tool(path, directory)
-
-
-def _write_snapshot(path: Path, value: Mapping[str, object]) -> dict[str, object]:
-    destination = Path(path)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = destination.with_name(f".{destination.name}.tmp-{os.getpid()}")
-    digest = sha256()
-    uncompressed_bytes = 0
-
-    class _HashingWriter:
-        def __init__(self, stream: gzip.GzipFile) -> None:
-            self._stream = stream
-
-        def write(self, raw: bytes) -> int:
-            nonlocal uncompressed_bytes
-            digest.update(raw)
-            uncompressed_bytes += len(raw)
-            self._stream.write(raw)
-            return len(raw)
-
-    try:
-        with temporary.open("wb") as raw:
-            with gzip.GzipFile(
-                filename="", mode="wb", fileobj=raw, compresslevel=9, mtime=0
-            ) as compressed:
-                pickle.Pickler(
-                    _HashingWriter(compressed), protocol=5
-                ).dump(dict(value))
-        os.replace(temporary, destination)
-    finally:
-        temporary.unlink(missing_ok=True)
-    return {
-        "status": "COMPLETE",
-        "encoding": _SNAPSHOT_ENCODING,
-        "path": destination.name,
-        "size_bytes": destination.stat().st_size,
-        "sha256": _sha256_file(destination),
-        "uncompressed_bytes": uncompressed_bytes,
-        "uncompressed_sha256": digest.hexdigest(),
-    }
-
-
-def _complete_snapshot_handoff(
-    handoff_path: Path, snapshot: Mapping[str, object]
-) -> None:
-    value = _read_handoff(handoff_path)
-    value["snapshot"] = dict(snapshot)
-    _write_json_atomic(handoff_path, value)
-
-
-def _complete_file_handoff(handoff_path: Path, source_path: Path) -> None:
-    value = _read_handoff(handoff_path)
-    relative = os.path.relpath(source_path, handoff_path.parent)
-    value["snapshot"] = {
-        "status": "COMPLETE",
-        "encoding": "source-jsonl",
-        "path": relative,
-        "size_bytes": source_path.stat().st_size,
-        "sha256": _sha256_file(source_path),
-    }
-    source = value.get("source")
-    if isinstance(source, dict):
-        source["path"] = relative
-    _write_json_atomic(handoff_path, value)
-
-
-def _handoff_source_description(
-    task: str, source: Mapping[str, object]
-) -> dict[str, object]:
-    if task == "observation":
-        return {
-            "kind": "completed-execution-observation-jsonl",
-            "path": os.path.relpath(
-                Path(str(source["observation_path"])).resolve(),
-                # Replaced with a handoff-relative path by the worker.
-                Path(str(source["observation_path"])).resolve().parent,
-            ),
-        }
-    durable = (
-        "planner_history_path" in source
-    )
-    return {
-        "kind": (
-            "durable-domain-evidence"
-            if durable
-            else "immutable-domain-fork-snapshot"
-        ),
-        "detached_before_projection": True,
-        "domain_reexecution": False,
-        "full_history_retained_by_parent": not durable,
-    }
-
-
-def _audit_bundle(directory: Path) -> None:
-    checksum_path = directory / "checksums.sha256"
-    if not checksum_path.is_file():
-        raise ValueError("Tool bundle has no checksum inventory")
-    lines = checksum_path.read_text(encoding="utf-8").splitlines()
-    if not lines:
-        raise ValueError("Tool checksum inventory is empty")
-    for line in lines:
-        digest, separator, relative = line.partition("  ")
-        if not separator or not relative or Path(relative).is_absolute():
-            raise ValueError("Tool checksum inventory entry is invalid")
-        target = (directory / relative).resolve()
-        try:
-            target.relative_to(directory.resolve())
-        except ValueError as error:
-            raise ValueError("Tool checksum target escapes its bundle") from error
-        if not target.is_file() or _sha256_file(target) != digest:
-            raise ValueError(f"Tool checksum audit failed: {relative}")
-
-
-def _staging_directory(output: Path) -> Path:
-    return output.parent / f".{output.name}.staging-{os.getpid()}"
-
-
-def _clean_stale_staging(output: Path) -> None:
-    parent = output.parent.resolve()
-    parent.mkdir(parents=True, exist_ok=True)
-    prefix = f".{output.name}.staging-"
-    for candidate in parent.iterdir():
-        if candidate.name.startswith(prefix) and candidate.is_dir():
-            shutil.rmtree(candidate)
+    return write_performance_tool(path, directory)
 
 
 def _publish_staged(staging: Path, output: Path) -> None:
@@ -602,9 +476,7 @@ def _publish_staged(staging: Path, output: Path) -> None:
         f".{output.name}.staging-"
     ):
         raise ValueError("Tool staging directory is outside its publication scope")
-    previous = output.parent / f".{output.name}.previous-{os.getpid()}"
-    if previous.exists():
-        shutil.rmtree(previous)
+    previous = staging.with_name(staging.name + ".previous")
     if output.exists():
         os.replace(output, previous)
     try:
@@ -615,22 +487,6 @@ def _publish_staged(staging: Path, output: Path) -> None:
         raise
     if previous.exists():
         shutil.rmtree(previous)
-
-
-def _read_handoff(path: Path) -> dict[str, Any]:
-    try:
-        value = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        raise ValueError("Inspection handoff is invalid") from error
-    if not isinstance(value, dict):
-        raise ValueError("Inspection handoff must be an object")
-    if (
-        value.get("format_version") != _HANDOFF_FORMAT_VERSION
-        or value.get("artifact_type") != "inspection-tool-handoff"
-        or value.get("tool") not in _SUPPORTED_TASKS
-    ):
-        raise ValueError("Inspection handoff format is unsupported")
-    return value
 
 
 def _write_json_atomic(path: Path, value: Mapping[str, object]) -> None:
@@ -666,20 +522,12 @@ def _json_safe(value: object) -> object:
 
 
 def _public_task_record(value: Mapping[str, object]) -> dict[str, object]:
-    excluded = {"process", "result_path", "tool_result"}
+    excluded = {"process", "result_path", "tool_result", "claim", "staging"}
     return {
         key: _json_safe(item)
         for key, item in value.items()
         if key not in excluded
     }
-
-
-def _sha256_file(path: Path) -> str:
-    digest = sha256()
-    with Path(path).open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _peak_rss_bytes() -> int:
