@@ -416,9 +416,11 @@ realizations、artifact 和 controls；`start.sh` 部署，`run.sh` 启动 Runne
 ## 宿主机配置记录
 
 H1–H3 的历史背景直接来自 `fa280e0` 的旧 system-overview 第 76–143 行，
-旧值和原因如下。当前值/路径为本次用户提供的 Work 核验结论，不伪称本次
-重新测得。H4 的存储事实单独记录；没有恢复其引入 commit 或精确批准日期。
-这些选择由宿主机管理员维护，不属于 Simulator/Planner/Compiler/Runner API。
+旧值和原因如下。H1–H4 的值/路径为当时用户提供的 Work 核验结论，不伪称本次
+重新测得；没有恢复 H4 的引入 commit 或精确批准日期。后续直接检查按原日期
+单独记录。操作步骤统一放在 [Linux host guide](../user-guides/linux-host.md)，
+本节保留理由、状态与证据。这些选择由宿主机管理员维护，不属于
+Simulator/Planner/Compiler/Runner API。
 
 <a id="h1"></a>
 ### H1：D-Bus 每用户连接配置 256 → 512
@@ -467,6 +469,72 @@ mount dependencies。`/etc/systemd/system/home-lionheart.mount` 将
 不是恢复出的独立批准理由或测量。没有恢复迁移前后对照、引入 commit、
 精确设备标识或完整 mount 原始输出。它不解决 D-Bus/inotify 限额，不能将
 其性能效果计入那些控制面调整，更不能混同 R3 的 helper descriptor reservation。
+
+### Read-only workstation observation: 18 September 2026
+
+This is a new inspection, not a claim that every setting was captured during the
+previous six-example campaign. No settings or mounts were changed for this check.
+
+| Item | Observed value |
+|---|---|
+| Host | Ubuntu 24.04.4; Linux 7.0.0-31-generic; x86_64; 32 logical CPUs; 60.5 GiB RAM |
+| Docker / Compose plugin | Engine 29.6.2; Compose v5.3.1 (`docker compose`) |
+| Cgroups | cgroupfs driver, cgroup v2 |
+| inotify | 1,024 instances/user; 65,536 watches/user, effective sysctl values |
+| System-bus file | `max_connections_per_user=512`; configured value, no live internal-limit query |
+| Docker service descriptor hard limit | `LimitNOFILE=524288`; actual helper limits must be inspected separately |
+| Host collector library | Ubuntu `libbpf1` 1:1.3.0-2build2 |
+| Storage | NVMe ext4 bind mounts for Docker, containerd and the user's home; bpffs mounted |
+
+The [scale reference](../user-guides/scale-and-resources.md) reports the prior campaign's timings
+and shared-host memory observations under their original conditions.
+
+<a id="h5"></a>
+### H5：原生 IPv4 ARP 容量与集中配置（2026-09-22）
+
+**理由与批准。** 原生 S3/S4 具有数千个跨 namespace 的邻居项。21 September 的
+S3 GS↔Zone 尝试在原 128/512/1024 阈值下出现实际 ARP `table_fulls` 增长、邻居解析
+失败及 `RTM_NEWNEIGH: No buffer space available`。此后的严重宿主机压力原因仍未
+查清，不能把它全部归为协议收敛，也不能断言提高阈值导致事故。后续 S4 使用
+8192/16384/32768，未观察到新的 ARP table-full 增量；这些是当时场景的容量值，
+不是通用最低要求。[S3](native-s3-experiments.md) 和 [S4](native-s4-experiments.md)
+保留原日期、运行条件、临时提高与恢复记录，不以本次持久化批准改写它们。
+
+用户随后批准本工作站长期保留 8192/16384/32768，并在 2026-09-22 明确将其放入
+已有 `/etc/sysctl.d/99-skyseed-s3-container-control.conf`，与 inotify instances 共用
+同一文件，保留无关条目及任何更大值，不新增重复配置文件。先前交接中的独立
+neighbor-capacity 文件仅为未安装的草案；本次批准的单文件位置取代该草案建议。
+
+**2026-09-22 首次检查（09:02 UTC）与状态。** 当次只读检查 `/etc/sysctl.conf` 和存在的
+`/etc/sysctl.d`、`/usr/lib/sysctl.d`、`/lib/sysctl.d`；`/run/sysctl.d` 与
+`/usr/local/lib/sysctl.d` 不存在。未发现 ARP 阈值的持久赋值、冲突或更大配置值。
+`/lib/sysctl.d` 与 `/usr/lib/sysctl.d` 是同一目录；`99-sysctl.conf` 指向
+`/etc/sysctl.conf`，重复读取这些路径不是重复设置。
+
+| 设置 | 文件观察 | live 值 | 本次状态 |
+|---|---|---:|---|
+| `fs.inotify.max_user_instances` | 现有 `99-skyseed-s3-container-control.conf` 为 1024 | 1024 | 保留，已有持久配置 |
+| `fs.inotify.max_user_watches` | vendor `30-tracker.conf` 为 65536 | 65536 | 保留，不复制到工作站文件 |
+| `gc_thresh1 / gc_thresh2 / gc_thresh3` | 未配置；目标文件目前只有 inotify 一行 | 8192 / 16384 / 32768 | **持久化 pending** |
+
+目标文件为 root:root、0644；`sudo -n true` 返回 `sudo: a password is required`。
+因此本次没有修改 `/etc` 或 live 值，不能报告已完成持久化。管理员剩余工作为按
+[现有文件的 edit/apply/verification 步骤](../user-guides/linux-host.md#approved-sysctl-settings)
+加入三项批准值（如有更大值则保留），再核对文件、冲突与 live 值。无需重启 Docker、
+D-Bus 或宿主机；本次没有执行任何重启。
+
+检查快照及待应用的完整四行草案位于仓库外：
+`/home/lionheart/workspace/skyseed-local/implementation-baselines/host-settings-20260922T090259Z/`。
+`inspection.json` 保留匹配赋值、来源文件摘要、live 值和权限结果；草案尚未安装。
+
+**2026-09-22 后续只读复核（09:12 UTC）。** 最终提交前复核发现，已有
+`99-skyseed-s3-container-control.conf` 现已包含 inotify instances 1024，以及 ARP
+阈值 8192/16384/32768；目标文件仍是唯一 ARP 配置来源，没有新增重复文件或冲突赋值。
+对应 live 值一致，inotify watches 仍为 vendor 文件配置的 65536。持久配置已写入，
+不再等待管理员补写这三项；此前 pending 状态仅描述上面的首次检查。本次助手没有
+写入宿主机配置，也没有重启 Docker、D-Bus 或宿主机；未做重启后的生效验证。
+复核证据：
+`/home/lionheart/workspace/skyseed-local/implementation-baselines/programmable-runtime-closeout-20260922T073519Z/final-commit-20260922T091205Z/host-verification.json`。
 
 ### 宿主机回退含义（未执行）
 

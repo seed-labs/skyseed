@@ -65,47 +65,88 @@ Run the normal Tiny path to check the actual helper, images and cleanup together
 
 ## Scale-dependent adjustments
 
-The [H1–H4 history](../history/optimization-decision-history.md#h1) records why this
-workstation was adjusted. These values are **not unconditional installation minima**.
+The [host configuration history](../history/optimization-decision-history.md#h1) records
+approvals, reasons and dated workstation observations, including persistence status.
+These values are **not unconditional installation minima**.
 Diagnose the resource actually exhausted before changing it; save existing configuration
 and preserve unrelated entries. Service restarts belong in a maintenance window after
 owned experiments and other affected work have drained.
 
-### Native IPv4 neighbor capacity
+### Approved sysctl settings
 
-Full native S4 uses thousands of neighbor entries across network namespaces. The
-host's shared IPv4 ARP-table defaults can be too small even when per-container counts
-are modest. Inspect the live values and retain them with the experiment evidence:
+Reuse the administrator's existing SkySEED sysctl file. On the recorded workstation,
+this is `/etc/sysctl.d/99-skyseed-s3-container-control.conf`, which already owns the
+inotify-instance setting. Keep the approved ARP thresholds in that same file; do not
+create separate neighbor-capacity or container-monitoring files with duplicate keys.
+The approval and current status are recorded in [H5](../history/optimization-decision-history.md#h5).
 
-```bash
-sysctl net.ipv4.neigh.default.gc_thresh1 net.ipv4.neigh.default.gc_thresh2 net.ipv4.neigh.default.gc_thresh3
-```
-
-The recorded S4 campaign used **8192 / 16384 / 32768**. These are scene-specific capacity
-values, not universal minimums. Where the host administrator approves retaining them,
-use the existing `sysctl.d` mechanism before deployment, with no active experiment.
-Inspect `/etc/sysctl.conf`, `/etc/sysctl.d`, `/run/sysctl.d`, `/usr/local/lib/sysctl.d`
-and `/usr/lib/sysctl.d` where present. Keep larger active or configured values and
-unrelated entries; resolve later conflicting assignments explicitly. For these minimums:
+Before editing, inspect live values and every applicable configuration location:
 
 ```bash
-sudoedit /etc/sysctl.d/99-skyseed-neighbor-capacity.conf
+sysctl fs.inotify.max_user_instances fs.inotify.max_user_watches \
+  net.ipv4.neigh.default.gc_thresh1 net.ipv4.neigh.default.gc_thresh2 \
+  net.ipv4.neigh.default.gc_thresh3
+for directory in /etc/sysctl.d /run/sysctl.d /usr/local/lib/sysctl.d /usr/lib/sysctl.d /lib/sysctl.d; do
+  if [ -d "$directory" ]; then
+    rg -n --glob '*.conf' '^[[:space:]]*[^#;[:space:]].*=' "$directory"
+  fi
+done
+rg -n '^[[:space:]]*[^#;[:space:]].*=' /etc/sysctl.conf
+cat /etc/sysctl.d/99-skyseed-s3-container-control.conf
 ```
+
+Inspect active assignments, including wildcard and slash-separated keys, rather than
+counting comment matches. Resolve symlink aliases before treating repeated file reads
+as duplicate configuration. Check same-name overrides and later assignments under the
+installed `sysctl.d(5)` / `sysctl(8)` rules; inspect broad wildcard assignments too.
+Keep any larger live or configured value for each target key. Resolve conflicting
+assignments without deleting unrelated settings or overwriting complete vendor files.
+Save the original file before editing. With no active experiment:
+
+```bash
+sudoedit /etc/sysctl.d/99-skyseed-s3-container-control.conf
+```
+
+For the approved workstation values, retain the existing inotify entry and add or
+update each ARP entry once, using a larger value wherever the inspection requires it:
 
 ```ini
+fs.inotify.max_user_instances = 1024
 net.ipv4.neigh.default.gc_thresh1 = 8192
 net.ipv4.neigh.default.gc_thresh2 = 16384
 net.ipv4.neigh.default.gc_thresh3 = 32768
 ```
 
-Apply only the approved file with `sudo sysctl -p /etc/sysctl.d/99-skyseed-neighbor-capacity.conf`,
-then read back the live values. Do not restore small defaults after each run on a host
-approved for permanent capacity. Live values alone do not establish persistence;
-privileged installation and subsequent verification are administrator responsibilities.
-Deployer never changes host capacity silently. Do not change it during a live run.
+Preserve every unrelated entry. Leave `max_user_watches` with its existing owner;
+it is not one of these additions. Apply only the edited file, inspect its content,
+repeat the conflict check and verify live values:
+
+```bash
+sudo sysctl -p /etc/sysctl.d/99-skyseed-s3-container-control.conf
+cat /etc/sysctl.d/99-skyseed-s3-container-control.conf
+sysctl fs.inotify.max_user_instances fs.inotify.max_user_watches \
+  net.ipv4.neigh.default.gc_thresh1 net.ipv4.neigh.default.gc_thresh2 \
+  net.ipv4.neigh.default.gc_thresh3
+```
+
+This sysctl change needs no Docker, D-Bus or host restart. Live values alone do not
+establish persistence: the file must be installed, checked for overrides and applied
+successfully. If administrator access is unavailable, report persistence as pending
+and hand off this exact edit/apply/verification step. Do not substitute a second file
+or use `sysctl --system` to reapply unrelated settings. Do not restore small defaults
+after each run on a workstation approved for permanent capacity. Deployer does not
+change host settings silently.
+
+### Native IPv4 neighbor capacity
+
+Full native S4 uses thousands of neighbor entries across network namespaces. The
+host's shared IPv4 ARP-table defaults can be too small even when per-container counts
+are modest. Use the [approved sysctl procedure](#approved-sysctl-settings) before
+deployment; the recorded capacity values are scene-specific, not universal minima.
 `table_fulls` growth in `/proc/net/stat/arp_cache`, failed neighbor resolution and
 `RTM_NEWNEIGH: No buffer space available` are exhaustion evidence, not ordinary OSPF
-convergence. Keep daemon/kernel and host-resource evidence separately.
+convergence. Keep daemon/kernel and host-resource evidence separately; the incidents
+and decisions are recorded in [host history](../history/optimization-decision-history.md#h5).
 
 ### Independent host observation
 
@@ -131,28 +172,18 @@ completion. Do not bypass graceful stops/hooks or prune shared image caches.
 ### inotify instances, watches and descriptors
 
 An inotify instance is an event-monitor object; a watch is one monitored filesystem
-object inside it. Container lifecycle monitoring can exhaust per-user instances even
-with watches available. Neither count is a process descriptor limit or a memory limit.
-The historical instance adjustment was 128 → 1024. Inspect with:
-
-```bash
-sysctl fs.inotify.max_user_instances fs.inotify.max_user_watches
-```
-
-When instance exhaustion is diagnosed, edit a dedicated file such as
-`/etc/sysctl.d/99-skyseed-container-monitoring.conf` with `sudoedit`, setting only
-`fs.inotify.max_user_instances = 1024`. Check other sysctl files for later conflicting
-assignments, then apply that file with
-`sudo sysctl -p /etc/sysctl.d/99-skyseed-container-monitoring.conf` and read the
-value again with `sysctl`. More instances permit additional kernel resource use;
+object inside it. Neither count is a process descriptor limit or a memory limit.
+Inspect both values using the [shared sysctl procedure](#approved-sysctl-settings).
+If instance capacity needs adjustment, update its entry in the existing file;
 raising watches does not solve an instance shortage. See Ubuntu's
-[inotify manual](https://manpages.ubuntu.com/manpages/noble/man7/inotify.7.html).
+[inotify manual](https://manpages.ubuntu.com/manpages/noble/man7/inotify.7.html)
+and the [recorded instance-exhaustion decision](../history/optimization-decision-history.md#h2).
 
 ### D-Bus per-user connections
 
-The historical system-bus adjustment was 256 → 512 after large container startup
-exhausted UID 0's connection allowance. It concerns bus clients for lifecycle control,
-not satellite links. Inspect the service and configured limits:
+For an approved system-bus connection-limit change, inspect the service and configured
+limits first. The workstation's reason and approval are in
+[H1](../history/optimization-decision-history.md#h1):
 
 ```bash
 systemctl status dbus.service
@@ -177,11 +208,9 @@ need their own configuration procedure.
 
 ### Docker cgroup driver
 
-This workstation changed from systemd to cgroupfs after large-scale transient
-`docker-*.scope` lifecycle timeouts, retaining cgroup v2. That changes who manages
-container cgroups; CPU/memory/PID isolation remains. It reduces integration with
-per-container systemd scopes. Docker normally defaults to systemd on cgroup v2;
-cgroupfs is a diagnosed workaround here, not a universal recommendation.
+A cgroup-driver change needs a separate approved maintenance window. The workstation
+choice, tradeoffs and observations are in [H3](../history/optimization-decision-history.md#h3);
+that workaround is not a universal requirement.
 [Docker's cgroup reference](https://docs.docker.com/engine/containers/runmetrics/)
 explains driver/version inspection.
 
@@ -227,25 +256,7 @@ memory or raise inotify limits.
 
 Fast local storage helps image builds, container filesystems and retained records.
 Inspect available bytes/inodes and actual mounts (`df -h`, `df -i`, `findmnt -T
-/var/lib/docker`). The historical NVMe/bind-mount layout is specific to this workstation.
-No particular device or mount path is required. Moving Docker/containerd data requires
+/var/lib/docker`). No particular device or mount path is required;
+the workstation layout and its evidence limits are in
+[H4](../history/optimization-decision-history.md#h4). Moving Docker/containerd data requires
 its own migration and service-ordering plan; it is not part of installing SkySEED.
-
-## Read-only workstation observation: 18 September 2026
-
-This is a new inspection, not a claim that every setting was captured during the
-previous six-example campaign. No settings or mounts were changed for this check.
-
-| Item | Observed value |
-|---|---|
-| Host | Ubuntu 24.04.4; Linux 7.0.0-31-generic; x86_64; 32 logical CPUs; 60.5 GiB RAM |
-| Docker / Compose plugin | Engine 29.6.2; Compose v5.3.1 (`docker compose`) |
-| Cgroups | cgroupfs driver, cgroup v2 |
-| inotify | 1,024 instances/user; 65,536 watches/user, effective sysctl values |
-| System-bus file | `max_connections_per_user=512`; configured value, no live internal-limit query |
-| Docker service descriptor hard limit | `LimitNOFILE=524288`; actual helper limits must be inspected separately |
-| Host collector library | Ubuntu `libbpf1` 1:1.3.0-2build2 |
-| Storage | NVMe ext4 bind mounts for Docker, containerd and the user's home; bpffs mounted |
-
-The [scale reference](scale-and-resources.md) reports the prior campaign's timings
-and shared-host memory observations under their original conditions.
