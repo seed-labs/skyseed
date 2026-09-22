@@ -71,9 +71,9 @@ def test_role_groups_have_canonical_exports_and_retired_paths_are_absent(tmp_pat
     ('from skyseed_v2.simulator import physical', ('skyseed_v2.simulator.planner', 'skyseed_v2.backend', 'seedemu')),
     ('from skyseed_v2.simulator.physical import PhysicalWorld', ('skyseed_v2.simulator.planner', 'skyseed_v2.backend', 'seedemu')),
     ('from skyseed_v2.simulator import planner', ('skyseed_v2.backend', 'seedemu')),
-    ('from skyseed_v2 import backend; bpf = backend.bpf', ('skyseed_v2.backend.bpf.compiler', 'skyseed_v2.backend.bpf.runner')),
+    ('from skyseed_v2 import backend; bpf = backend.bpf', ('skyseed_v2.backend.compiler', 'skyseed_v2.backend.bpf.runner')),
     ('from skyseed_v2.backend.bpf import compiler', ('skyseed_v2.backend.bpf.runner', 'skyseed_v2.experiment', 'seedemu')),
-    ('from skyseed_v2.backend.bpf.compiler import compile_bpf', ('skyseed_v2.backend.bpf.runner', 'skyseed_v2.experiment', 'seedemu')),
+    ('from skyseed_v2.backend.compiler import compile_bpf', ('skyseed_v2.backend.bpf.runner', 'skyseed_v2.experiment', 'seedemu')),
     ('from skyseed_v2.backend.bpf import compile_bpf', ('skyseed_v2.backend.bpf.runner', 'skyseed_v2.experiment', 'seedemu')),
     ('from skyseed_v2.backend.bpf import runner', ('skyseed_v2.experiment', 'seedemu')),
 ])
@@ -103,6 +103,10 @@ def test_umbrella_and_selected_modules_preserve_canonical_identity(tmp_path):
         assert physical is simulator.physical is importlib.import_module('skyseed_v2.simulator.physical')
         assert planner is simulator.planner is importlib.import_module('skyseed_v2.simulator.planner')
         assert compiler is sky.backend.bpf.compiler is importlib.import_module('skyseed_v2.backend.bpf.compiler')
+        shared_compiler = importlib.import_module('skyseed_v2.backend.compiler')
+        assert compiler.compile_bpf is shared_compiler.compile_bpf
+        assert compiler.BpfCompilationResult is shared_compiler.BpfCompilationResult
+        assert compiler.BpfCompiledActivationBoundary is shared_compiler.BpfCompiledActivationBoundary
         assert runner is sky.backend.bpf.runner is importlib.import_module('skyseed_v2.backend.bpf.runner')
         for name in ('EmulatorGroundStation', 'GroundStationLocation', 'EmulatorOrbit', 'OrbitParameters', 'EmulatorSatellite', 'EmulatorShell'):
             assert getattr(sky, name) is getattr(emulator.entities, name)
@@ -111,7 +115,7 @@ def test_umbrella_and_selected_modules_preserve_canonical_identity(tmp_path):
             assert getattr(sky, 'Emulator' + name) is not getattr(physical, 'Physical' + name)
         assert sky.backend.bpf.compile_bpf is compiler.compile_bpf
         assert sky.backend.bpf.Runner is runner.Runner
-        values = importlib.import_module('skyseed_v2.backend.bpf.compiler.result')
+        values = importlib.import_module('skyseed_v2.backend.compiler.result')
         assert sky.backend.bpf.BpfCompilationResult is values.BpfCompilationResult
         assert sky.backend.bpf.BpfCompiledActivationBoundary is values.BpfCompiledActivationBoundary
         assert simulator.Planner is planner.Planner

@@ -30,8 +30,8 @@ from skyseed_v2.simulator.geometry import (
     geodetic_to_ecef,
     has_earth_line_of_sight,
 )
-from tools.bpf_compiler import read_bpf_compiler_history
-from tools.planner import read_planner_history
+from tools.observation.bpf_compiler import read_bpf_compiler_history
+from tools.observation.planner import read_planner_history
 
 
 DATA_ROOT = small_network.DATA_ROOT

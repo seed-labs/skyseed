@@ -6,7 +6,7 @@ import pytest
 from examples.Sky00_tiny_network import tiny_network as tiny
 from skyseed_v2.experiment import ExperimentController
 import tools
-from tools import experiment as reporting
+from tools.observation import experiment as reporting
 
 
 @pytest.fixture(scope='module')
@@ -32,7 +32,7 @@ def test_tools_read_produced_histories_without_calling_models(generated, monkeyp
     assert (output / 'visualizations/index.html').is_file()
     for directory in results:
         assert (output / 'visualizations' / directory / 'index.html').is_file()
-    assert tools.physical_world.write_physical_world_tool is reporting.write_physical_world_tool
+    assert tools.observation.physical_world.write_physical_world_tool is reporting.write_physical_world_tool
 
 
 def test_optional_tool_failure_is_reported_without_changing_sealed_materials(generated, monkeypatch):
@@ -61,8 +61,8 @@ def test_runtime_tool_paths_and_traffic_warning_survive_status_serialization(gen
     monkeypatch.setattr(reporting, 'write_physical_world_tool', lambda *a, **kw: {'status': 'PASS'})
     monkeypatch.setattr(reporting, 'write_zone_tool', lambda *a, **kw: {'status': 'PASS'})
     monkeypatch.setattr(reporting, '_run_dynamic_tools', lambda *a, **kw: ({}, ()))
-    monkeypatch.setattr(tools.runner, 'write_runner_tool', lambda *a, **kw: {'status': 'COMPLETED', 'directory': output/'visualizations/runner'})
-    monkeypatch.setattr(tools.traffic, 'write_traffic_replay_tool', lambda *a, **kw: {'status': 'WARN', 'directory': output/'visualizations/traffic'})
+    monkeypatch.setattr(tools.observation.runner, 'write_runner_tool', lambda *a, **kw: {'status': 'COMPLETED', 'directory': output/'visualizations/runner'})
+    monkeypatch.setattr(tools.observation.traffic, 'write_traffic_replay_tool', lambda *a, **kw: {'status': 'WARN', 'directory': output/'visualizations/traffic'})
     result = tools.write_experiment_tools(output, physical_world=simulator.get_physical_world())
     status = json.loads((output/'results/experiment/generation-status.json').read_text())
     assert status['status'] == 'MATERIALS_READY'
@@ -91,9 +91,9 @@ def test_repeated_tools_preserve_generation_facts_and_measure_each_invocation(ge
 
 def test_traffic_cli_pins_one_completed_request(generated, monkeypatch):
     import sys
-    from tools.traffic import __main__ as cli
+    from tools.observation.traffic import __main__ as cli
     from skyseed_v2.experiment.output.history import _completed_range
-    from tools._history import read_sealed_physical_frames
+    from tools.observation._history import read_sealed_physical_frames
     _, output = generated
     completed = output / 'results/experiment/completed.json'
     before = completed.read_bytes()

@@ -1,23 +1,26 @@
 # Linux host for network execution
 
 Python calculation and browser viewing use the [getting-started setup](getting-started.md).
-Deployment and Runner execution additionally need a local Linux Docker/BPF host.
+BPF Compiler preparation also needs the [C/ELF dependencies](../development/dataplane.md#dependencies-and-validation-boundary).
+Deployment and Runner execution in either mode need a local Linux/Docker host.
 The configuration below separates required capabilities from adjustments motivated
 by scale. The [resource reference](scale-and-resources.md) describes measured scenes.
 
 ## Required capabilities and permissions
 
-- Use a Linux kernel with network namespaces, veth, netem, clsact/tc BPF, BPF hash/array
-  maps and ring buffers, with writable bpffs at `/sys/fs/bpf`. Raw BPF syscall dispatch
+- Both modes require Linux network namespaces, veth, netem and IPv4 netlink operations.
+  BPF additionally requires clsact/tc BPF, hash/array maps, ring buffers and writable
+  bpffs at `/sys/fs/bpf`. Native Linux execution requires no BPF program/toolchain.
+  Raw BPF syscall dispatch
   currently supports x86_64 and aarch64; the recorded live validation is x86_64.
   A CPU architecture entry is not qualification of every image/kernel combination.
 - Use a **local, rootful Docker Engine** and the current `docker compose` plugin.
   Runner's owned helper uses privileged mode, host PID/network namespaces, a read-only
-  host-root bind and a writable bpffs bind. Docker access must permit these operations;
+  host-root bind; BPF also uses a writable bpffs bind. Docker access must permit these operations;
   rootless Docker and a remote daemon do not provide this execution arrangement.
-- Keep the selected Python environment and SkySEED source accessible on this host.
+- Keep the selected Python environment and installed SkySEED package accessible on this host.
   The helper enters the host filesystem with `chroot /host` and runs that exact Python
-  executable. The Traffic collector loads **host `libbpf.so.1`** there, even though
+  executable. The BPF object loader and Traffic collector load **host `libbpf.so.1`** there, even though
   its process is launched through the helper container.
 - Allow image retrieval/builds and sufficient disk, memory and descriptor capacity.
   Generated SEED images provide node tools such as `iproute2` and `iputils-ping`;
@@ -27,11 +30,13 @@ by scale. The [resource reference](scale-and-resources.md) describes measured sc
 On Ubuntu 24.04, configure Docker's apt repository using its
 [official Ubuntu installation instructions](https://docs.docker.com/engine/install/ubuntu/),
 then install Engine, CLI, containerd, Buildx and the Compose plugin as documented.
-Install the host collector library with `sudo apt install libbpf1`; Ubuntu's
+For BPF, install the host loader/collector library with `sudo apt install libbpf1`; Ubuntu's
 [package description](https://packages.ubuntu.com/noble/libbpf1) identifies this runtime library.
-The current Runner emits BPF instructions and uses direct syscalls/netlink; it does
-not require a host clang toolchain or bpftool for ordinary execution. Those may be
-useful diagnostic tools. No Compose-v1 or BuildKit-disabling workaround is required.
+BPF C material preparation requires Clang/LLVM with BPF support, Linux UAPI headers
+and libbpf headers (`clang llvm libbpf-dev libelf-dev linux-libc-dev` on Ubuntu).
+It embeds compiled ELF in materials. Compatible object inputs need libbpf for
+inspection without Clang. Runner loads that ELF through libbpf and uses direct
+syscalls/netlink; execution needs no compiler, author headers or source tree. No Compose-v1 or BuildKit-disabling workaround is required.
 
 Follow [Docker's post-installation guide](https://docs.docker.com/engine/install/linux-postinstall/)
 for user access. Docker-group access grants root-level control. Run the generated
@@ -46,12 +51,13 @@ docker context show
 docker version
 docker compose version
 docker info --format 'driver={{.CgroupDriver}} cgroup={{.CgroupVersion}} root={{.DockerRootDir}}'
+# Additional checks for BPF execution:
 findmnt -t bpf /sys/fs/bpf
 python -c 'import ctypes; ctypes.CDLL("libbpf.so.1"); print("host libbpf load: OK")'
 ```
 
 If the kernel lacks a capability or host policy refuses privileged helpers, resolve
-that with the host administrator. If bpffs is absent on an otherwise capable Linux
+that with the host administrator. For BPF, if bpffs is absent on an otherwise capable Linux
 host, an administrator can mount it with `sudo mount -t bpf bpf /sys/fs/bpf` and
 verify with `findmnt`; persistence follows the distribution's mount configuration.
 Do not reinterpret a failed permission or kernel operation as successful execution.
@@ -64,6 +70,63 @@ workstation was adjusted. These values are **not unconditional installation mini
 Diagnose the resource actually exhausted before changing it; save existing configuration
 and preserve unrelated entries. Service restarts belong in a maintenance window after
 owned experiments and other affected work have drained.
+
+### Native IPv4 neighbor capacity
+
+Full native S4 uses thousands of neighbor entries across network namespaces. The
+host's shared IPv4 ARP-table defaults can be too small even when per-container counts
+are modest. Inspect the live values and retain them with the experiment evidence:
+
+```bash
+sysctl net.ipv4.neigh.default.gc_thresh1 net.ipv4.neigh.default.gc_thresh2 net.ipv4.neigh.default.gc_thresh3
+```
+
+The recorded S4 campaign used **8192 / 16384 / 32768**. These are scene-specific capacity
+values, not universal minimums. Where the host administrator approves retaining them,
+use the existing `sysctl.d` mechanism before deployment, with no active experiment.
+Inspect `/etc/sysctl.conf`, `/etc/sysctl.d`, `/run/sysctl.d`, `/usr/local/lib/sysctl.d`
+and `/usr/lib/sysctl.d` where present. Keep larger active or configured values and
+unrelated entries; resolve later conflicting assignments explicitly. For these minimums:
+
+```bash
+sudoedit /etc/sysctl.d/99-skyseed-neighbor-capacity.conf
+```
+
+```ini
+net.ipv4.neigh.default.gc_thresh1 = 8192
+net.ipv4.neigh.default.gc_thresh2 = 16384
+net.ipv4.neigh.default.gc_thresh3 = 32768
+```
+
+Apply only the approved file with `sudo sysctl -p /etc/sysctl.d/99-skyseed-neighbor-capacity.conf`,
+then read back the live values. Do not restore small defaults after each run on a host
+approved for permanent capacity. Live values alone do not establish persistence;
+privileged installation and subsequent verification are administrator responsibilities.
+Deployer never changes host capacity silently. Do not change it during a live run.
+`table_fulls` growth in `/proc/net/stat/arp_cache`, failed neighbor resolution and
+`RTM_NEWNEIGH: No buffer space available` are exhaustion evidence, not ordinary OSPF
+convergence. Keep daemon/kernel and host-resource evidence separately.
+
+### Independent host observation
+
+For a large deployment, keep host sampling separate from Runner so observations continue
+if activation stalls. Choose an existing archive location:
+
+```bash
+while sleep 5; do
+  date -Is
+  free -h
+  cat /proc/pressure/cpu /proc/pressure/memory /proc/pressure/io
+  cat /proc/loadavg
+done | tee /absolute/archive/host-pressure.log
+```
+
+Keep kernel OOM protection and the host's memory-pressure protection enabled. Establish
+host-appropriate guardrails before a campaign; the historical S4 thresholds and incidents
+are in [S4 evidence](../history/native-s4-experiments.md), not framework defaults.
+If resource pressure becomes uncontrolled, use `cancel-runtime`, wait for owned work and
+Tools to drain, then `cleanup.sh`. An accepted stop or unavailable endpoint is not cleanup
+completion. Do not bypass graceful stops/hooks or prune shared image caches.
 
 ### inotify instances, watches and descriptors
 
@@ -140,11 +203,14 @@ it never deletes the whole configuration file.
 
 ### Runner's helper descriptor boundary
 
-The [privileged helper](../../src/skyseed_v2/backend/bpf/runner/privileged_runtime_command.py)
-reserves `8 * node_count + 6 * worker_count + 64` descriptors for retained namespaces,
-sockets/maps and workers. It raises its own soft `RLIMIT_NOFILE` up to the available
-hard limit and fails explicitly if that hard limit is insufficient. These are the
-helper process's limits inherited from its Docker container. Raising an unrelated
+The [BPF privileged helper](../../src/skyseed_v2/backend/bpf/dataplane/runtime_command.py)
+reserves `(10 + object_map_count) * node_count + (8 + object_map_count) * worker_count + 64`
+descriptors for retained namespaces, sockets, runtime FDs, libbpf objects and workers.
+The ELF declaration supplies `object_map_count`, including private state and globals. It raises its own soft `RLIMIT_NOFILE` up to the available
+hard limit and fails explicitly if that hard limit is insufficient. The native Linux
+helper also reserves its namespace/socket descriptors before acquisition, under the
+[native foundation contract](../development/compiler-and-runner.md#native-ipv4-foundation).
+These are the helper process's limits inherited from its Docker container. Raising an unrelated
 interactive shell's `ulimit` is not a universal fix.
 
 While a helper is active, find its exact container name in Runner's invocation data.

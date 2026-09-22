@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from tools.runner import collect_runner_data, write_runner_tool
-from tools.runner.__main__ import main as runner_tool_main
+from tools.observation.runner import collect_runner_data, write_runner_tool
+from tools.observation.runner.__main__ import main as runner_tool_main
 
 
 def _event(name: str, when: float, **facts) -> dict[str, object]:
@@ -279,7 +279,7 @@ def test_projection_curates_complete_trace_without_runner_side_indexes() -> None
     }
     assert data["raw"]["events"]["embedded"] is False
     assert data["raw"]["events"]["count"] == len(_snapshot()["events"])
-    assert data["default_dataplane"]["kind"] == "default-tc-bpf"
+    assert data["default_dataplane"]["kind"] == "unrecorded"
     assert data["default_dataplane"]["fresh_kernel_inspection"] is False
 
 
@@ -485,12 +485,12 @@ def test_artifact_bundle_is_standalone_complete_and_checksummed(
     }
     page = (tmp_path / "index.html").read_text(encoding="utf-8")
     for required in (
-        "BPF Runner Inspection Tool",
+        "Runner Inspection Tool",
         "Last active frontier",
-        "Current default tc-BPF dataplane",
+        "Recorded forwarding backend",
         "Traffic telemetry",
         "Raw detached Runner snapshot and event history",
-        "BPF Runner 检查工具",
+        "Runner 检查工具",
         "图形执行时间轴",
         "如何阅读 / How to read",
         "Runtime foundation / 运行期绑定",
@@ -688,7 +688,7 @@ def test_tool_owned_cli_consumes_detached_generated_execution_handoff(
     monkeypatch.setattr(
         "sys.argv",
         [
-            "tools.runner",
+            "tools.observation.runner",
             "--handoff",
             str(handoff_path),
             "--events",
@@ -730,7 +730,7 @@ def test_bilingual_renderer_reuses_one_evidence_dataset_without_raw_translation(
     assert "Detailed Timeline events" in page
     assert "详细 Timeline 事件" in page
     assert "Start lag / Completion lag" in page
-    assert "current default tc-BPF dataplane" in page
+    assert "tc-BPF forwarding" in page
     ordered_sections = (
         'id="overview-title"',
         'id="timeline-title"',
@@ -773,7 +773,7 @@ def test_bilingual_renderer_reuses_one_evidence_dataset_without_raw_translation(
 
 
 def test_tool_has_no_live_runner_kernel_or_controller_dependency() -> None:
-    tool_root = Path(__file__).resolve().parents[2] / "tools/runner"
+    tool_root = Path(__file__).resolve().parents[2] / "tools/observation/runner"
     sources = {
         path: path.read_text(encoding="utf-8")
         for path in tool_root.glob("*.py")
@@ -802,7 +802,7 @@ def test_tool_has_no_live_runner_kernel_or_controller_dependency() -> None:
 
 
 def test_detailed_timing_keeps_inclusive_envelopes_out_of_exclusive_main_accounting():
-    from tools.runner.projection import _detailed_timing
+    from tools.observation.runner.projection import _detailed_timing
     event = _event("activation_end", 110, boundary_timestamp="2026-01-01T00:00:05+00:00",
         preparation=False, detailed_timing_version=1, main_seconds=10.0,
         main_start_monotonic_seconds=100.0, main_end_monotonic_seconds=110.0,

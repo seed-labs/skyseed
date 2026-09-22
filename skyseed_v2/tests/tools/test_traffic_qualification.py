@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from tools.traffic.projection import _project_probe_qualification
+from tools.observation.traffic.projection import _project_probe_qualification
 
 
 START = datetime(2026, 1, 1, tzinfo=timezone.utc)

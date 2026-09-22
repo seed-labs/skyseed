@@ -144,12 +144,12 @@
 </g>
 <polyline points="560,1600 620,1600" fill="none" stroke="#176a9d" stroke-width="2.2" marker-end="url(#data)"/>
 <g><rect x="1180" y="1745" width="460" height="230" rx="10" fill="#e5f2fc" stroke="#176a9d" stroke-width="1.5"/>
-<text x="1200" y="1779" class="title">Route · paths and unreachable results</text>
+<text x="1200" y="1779" class="title">Route · paths or local arrangements</text>
 <path d="M1200,1794 H1620" stroke="#176a9d" opacity=".35"/>
 <text x="1200" y="1824" class="body">In: World + effective connections, service,</text>
 <text x="1200" y="1852" class="body">      demands + previous outcomes at t</text>
-<text x="1200" y="1880" class="body">Out: a path / next hop OR an explicit</text>
-<text x="1200" y="1908" class="body">      unreachable outcome for every demand</text>
+<text x="1200" y="1880" class="body">Out: paths / unreachability OR local choices</text>
+<text x="1200" y="1908" class="body">      with policy data; partial / empty allowed</text>
 <text x="1200" y="1936" class="body">Demands: supplied or optional Model factory</text>
 </g>
 <polyline points="1120,1600 1150,1600 1150,1860 1180,1860" fill="none" stroke="#176a9d" stroke-width="2.2" marker-end="url(#data)"/>
@@ -176,9 +176,9 @@
 <g><rect x="60" y="2360" width="755" height="200" rx="10" fill="#fff" stroke="#8099aa" stroke-width="1.5"/>
 <text x="80" y="2394" class="title">Backend Compiler · lowering, not another Model</text>
 <path d="M80,2409 H795" stroke="#8099aa" opacity=".35"/>
-<text x="80" y="2439" class="body">Producer calls compile_bpf(Plan, World, previous_result)</text>
+<text x="80" y="2439" class="body">Producer calls compile_plan with the assembly backend</text>
 <text x="80" y="2467" class="body">Consumes the Plan and its event dependencies</text>
-<text x="80" y="2495" class="body">Out: BpfCompilationResult with backend execution intents</text>
+<text x="80" y="2495" class="body">Out: CompilationResult with backend execution intents</text>
 <text x="80" y="2523" class="body">Does not rerun route selection or own request publication</text>
 </g>
 <polyline points="440,2195 440,2360" fill="none" stroke="#176a9d" stroke-width="2.2" marker-end="url(#data)"/>
@@ -187,7 +187,7 @@
 <text x="945" y="2394" class="title">Producer + Controller · packaging and publication</text>
 <path d="M945,2409 H1660" stroke="#8099aa" opacity=".35"/>
 <text x="945" y="2439" class="body">Producer appends compilation results, drains accepted work</text>
-<text x="945" y="2467" class="body">and seals executable deliveries through material writers</text>
+<text x="945" y="2467" class="body">Selected backend prepares executable actions and foundation</text>
 <text x="945" y="2495" class="body">Controller publishes completed request / bounded prefixes</text>
 <text x="945" y="2523" class="body">Published results remain readable while computation waits</text>
 </g>

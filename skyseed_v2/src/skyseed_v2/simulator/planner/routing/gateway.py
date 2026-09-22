@@ -12,7 +12,7 @@ from .._scopes import (
     _group_by_scope,
 )
 from ..values import (OperationalConnection, ZoneServiceAssignment, RouteDemand, RouteOutcome,
-    GroundStationRouteDemandTarget, ReachableRouteOutcome, UnreachableRouteOutcome,
+    GroundStationRouteDemandTarget, SatelliteRouteDemandTarget, ReachableRouteOutcome, UnreachableRouteOutcome,
     RouteUnreachableReason, _route_demand_key)
 from .model import RoutePlanningResult
 from ._demands import _GatewayDemandConstruction
@@ -149,6 +149,11 @@ class GatewayHopCountRoutePlanningModel(_GatewayDemandConstruction):
                 scoped_demands = tuple(demands_by_scope.get(scope, ()))
                 if any(d.source.entity_kind == "satellite" and self._satellite_scopes[d.source] != scope for d in scoped_demands):
                     raise ValueError("Route source is outside its network scope")
+                for demand in scoped_demands:
+                    if isinstance(demand.target, SatelliteRouteDemandTarget):
+                        physical_world.get_satellite(demand.target.satellite_id)
+                        if self._satellite_scopes[demand.target.satellite_id] != scope:
+                            raise ValueError("Route target is outside its network scope")
                 result = model.plan_route_outcomes(physical_world, connections,
                     tuple(assignments_by_scope.get(scope, ())),
                     scoped_demands, tuple(previous_by_scope.get(scope, ())), timestamp=timestamp)
@@ -188,7 +193,9 @@ class GatewayHopCountRoutePlanningModel(_GatewayDemandConstruction):
         reused = 0
         for index, demand in enumerate(ordered_demands):
             ground_target = isinstance(demand.target, GroundStationRouteDemandTarget)
-            terminal = demand.target.ground_station_id if ground_target else assignments.get(demand.target.service_key)
+            terminal = (demand.target.ground_station_id if ground_target
+                        else demand.target.satellite_id if isinstance(demand.target, SatelliteRouteDemandTarget)
+                        else assignments.get(demand.target.service_key))
             if terminal is None:
                 unresolved[index] = RouteUnreachableReason.ZONE_UNSERVED
                 continue
@@ -198,6 +205,8 @@ class GatewayHopCountRoutePlanningModel(_GatewayDemandConstruction):
                 physical_world.get_node(demand.source)
                 if ground_target:
                     physical_world.get_ground_station(terminal)
+                elif isinstance(demand.target, SatelliteRouteDemandTarget):
+                    physical_world.get_satellite(terminal)
                 request = _RoutePathRequest(index, ground_target, demand.source, terminal)
             else:
                 reused += 1

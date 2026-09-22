@@ -10,37 +10,43 @@ import gzip
 import json
 from pathlib import Path
 import shutil
+import socket
+import struct
 
 import pytest
 
 from examples.Sky00_tiny_network.tiny_network import build_emulator
 from examples.Sky00_tiny_network.tiny_network import create_simulator as create_complete_static_simulator
 from tests._support import drain_simulator as run_complete_static_chain
-from tools.bpf_compiler import write_bpf_compiler_tool
-from tools.planner import collect_planner_data
-from tools.planner.reader import read_planner_history
-from tools.traffic import collect_traffic_replay_data, write_traffic_replay_tool
-from tools.traffic.__main__ import main as traffic_tool_main
-from tools.traffic.projection import project_traffic_replay
-from tools.traffic.reader import (
+from skyseed_v2.backend.bpf.dataplane.telemetry_abi import (
+    _TELEMETRY_EVENT,
+    _decode_telemetry_event,
+)
+from tools.observation.bpf_compiler import write_bpf_compiler_tool
+from tools.observation.planner import collect_planner_data
+from tools.observation.planner.reader import read_planner_history
+from tools.observation.traffic import collect_traffic_replay_data, write_traffic_replay_tool
+from tools.observation.traffic.__main__ import main as traffic_tool_main
+from tools.observation.traffic.projection import project_traffic_replay
+from tools.observation.traffic.reader import (
     TrafficReplayRead,
     _ping_transactions,
     read_traffic_replay,
 )
-from tools.traffic.renderer import render_traffic_replay_page
-from tools.traffic.active.probe_plan import (
+from tools.observation.traffic.renderer import render_traffic_replay_page
+from tools.generation.traffic.probe_plan import (
     TrafficProbePlanBuilder,
     write_traffic_probe_plan,
 )
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-TOOL_SOURCES = tuple(sorted((PROJECT_ROOT / "tools/traffic").glob("*.py")))
+TOOL_SOURCES = tuple(sorted((PROJECT_ROOT / "tools/observation/traffic").glob("*.py")))
 START_AT = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 
 def test_packet_alignment_uses_wait_and_resume_clock_segments(evidence_set, tmp_path):
-    from tools.traffic.reader import _read_telemetry
+    from tools.observation.traffic.reader import _read_telemetry
     rows = [json.loads(line) for line in evidence_set["telemetry"].read_text().splitlines()]
     anchor = next(row for row in rows if row["record_type"] == "simulation_clock_anchor")
     origin = anchor["monotonic_origin_ns"]
@@ -297,6 +303,152 @@ def _copied_telemetry(
     return tmp_path / name, rows
 
 
+def _decoded_v2_packet(packet, *, reason_code=2, ipv4_observed=True, packet_length=98):
+    """Encode wire fields, then use the collector's actual v2 decoder."""
+    icmp = packet["icmp"]
+    dropping = reason_code in (4, 5)
+    return _decode_telemetry_event(_TELEMETRY_EVENT.pack(
+        packet["kernel_monotonic_ns"], packet["node_slot"], packet["generation"],
+        packet["ingress_ifindex"], packet["selected_egress_ifindex"] or 0,
+        struct.unpack("=I", socket.inet_aton(packet["source_ipv4"]))[0],
+        struct.unpack("=I", socket.inet_aton(packet["destination_ipv4"]))[0],
+        packet_length, 3 if dropping else 2, reason_code, packet["protocol"],
+        int(ipv4_observed), icmp["type"], icmp["code"],
+        socket.htons(icmp["identifier"]), socket.htons(icmp["sequence"]),
+        0, 2 if dropping else 0, int(ipv4_observed),
+    ))
+
+
+def _read_replay(evidence_set, telemetry):
+    return read_traffic_replay(
+        telemetry, evidence_set["frames"], evidence_set["planning"],
+        evidence_set["compiler_json"],
+    )
+
+
+@pytest.mark.parametrize(("reason_code", "reason", "packet_length"), [
+    (3, "non-ipv4", 64),
+    (4, "truncated-ethernet", 13),
+    (5, "truncated-ipv4", 33),
+])
+def test_v2_unobserved_ipv4_survives_traffic_reading_and_projection(
+    tmp_path, evidence_set, reason_code, reason, packet_length,
+):
+    path, rows = _copied_telemetry(tmp_path, evidence_set)
+    ordinary = next(row for row in rows if row["record_type"] == "packet")
+    decoded = _decoded_v2_packet(
+        ordinary, reason_code=reason_code, ipv4_observed=False,
+        packet_length=packet_length,
+    )
+    rows.append(decoded)
+    next(row for row in rows if row["record_type"] == "recorder_end")["packet_records"] += 1
+    observation = _read_replay(evidence_set, _write_telemetry(path, rows))
+    packets = observation.snapshot["telemetry"]["packets"]
+    assert len(packets) == 4
+    assert {key: packets[-1][key] for key in decoded} == decoded
+    assert packets[-1]["reason"] == reason
+    assert packets[-1]["ipv4_observed"] is False
+    for key in ("source_ipv4", "destination_ipv4", "protocol", "selected_egress_ifindex"):
+        assert packets[-1][key] is None
+    assert packets[-1]["icmp"] == {
+        "valid": False, "type": None, "code": None, "identifier": None, "sequence": None,
+    }
+    baseline = _collect(evidence_set)
+    projected = project_traffic_replay(observation)
+    assert projected["telemetry"]["packets"] == packets
+    assert projected["telemetry"]["raw_record_count"] == baseline["telemetry"]["raw_record_count"] + 1
+    assert projected["transactions"] == baseline["transactions"]
+    assert projected["inventory"] == {**baseline["inventory"], "packet_observations": 4}
+    assert projected["overview"] == baseline["overview"]
+
+
+@pytest.mark.parametrize(("reason_code", "reply_delivery", "delivered"), [
+    (0, "unconfirmed", 0),
+    (2, "endpoint-observed", 1),
+])
+def test_mixed_v2_and_legacy_packets_survive_replay_export(
+    tmp_path, evidence_set, reason_code, reply_delivery, delivered,
+):
+    from tools.observation.traffic.export import write_traffic_export
+
+    path, rows = _copied_telemetry(tmp_path, evidence_set)
+    ordinary = [row for row in rows if row["record_type"] == "packet"]
+    for index, row in enumerate(rows):
+        if row["record_type"] == "packet" and row["icmp"]["identifier"] == 10:
+            rows[index] = _decoded_v2_packet(row, reason_code=reason_code)
+    rows.extend(_decoded_v2_packet(
+        ordinary[0], reason_code=reason, ipv4_observed=False, packet_length=length,
+    ) for reason, length in ((3, 64), (4, 13), (5, 33)))
+    next(row for row in rows if row["record_type"] == "recorder_end")["packet_records"] = 6
+    _write_telemetry(path, rows)
+    projected = project_traffic_replay(_read_replay(evidence_set, path))
+    packets = projected["telemetry"]["packets"]
+    assert projected["inventory"]["packet_observations"] == 6
+    assert projected["inventory"]["ping_transactions"] == 2
+    assert projected["inventory"]["endpoint_delivered_transactions"] == delivered
+    assert projected["inventory"]["telemetry_lost_events"] == 0
+    assert projected["overview"]["telemetry_complete"] is True
+    for decoded, legacy in zip(packets[:2], ordinary[:2]):
+        assert decoded["ipv4_observed"] is True
+        for key in ("source_ipv4", "destination_ipv4", "protocol", "icmp"):
+            assert decoded[key] == legacy[key]
+    assert "ipv4_observed" not in packets[2]  # The other request stays legacy.
+    transaction = next(t for t in projected["transactions"] if t["identifier"] == 10)
+    assert transaction["pairing_status"] == "paired"
+    assert transaction["observed_reply"] is True
+    assert transaction["reply_delivery"] == reply_delivery
+    assert transaction["request_packet_indices"] == [0]
+    assert transaction["reply_packet_indices"] == [1]
+    assert sum(t["packet_observations"] for t in projected["transactions"]) == 3
+
+    generated = tmp_path / "generated"
+    replay = generated / "visualizations/traffic"
+    write_traffic_replay_tool(
+        path, evidence_set["frames"], evidence_set["planning"],
+        evidence_set["compiler_json"], None, replay,
+    )
+    exported = json.loads((replay / "traffic-replay.json").read_text())
+    assert exported["telemetry"]["packets"] == list(packets)
+    assert exported["transactions"] == list(projected["transactions"])
+    for packet in exported["telemetry"]["packets"][-3:]:
+        assert packet["source_ipv4"] is None and packet["destination_ipv4"] is None
+        assert packet["protocol"] is None and packet["icmp"]["valid"] is False
+
+    output = tmp_path / "export"
+    result = write_traffic_export(generated, output, START_AT, {})
+    index = json.loads((output / "index.json").read_text())
+    assert result["transactions"] == index["summary"]["reconstructed_transactions"] == 2
+    assert index["summary"]["packet_observations"] == 6
+    observations = json.loads((output / index["observations"][0]).read_text())["observations"]
+    assert next(t for t in observations if t["identifier"] == 10)["reply_delivery"] == reply_delivery
+
+
+@pytest.mark.parametrize("marker", [None, 0, 1, "false"])
+def test_traffic_rejects_non_boolean_ipv4_observed(tmp_path, evidence_set, marker):
+    path, rows = _copied_telemetry(tmp_path, evidence_set)
+    packet = next(row for row in rows if row["record_type"] == "packet")
+    packet["ipv4_observed"] = marker
+    with pytest.raises((TypeError, ValueError), match="ipv4_observed"):
+        _read_replay(evidence_set, _write_telemetry(path, rows))
+
+
+@pytest.mark.parametrize("name", ["source_ipv4", "destination_ipv4"])
+@pytest.mark.parametrize("mode", ["legacy", "observed", "unobserved"])
+@pytest.mark.parametrize("invalid", ["missing", "empty", "wrong-type", "wrong-presence"])
+def test_traffic_preserves_address_validation(tmp_path, evidence_set, name, mode, invalid):
+    path, rows = _copied_telemetry(tmp_path, evidence_set)
+    packet = next(row for row in rows if row["record_type"] == "packet")
+    if mode != "legacy":
+        packet.update(_decoded_v2_packet(packet, ipv4_observed=mode == "observed"))
+    if invalid == "missing":
+        del packet[name]
+    else:
+        packet[name] = {"empty": "", "wrong-type": 123,
+                        "wrong-presence": "100.64.0.1" if mode == "unobserved" else None}[invalid]
+    with pytest.raises(ValueError, match=name):
+        _read_replay(evidence_set, _write_telemetry(path, rows))
+
+
 def _workload(path: Path, *, series: list[dict[str, object]] | None = None) -> Path:
     values = [] if series is None else series
     slots = sum(
@@ -485,7 +637,7 @@ def test_replay_uses_physical_frames_and_explicit_planned_route_truth(
     evidence_set, monkeypatch,
 ) -> None:
     from skyseed_v2.simulator.planner import values
-    from tools.traffic import reader
+    from tools.observation.traffic import reader
     original = values.apply_plan_transition
     replayed = []
 
@@ -746,6 +898,7 @@ def test_node_endpoint_transaction_clock_and_active_graph(evidence_set) -> None:
             "zones_unserved",
             "reachable_route_count",
             "unreachable_route_count",
+            "local_route_count",
         }
         for value in data["planned_evidence"]["formal_transitions"]
     )
@@ -1356,7 +1509,7 @@ def test_write_produces_dependency_free_file_url_bundle(
 
 def test_globe_vertical_rotation_clamps_without_longitude_flip() -> None:
     source = Path(
-        __import__("tools.traffic.renderer", fromlist=["__file__"]).__file__
+        __import__("tools.observation.traffic.renderer", fromlist=["__file__"]).__file__
     ).read_text(encoding="utf-8")
 
     assert ".scroll {{ overflow:auto;max-height:560px; }}" in source
@@ -1397,7 +1550,7 @@ def test_tool_owned_cli_writes_replay_without_workload_control_input(
     monkeypatch.setattr(
         "sys.argv",
         [
-            "tools.traffic",
+            "tools.observation.traffic",
             "--telemetry",
             str(evidence_set["telemetry"]),
             "--physical-frames",
@@ -1616,7 +1769,7 @@ def test_compact_planning_replay_rejects_dropped_transition(
 
 
 def test_direct_collection_reuses_reader_replay_with_identical_projection(evidence_set, monkeypatch):
-    from tools.traffic import projection
+    from tools.observation.traffic import projection
     reference = project_traffic_replay(_read_observation(evidence_set))
     monkeypatch.setattr(projection, "apply_plan_transition",
                         lambda *_args: pytest.fail("collection must reuse completed reader replay"))
@@ -1624,7 +1777,7 @@ def test_direct_collection_reuses_reader_replay_with_identical_projection(eviden
 
 
 def test_json_stream_preserves_bytes_and_previous_file_on_failure(tmp_path):
-    from tools._presentation.html import _write_compact_json, write_json
+    from tools.observation._presentation.html import _write_compact_json, write_json
     path = tmp_path / "evidence.json"
     data = {"多语言": [1, {"ordered": "yes", "missing": None}], "empty": ()}
     expected = json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
@@ -1651,7 +1804,7 @@ def test_compact_planning_replay_rejects_mutated_transition_fingerprint(
 
 
 def test_traffic_renderer_labels_probe_plan_construction_without_simulator_claim() -> None:
-    source = Path("tools/traffic/renderer.py").read_text(encoding="utf-8")
+    source = Path("tools/observation/traffic/renderer.py").read_text(encoding="utf-8")
     assert "Traffic probe-plan construction" in source
     assert "Simulator Planner duration" not in source
 
@@ -1676,7 +1829,7 @@ def test_actual_boundary_time_does_not_follow_ideal_clock_when_runner_lags(tmp_p
 
 def test_compact_identity_stream_preserves_legacy_packet_and_generation_evidence(tmp_path, evidence_set):
     from itertools import groupby
-    from tools.traffic.reader import _read_telemetry
+    from tools.observation.traffic.reader import _read_telemetry
     rows = [json.loads(line) for line in evidence_set['telemetry'].read_text().splitlines()]
     old = _read_telemetry(evidence_set['telemetry'])
     compact = [row for row in rows if row.get('record_type') != 'interface_identity']
@@ -1698,14 +1851,55 @@ def test_compact_identity_stream_preserves_legacy_packet_and_generation_evidence
         assert new[key] == old[key]
 
 
+def test_local_source_observation_has_no_internal_network_hop(tmp_path, evidence_set):
+    from tools.observation.traffic.reader import _read_telemetry, _is_endpoint_packet
+    from tools.observation.traffic._spatial import _observed_steps
+    rows = [json.loads(line) for line in evidence_set['telemetry'].read_text().splitlines()]
+    pair = _interface_pair(rows)
+    rows.extend(pair)
+    packet = next(r for r in rows if r.get('record_type') == 'packet')
+    packet.update(node_slot=pair[0]['node_slot'], ingress_ifindex=pair[0]['ifindex'],
+                  selected_egress_ifindex=pair[0]['ifindex'], observation='ingress')
+    path = tmp_path / 'local-source.jsonl'
+    _write_telemetry(path, rows)
+    before = _read_telemetry(path)
+    index = 0
+    assert before['packets'][index]['ingress_identity'] is not None
+    # Deliberately reuse an existing network ifindex: the explicit local-origin
+    # fact must prevent it from becoming a physical connection in replay.
+    packet = [r for r in rows if r.get('record_type') == 'packet'][index]
+    packet.update(local_origin=True, observation='local-output', decision='pass', reason='local-route')
+    _write_telemetry(path, rows)
+    actual = _read_telemetry(path)['packets']
+    source = actual[index]
+    assert source['ingress_identity'] is None
+    assert source['egress_identity'] == before['packets'][index]['egress_identity']
+    assert not _is_endpoint_packet(source, None)
+    peer = 'next-node'
+    arrival = {**source, 'node_id': peer, 'kernel_monotonic_ns': source['kernel_monotonic_ns'] + 1,
+               'local_origin': False, 'observation': 'ingress', 'decision': 'pass',
+               'ingress_identity': {'validity': 'exact-generation', 'connection_id': 'real-link',
+                                    'peer_node_id': source['node_id']}}
+    steps = _observed_steps({'request_packet_indices': (0, 1)}, 'request', (source, arrival),
+                           {source['node_id']: 0, peer: 1}, ())
+    assert steps[0]['local_origin'] and not steps[0]['arrival_supported']
+    assert steps[0]['ingress_peer'] is None and steps[0]['gap_before'] is None
+    assert steps[1]['arrival_supported'] and steps[1]['ingress_peer'] == 0
+    assert steps[1]['gap_before'] is None
+    packet['observation'] = 'ingress'
+    _write_telemetry(path, rows)
+    with pytest.raises(ValueError, match='local-origin observation is inconsistent'):
+        _read_telemetry(path)
+
+
 def test_browser_data_is_lazy_and_transaction_controls_work_without_a_browser(tmp_path, evidence_set):
     """Execute controls against an in-memory DOM double; no pages/images opened."""
     import os
     import shutil
     import subprocess
-    from tools._presentation.shell_display import _SHELL_SCRIPT
-    from tools.traffic._spatial import _write_spatial_assets, _browser_index
-    from tools.traffic._spatial_renderer import _traffic_spatial_script
+    from tools.observation._presentation.shell_display import _SHELL_SCRIPT
+    from tools.observation.traffic._spatial import _write_spatial_assets, _browser_index
+    from tools.observation.traffic._spatial_renderer import _traffic_spatial_script
     node = os.environ.get('SKYSEED_TEST_NODE') or shutil.which('node')
     if not node:
         pytest.skip('Node required for nonvisual JavaScript execution')

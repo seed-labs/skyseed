@@ -43,3 +43,15 @@ worker coalesces completed requests independently of Producer/Runner progress.
 Generated `experiment_control.py` is a client to live owners, not restart recovery.
 [Experiment reference](../../../docs/development/experiment-control.md) defines command ownership;
 [controls guide](../../../docs/user-guides/computation-and-controls.md) gives operations.
+
+Default Model assembly belongs to
+`simulator.create_default_simulator(definition, forwarding_backend=..., ...)`.
+Use the same selected backend for Emulator construction; Controller inherits its
+execution selection and leaves the already constructed Models unchanged.
+
+The Controller's optional `preparation` function and `preparation_inputs` capture
+user source/JSON values for the separate generated execution process. Public
+`PreparationContext` supplies initial planned/prepared facts. `preparation.py`
+loads the captured code; `execution.py` retains the single process/lifecycle owner
+through its existing initial-readiness command mechanism. See the
+[contract](../../../docs/development/experiment-control.md#user-preparation-function).

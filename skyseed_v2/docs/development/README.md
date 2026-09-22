@@ -7,6 +7,7 @@ use these references for implementation and review:
 - [Component boundaries](component-boundaries.md): owners, dependency direction and static input.
 - [Model interfaces](model-interfaces.md): required results, templates, optional capabilities and defaults.
 - [Planner state and Plans](planner-state-and-plans.md): time, adoption, replay and routing semantics.
+- [C/eBPF DataPlane](dataplane.md): replaceable packet handlers, ELF preparation, shared support and map ownership.
 - [Compiler and Runner](compiler-and-runner.md): sealed materials, activation and resource lifetime.
 - [Experiment control](experiment-control.md): publication, continuation and cancellation ownership.
 

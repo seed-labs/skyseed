@@ -1,9 +1,14 @@
 # S5: author three local Models
 
+The Emulator joins all GSs to the ordinary [shared business LAN](../README.md).
+Only ground-interface IPv4 connectivity is added; original Model/input/timing choices
+and BPF default remain. Historical measurements use their original scene.
+
 [s5.py](s5.py) separately loads the shared [Shell](../../data/starlink/shells.yaml)
 and [GroundStation](../../data/starlink/ground_stations.yaml) records, selects S5 and
-filters GSs, then visibly constructs SEED Base, AS 65040, Shell, Orbits, Satellites
-and GroundStations. It adapts pure input, declares time, loads Zones and injects
+filters GSs, then passes those records to `create_static_emulator` in AS 65040.
+The builder expands the configured Shell/Orbits/Satellites and GroundStations;
+the entry adds the ordinary GS LAN. It adapts pure input, declares time, loads Zones and injects
 three instances from [model.py](model.py). Edit those algorithms directly;
 there is no default Model subclass or cross-example construction import.
 
@@ -44,7 +49,7 @@ value/identity/capacity contracts from optional optimization and Tool informatio
 From `skyseed_v2/`, reproduce the checked-in [zones.yaml](zones.yaml):
 
 ```bash
-python tools/zone/generate.py --latitude-bands 12 --equatorial-cells 24 \
+python tools/observation/zone/generate.py --latitude-bands 12 --equatorial-cells 24 \
   --alignment antimeridian-centered --output examples/Sky01_s5_custom_models/zones.yaml
 ```
 

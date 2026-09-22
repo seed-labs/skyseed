@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1480" height="2615" viewBox="0 0 1480 2615" role="img" aria-labelledby="title description">
 <title id="title">SkySEED — complete system architecture</title>
-<desc id="description">Authored inputs, Emulator, pure simulation, chronological production, BPF execution and separately owned evidence. Nested groups show ownership; blue arrows transfer values, dashed purple arrows call or control, and diamond lines hold objects.</desc>
+<desc id="description">Authored inputs, Emulator, pure simulation, chronological production, selected BPF/Linux execution and separately owned evidence. Nested groups show ownership; blue arrows transfer values, dashed purple arrows call or control, and diamond lines hold objects.</desc>
 <defs>
  <marker id="data" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#176a9d"/></marker>
  <marker id="call" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10" fill="none" stroke="#7952a3"/></marker>
@@ -141,21 +141,21 @@
 <text x="538" y="1230" class="body">_timeline; _previous_result; bounded queues</text>
 <text x="538" y="1256" class="body">produce(); request_extension(); close()</text>
 <text x="538" y="1282" class="body">Calls World → physical query → Planner</text>
-<text x="538" y="1308" class="body">Then compile_bpf for the Compiler cutoff</text>
+<text x="538" y="1308" class="body">Then compile_plan for the Compiler cutoff</text>
 <text x="538" y="1334" class="body">Suffix-only cursor; retained Models / state</text>
 <text x="538" y="1360" class="body">Seals deliveries; publishes completed range</text>
 </g>
 <g class="card">
 <rect x="1000" y="1155" width="440" height="255" rx="10" fill="#fff" stroke="#8099aa"/>
-<text x="1018" y="1187" class="title">BPF Compiler · compile_bpf</text>
+<text x="1018" y="1187" class="title">Compiler · compile_plan</text>
 <path d="M1018,1202 H1422" stroke="#c4d0d9"/>
-<text x="1018" y="1230" class="body">BpfCompilationResult: exact Plan lowering</text>
+<text x="1018" y="1230" class="body">CompilationResult: exact Plan lowering</text>
 <text x="1018" y="1256" class="body">Inputs: Plan / PhysicalWorld / predecessor</text>
 <text x="1018" y="1282" class="body">source_plan_id; output_planned_state</text>
 <text x="1018" y="1308" class="body">compiled_activation_boundaries; constraints</text>
 <text x="1018" y="1334" class="body">Resource / parameter / forwarding intents</text>
 <text x="1018" y="1360" class="body">Predecessor indexes retain incremental work</text>
-<text x="1018" y="1386" class="body">Backend lowering consumes dependencies</text>
+<text x="1018" y="1386" class="body">Material writer selects backend translation</text>
 </g>
 <polyline points="480,1260 520,1260" fill="none" stroke="#285a49" stroke-width="2.2" marker-start="url(#owns)"/>
 <polyline points="740,1155 740,1085" fill="none" stroke="#7952a3" stroke-width="2.2" marker-end="url(#call)" stroke-dasharray="8 5"/>
@@ -164,11 +164,12 @@
 <text x="1225" y="1125" class="label">Plan</text>
 <polyline points="960,1310 1000,1310" fill="none" stroke="#7952a3" stroke-width="2.2" marker-end="url(#call)" stroke-dasharray="8 5"/>
 <g class="card">
-<rect x="520" y="1470" width="920" height="130" rx="10" fill="#fff" stroke="#8099aa"/>
-<text x="538" y="1502" class="title">Sealed deliveries + request publication</text>
+<rect x="520" y="1470" width="920" height="145" rx="10" fill="#fff" stroke="#8099aa"/>
+<text x="538" y="1502" class="title">Selected backend preparation → sealed deliveries</text>
 <path d="M538,1517 H1422" stroke="#c4d0d9"/>
-<text x="538" y="1545" class="body">results/compiler/: binary Runner artifact, manifest, material references, execution.json</text>
-<text x="538" y="1571" class="body">results/experiment/completed.json: one atomic request boundary and bounded stream prefixes</text>
+<text x="538" y="1545" class="body">BPF: ELF + table deltas; Linux: identity + ordered link, Zone and IPv4 route actions</text>
+<text x="538" y="1571" class="body">results/compiler/: v8 binary / backend manifest and v5 execution.json</text>
+<text x="538" y="1597" class="body">results/experiment/completed.json: atomic request boundary and bounded stream prefixes</text>
 </g>
 <polyline points="740,1410 740,1470" fill="none" stroke="#176a9d" stroke-width="2.2" marker-end="url(#data)"/>
 <polyline points="1220,1410 1220,1470" fill="none" stroke="#176a9d" stroke-width="2.2" marker-end="url(#data)"/>
@@ -198,7 +199,7 @@
 </g>
 <polyline points="240,1935 240,1980" fill="none" stroke="#176a9d" stroke-width="2.2" marker-end="url(#data)"/>
 <rect x="470" y="1680" width="970" height="475" rx="14" fill="#edf4f0" stroke="#285a49" stroke-width="2"/>
-<text x="490" y="1714" class="title">Runner — BPF backend</text>
+<text x="490" y="1714" class="title">Runner — shared BPF/Linux lifecycle</text>
 <text x="490" y="1740" class="caption">_artifact; _active_frontier; _runtime_realization; _helper. run(), pause(), resume(), cancel_runtime(), cleanup().</text>
 <text x="490" y="1770" class="caption">The three cards below are responsibilities of Runner, not three public classes.</text>
 <g class="card">
@@ -209,7 +210,7 @@
 <text x="508" y="1901" class="body">Load initial artifact / identities</text>
 <text x="508" y="1927" class="body">Acquire privileged helper</text>
 <text x="508" y="1953" class="body">Open namespace FDs / sockets</text>
-<text x="508" y="1979" class="body">Prepare first batch; activate B0</text>
+<text x="508" y="1979" class="body">Bind / prepare; activate B0</text>
 </g>
 <g class="card">
 <rect x="804" y="1800" width="292" height="205" rx="10" fill="#fff" stroke="#8099aa"/>
@@ -217,7 +218,7 @@
 <path d="M822,1847 H1078" stroke="#c4d0d9"/>
 <text x="822" y="1875" class="body">run(); activate_next()</text>
 <text x="822" y="1901" class="body">Create resources → READY</text>
-<text x="822" y="1927" class="body">Publish forwarding generation</text>
+<text x="822" y="1927" class="body">Apply selected backend work</text>
 <text x="822" y="1953" class="body">Withdraw old; expose ACTIVE</text>
 <text x="822" y="1979" class="body">Pause / material hold keep state</text>
 </g>
@@ -227,17 +228,17 @@
 <path d="M1136,1847 H1402" stroke="#c4d0d9"/>
 <text x="1136" y="1875" class="body">append_batch(path)</text>
 <text x="1136" y="1901" class="body">Successor: preparing → READY</text>
-<text x="1136" y="1927" class="body">Construct / prewrite future work</text>
+<text x="1136" y="1927" class="body">Prepare sealed backend deltas</text>
 <text x="1136" y="1953" class="body">Execution alone activates</text>
-<text x="1136" y="1979" class="body">Reclaim after reader release</text>
+<text x="1136" y="1979" class="body">BPF: reclaim after readers exit</text>
 </g>
 <g class="card">
 <rect x="490" y="2040" width="930" height="90" rx="10" fill="#fff" stroke="#8099aa"/>
-<text x="508" y="2072" class="title">Owned Linux resources</text>
+<text x="508" y="2072" class="title">Runner-owned BPF or native adapter + shared Linux resources</text>
 <path d="M508,2087 H1402" stroke="#c4d0d9"/>
-<text x="508" y="2115" class="body">_TcBpfRuntimeRealization + _PrivilegedHelper: netns FDs, sockets, veths, qdiscs, BPF maps / programs</text>
+<text x="508" y="2115" class="body">Shared helper, netns, identities, veths, qdiscs; BPF adds maps/libbpf. Native: ordered completion, no publication.</text>
 </g>
-<polyline points="1050,1600 1050,1680" fill="none" stroke="#176a9d" stroke-width="2.2" marker-end="url(#data)"/>
+<polyline points="1050,1615 1050,1680" fill="none" stroke="#176a9d" stroke-width="2.2" marker-end="url(#data)"/>
 <text x="1065" y="1645" class="label">sealed immutable paths</text>
 <polyline points="435,2090 470,2090" fill="none" stroke="#176a9d" stroke-width="2.2" marker-end="url(#data)"/>
 <polyline points="782,1900 804,1900" fill="none" stroke="#176a9d" stroke-width="2.2" marker-end="url(#data)"/>
@@ -259,7 +260,7 @@
 <text x="538" y="2272" class="title">Optional Tools — visualizations/</text>
 <path d="M538,2287 H942" stroke="#c4d0d9"/>
 <text x="538" y="2315" class="body">PhysicalWorld / Zone / Planner / Compiler</text>
-<text x="538" y="2341" class="body">Runner / Traffic / Performance views</text>
+<text x="538" y="2341" class="body">Traffic preview / observations / Performance</text>
 <text x="538" y="2367" class="body">Relative browser assets, no Model replay</text>
 <text x="538" y="2393" class="body">Runtime reads wait for completed invocation</text>
 <text x="538" y="2419" class="body">Presentation can lag; failure preserves facts</text>
@@ -268,9 +269,9 @@
 </g>
 <g class="card">
 <rect x="1000" y="2240" width="440" height="285" rx="10" fill="#fff" stroke="#8099aa"/>
-<text x="1018" y="2272" class="title">Active Traffic + observed runs/</text>
+<text x="1018" y="2272" class="title">Traffic + observed runs/</text>
 <path d="M1018,2287 H1422" stroke="#c4d0d9"/>
-<text x="1018" y="2315" class="body">Active tool owns probes and telemetry</text>
+<text x="1018" y="2315" class="body">Generation owns sender; Runner telemetry</text>
 <text x="1018" y="2341" class="body">Runner owns network state and ACTIVE time</text>
 <text x="1018" y="2367" class="body">runs/&lt;id&gt;/runner, traffic, performance</text>
 <text x="1018" y="2393" class="body">Actual outcomes / resource measurements</text>

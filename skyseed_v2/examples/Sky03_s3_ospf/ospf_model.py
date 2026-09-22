@@ -16,7 +16,7 @@ from skyseed_v2.simulator.planner.routing._demands import _GatewayDemandConstruc
 from skyseed_v2.simulator.planner.routing import RoutePlanningResult
 from skyseed_v2.simulator.planner._scopes import _validated_satellite_scopes, _validate_scope_world, _connections_by_scope
 from skyseed_v2.simulator.planner.values import (
-    GroundStationRouteDemandTarget, OperationalConnection, OperationalConnectionId, OperationalConnectionKind,
+    GroundStationRouteDemandTarget, SatelliteRouteDemandTarget, OperationalConnection, OperationalConnectionId, OperationalConnectionKind,
     RouteDemand, RouteOutcome, ZoneServiceAssignment,
     ReachableRouteOutcome, RouteUnreachableReason,
     UnreachableRouteOutcome, _connection_key, _node_key, _route_demand_key,
@@ -262,11 +262,13 @@ class OspfRoutePlanningModel(_GatewayDemandConstruction):
             if demand.source.entity_kind == "satellite" and self._satellites[demand.source] != key:
                 raise ValueError("Route source is outside its network scope")
             ground = isinstance(demand.target, GroundStationRouteDemandTarget)
-            terminal = demand.target.ground_station_id if ground else assignments.get(demand.target.service_key)
+            terminal = (demand.target.ground_station_id if ground
+                        else demand.target.satellite_id if isinstance(demand.target, SatelliteRouteDemandTarget)
+                        else assignments.get(demand.target.service_key))
             if terminal is not None:
                 physical_world.get_node(terminal)
                 if not ground and self._satellites[terminal] != key:
-                    raise ValueError("Zone terminal is outside its network scope")
+                    raise ValueError("Satellite terminal is outside its network scope")
             grouped.setdefault(key, []).append((demand, ground, terminal))
         outcomes = []
         connections_by_scope = _connections_by_scope(operational_connections, self._satellites)

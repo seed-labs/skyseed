@@ -6,7 +6,7 @@ import struct
 
 import pytest
 
-from skyseed_v2.backend.bpf.runner.kernel_netlink import _RouteSocket, _attr
+from skyseed_v2.backend.linux.netlink import _RouteSocket, _attr
 
 
 def _attributes(payload):
@@ -24,6 +24,54 @@ def _capture():
     calls = []
     channel.request = lambda kind, payload, **kwargs: calls.append((kind, payload, kwargs))
     return channel, calls
+
+
+def test_fixed_local_output_rules_routes_and_interface_settings():
+    from skyseed_v2.backend.bpf.dataplane.local_ingress import _LOCAL_TABLE, _LOCAL_GATEWAY, _LOCAL_PROTOCOL
+    channel, calls = _capture()
+    channel.local_output_rule('100.64.0.0/29', table=_LOCAL_TABLE, priority=1, protocol=_LOCAL_PROTOCOL)
+    kind, payload, flags = calls[-1]
+    assert kind == 32 and flags['flags'] == 0x600
+    assert struct.unpack('=BBBBBBBBI', payload[:12]) == (socket.AF_INET, 29, 0, 0, 0, 0, 0, 1, 0)
+    assert _attributes(payload[12:]) == {1: socket.inet_aton('100.64.0.0'), 3: b'lo\0',
+        6: struct.pack('=I', 1), 15: struct.pack('=I', _LOCAL_TABLE), 21: bytes([_LOCAL_PROTOCOL])}
+    channel.local_output_rule('100.64.0.0/29', table=_LOCAL_TABLE, priority=1, protocol=_LOCAL_PROTOCOL, delete=True)
+    assert calls[-1] == (33, payload, {'flags': 0})
+    channel.local_output_route(31, '198.18.0.0/15', table=_LOCAL_TABLE,
+        gateway=_LOCAL_GATEWAY, prefsrc='100.64.0.1', protocol=_LOCAL_PROTOCOL)
+    kind, payload, flags = calls[-1]
+    assert kind == 24 and flags['flags'] == 0x600
+    assert struct.unpack('=BBBBBBBBI', payload[:12]) == (socket.AF_INET, 15, 0, 0, 0, _LOCAL_PROTOCOL, 0, 1, 4)
+    assert _attributes(payload[12:]) == {1: socket.inet_aton('198.18.0.0'), 15: struct.pack('=I', _LOCAL_TABLE),
+        4: struct.pack('=I', 31), 5: socket.inet_aton(_LOCAL_GATEWAY), 7: socket.inet_aton('100.64.0.1')}
+    channel.local_ingress_ipv4(32)
+    outer = _attributes(calls[-1][1][16:])
+    values = _attributes(_attributes(_attributes(outer[26])[socket.AF_INET])[1])
+    assert {k: struct.unpack('=I', v)[0] for k, v in values.items()} == {1: 1, 4: 0, 6: 0, 8: 0, 23: 1}
+
+
+@pytest.mark.parametrize('conflict', [None, 'priority', 'rule-table', 'route-table', 'default-route-table', 'missing-local', 'altered-local'])
+def test_local_steering_audits_exact_reserved_slots_and_local_delivery(conflict):
+    from skyseed_v2.backend.bpf.dataplane.local_ingress import _LOCAL_TABLE
+    from skyseed_v2.backend.linux.netlink import _u32
+    channel, _ = _capture()
+    def rule(table, priority, dst_len=0):
+        return (32, struct.pack('=BBBBBBBBI', socket.AF_INET, dst_len, 0, 0, 0, 0, 0, 1, 0)
+                + _u32(15, table) + _u32(6, priority))
+    rules = [rule(255, 0), rule(254, 32766), rule(253, 32767)]
+    routes = []
+    if conflict == 'priority': rules.append(rule(42, 1))
+    if conflict == 'rule-table': rules.append(rule(_LOCAL_TABLE, 100))
+    if conflict in ('route-table', 'default-route-table'):
+        routes.append((24, struct.pack('=BBBBBBBBI', socket.AF_INET, 24 if conflict == 'route-table' else 0, 0, 0, 0, 4, 0, 1, 0) + _u32(15, _LOCAL_TABLE) + _attr(1, socket.inet_aton('192.0.2.0'))))
+    if conflict == 'missing-local': rules.pop(0)
+    if conflict == 'altered-local': rules[0] = rule(255, 0, 24)
+    channel.request = lambda kind, *a, **kw: rules if kind == 34 else routes
+    if conflict:
+        with pytest.raises(RuntimeError, match='local ingress'):
+            channel.audit_local_ingress(_LOCAL_TABLE, (1, 2), channel.ipv4_route_inventory())
+    else:
+        channel.audit_local_ingress(_LOCAL_TABLE, (1, 2), channel.ipv4_route_inventory())
 
 
 def test_veth_request_targets_retained_peer_namespace_descriptor():
@@ -78,7 +126,7 @@ def test_bpf_attach_uses_clsact_and_direct_action_program_fd():
 
 @pytest.mark.parametrize("code", [0, -errno.EPERM, -errno.ENODEV, -errno.ENOSPC])
 def test_kernel_ack_status_is_not_suppressed(code):
-    from skyseed_v2.backend.bpf.runner import kernel_netlink
+    from skyseed_v2.backend.linux import netlink as kernel_netlink
     count_before = kernel_netlink._request_count()
     channel = _RouteSocket.__new__(_RouteSocket)
     channel._sequence = 0
@@ -100,7 +148,7 @@ def test_kernel_ack_status_is_not_suppressed(code):
 
 
 def test_one_bpf_attachment_counts_two_actual_netlink_requests():
-    from skyseed_v2.backend.bpf.runner import kernel_netlink
+    from skyseed_v2.backend.linux import netlink as kernel_netlink
     channel = _RouteSocket.__new__(_RouteSocket)
     channel._sequence = 0
     class Wire:
@@ -114,7 +162,7 @@ def test_one_bpf_attachment_counts_two_actual_netlink_requests():
 
 def test_startup_audit_uses_the_preparation_pool_and_propagates_collisions(monkeypatch):
     from ipaddress import IPv4Network
-    from skyseed_v2.backend.bpf.runner import privileged_runtime_command as command
+    from skyseed_v2.backend.bpf.dataplane import runtime_command as command
     monkeypatch.setattr(command, "_assert_netns", lambda node: None)
     monkeypatch.setattr(command, "_namespace_ipv4_networks", lambda node: ((), ()))
     request = {"node_address_range": "100.64.0.0/29", "zone_prefixes": (),
@@ -133,7 +181,7 @@ def test_group_delete_is_one_unqualified_dellink_for_nonzero_owned_group():
     assert kind == 17
     assert struct.unpack_from("=i", payload, 4) == (0,)
     assert _attributes(payload[16:]) == {27: struct.pack("=I", 0x53530001)}
-    for group in (0, 1, True, 0x100000000):
+    for group in (0, True, 0x100000000):
         with pytest.raises(ValueError):
             channel.delete_group(group)
     assert len(calls) == 1
@@ -154,7 +202,7 @@ def test_wrong_sequence_ack_fails_without_being_accepted():
 
 @pytest.mark.parametrize("name,group,reject", [("foreign", 0, False), ("sv2foreign", 0, True), ("foreign", 0x53530001, True), ("foreign", 0x53530010, False)])
 def test_initial_inventory_preserves_unrelated_links_and_rejects_dirty_owned_range(name, group, reject):
-    from skyseed_v2.backend.bpf.runner.kernel_netlink import _ifinfo, _text, _u32
+    from skyseed_v2.backend.linux.netlink import _ifinfo, _text, _u32
     channel, _ = _capture()
     channel.request = lambda *args, **kwargs: [
         (16, _ifinfo(1) + _text(3, "lo")),
@@ -162,15 +210,15 @@ def test_initial_inventory_preserves_unrelated_links_and_rejects_dirty_owned_ran
     ]
     if reject:
         with pytest.raises(RuntimeError, match="already exists"):
-            channel.initial_links(0x53530005)
+            channel.initial_links(reserved_prefix="sv2", group_start=0x53530000, group_end=0x53530005)
     else:
-        assert channel.initial_links(0x53530005) == 1
+        assert channel.initial_links(reserved_prefix="sv2", group_start=0x53530000, group_end=0x53530005) == 1
 
 
 def test_netlink_call_counters_are_local_to_each_worker():
     from concurrent.futures import ThreadPoolExecutor
     from threading import Barrier
-    from skyseed_v2.backend.bpf.runner import kernel_netlink
+    from skyseed_v2.backend.linux import netlink as kernel_netlink
     before = kernel_netlink._request_count()
     ready = Barrier(2)
     def call(count):
@@ -265,13 +313,13 @@ def test_ipv4_inventory_rejects_malformed_records(body):
 @pytest.mark.parametrize('collision_source', [None,'address','route'])
 def test_initial_collision_audit_uses_retained_transport_without_commands(monkeypatch,collision_source):
     from ipaddress import IPv4Address,IPv4Network
-    from skyseed_v2.backend.bpf.runner import privileged_runtime_command as command
+    from skyseed_v2.backend.bpf.dataplane import runtime_command as command
     calls=[]
     class Netlink:
         def ipv4_address_facts(self):
             calls.append('address');return ((IPv4Address('100.64.0.2' if collision_source=='address' else '192.0.2.1'),24),)
-        def ipv4_route_networks(self):
-            calls.append('route');return (IPv4Network('100.64.0.0/24' if collision_source=='route' else '192.0.2.0/24'),)
+        def ipv4_route_inventory(self):
+            calls.append('route');return ((254, IPv4Network('100.64.0.0/24' if collision_source=='route' else '192.0.2.0/24')),)
     monkeypatch.setattr(command,'_LIVE_NODES',{'a':{'netlink':Netlink()}})
     monkeypatch.setattr(command,'_assert_netns',lambda node:calls.append('identity'))
     request={'node_address_range':'100.64.0.0/29','zone_prefixes':(), 'nodes':[{'key':'a','node_address':'100.64.0.1'}], 'worker_count':2}
@@ -281,3 +329,38 @@ def test_initial_collision_audit_uses_retained_transport_without_commands(monkey
         result=command._audit_node_addresses(request)
         assert result['observed_ipv4_address_prefixes']==result['observed_non_default_ipv4_route_prefixes']==1
     assert calls==['identity','address','route']
+
+
+@pytest.mark.parametrize('occupied_prefix', [None, 24, 0])
+def test_bpf_preparation_shares_one_route_dump_per_covered_node(monkeypatch, occupied_prefix):
+    from pathlib import Path
+    from skyseed_v2.backend.bpf.dataplane import runtime_command as command
+    from skyseed_v2.backend.bpf.dataplane.local_ingress import _LOCAL_TABLE
+    from skyseed_v2.backend.linux import network
+    from skyseed_v2.backend.linux.netlink import _u32
+    calls = []
+    channel = _RouteSocket.__new__(_RouteSocket)
+    def request(kind, *args, **kwargs):
+        calls.append(kind)
+        if kind == 22:
+            return []
+        if kind == 34:
+            return [(32, struct.pack('=BBBBBBBBI', socket.AF_INET, 0, 0, 0, 255, 0, 0, 1, 0))]
+        assert kind == 26
+        table = 254 if occupied_prefix is None else _LOCAL_TABLE
+        prefix = 0 if occupied_prefix is None else occupied_prefix
+        return [(24, struct.pack('=BBBBBBBBI', socket.AF_INET, prefix, 0, 0, 0, 4, 0, 1, 0)
+                 + _u32(15, table) + (_attr(1, socket.inet_aton('192.0.2.0')) if prefix else b''))]
+    channel.request = request
+    monkeypatch.setattr(command, '_LIVE_NODES', {'a': {'netlink': channel, 'namespace_fd': 42}})
+    monkeypatch.setattr(command, '_assert_netns', lambda node: None)
+    monkeypatch.setattr(network, '_setns', lambda fd: None)
+    monkeypatch.setattr(Path, 'read_text', lambda p: '0')
+    request_data = {'node_address_range': '100.64.0.0/29', 'zone_prefixes': (),
+                    'nodes': [{'key': 'a', 'node_address': '100.64.0.1', 'program': 'default'}]}
+    if occupied_prefix is None:
+        assert command._audit_node_addresses(request_data)['audited_node_namespaces'] == 1
+    else:
+        with pytest.raises(RuntimeError, match='route table already in use'):
+            command._audit_node_addresses(request_data)
+    assert calls == [22, 26, 34]

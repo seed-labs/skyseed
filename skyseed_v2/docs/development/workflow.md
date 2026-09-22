@@ -65,3 +65,5 @@ error and inspect real completed frontiers; do not infer execution success from 
 For substantial work, capture an incoming baseline before edits and retain a phase-only diff.
 Respect accumulated work and separate SEED ownership. [Engineering rules](../../AGENTS.md) summarize
 scope, cleanup and reporting requirements.
+
+For the ordinary authoring loop, use the [standalone development driver](../../templates/dataplane/threshold/develop.py): generate headers from a definition, implement the C handler, run selected Model/scene/C checks, and prepare normally. See [development helpers](../../tools/development/README.md). These checks neither deploy nor start observation/measurement.

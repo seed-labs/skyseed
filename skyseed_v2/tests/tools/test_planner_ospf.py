@@ -8,8 +8,8 @@ import subprocess
 
 from tests.unit.test_ospf_route_model import scene, link, configured
 from tests.tools.test_presentation_replay import _node
-from tools.planner._ospf import _prepare_ospf, _ospf_frame, _ospf_metadata
-from tools.planner._ospf_display import _OSPF_SCRIPT
+from tools.observation.planner._ospf import _prepare_ospf, _ospf_frame, _ospf_metadata
+from tools.observation.planner._ospf_display import _OSPF_SCRIPT
 
 
 def test_configured_membership_survives_outages_and_gs_stays_terminal():
@@ -76,8 +76,8 @@ def test_ordinary_streamed_tool_adds_ospf_without_running_models(tmp_path, monke
     from skyseed_v2 import simulator
     from skyseed_v2.experiment.output.provenance import _describe_simulator
     from tests._support import drain_simulator
-    from tools.planner import projection
-    from tools.planner.inspection import write_planner_history_tool
+    from tools.observation.planner import projection
+    from tools.observation.planner.inspection import write_planner_history_tool
 
     original = tiny.create_simulator(tiny.build_emulator())
     definition = original.get_definition()

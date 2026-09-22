@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from types import MappingProxyType
 
+from skyseed_v2.configuration.forwarding import ForwardingBackend, _backend
 from skyseed_v2.configuration.simulator import ZoneLayoutDefinition, build_global_zone_layout
 from skyseed_v2.shared import NodeId
 from skyseed_v2.shared._shutdown import _shutdown_owned
@@ -20,9 +21,20 @@ from .planner import (
     OperationalConnectionKind, ParameterKindConfiguration, ParameterPlanningModel,
     PlannerConfiguration, RetainFirstInterSatelliteConfiguration,
     RetainFirstInterSatelliteConnectionPlanningModel, RouteDemand,
-    RoutePlanningModel, ZoneServicePlanningModel,
+    RoutePlanningModel, RoutePlanningResult, ZoneServicePlanningModel,
 )
 from .simulator import Simulator
+
+
+class _EmptyRoutes:
+    """The default Linux assembly leaves business routes to installed software."""
+
+    def plan_route_outcomes(self, physical_world, operational_connections,
+                            zone_service_assignments, demands, previous_outcomes, *, timestamp):
+        return RoutePlanningResult()
+
+    def can_reuse_unchanged_inputs(self):
+        return True
 
 
 def _parameters():
@@ -86,6 +98,7 @@ class DefaultSimulatorConfiguration:
 def create_default_simulator(
     definition: SimulationDefinition,
     *,
+    forwarding_backend: ForwardingBackend | str = "bpf",
     configuration: DefaultSimulatorConfiguration | None = None,
     position_model: PositionModel | None = None,
     zone_membership_model: ZoneMembershipModel | None = None,
@@ -102,6 +115,8 @@ def create_default_simulator(
 
     Each omitted role gets a fresh configured built-in instance. Each supplied
     object is handed directly to the existing construction API without mutation.
+    With no route_model, BPF uses gateway routes and Linux uses empty routes.
+    The selection affects assembly only; it is not retained by the Simulator.
     Emulator adaptation and finite Timeline selection remain caller responsibilities.
     """
     simulator = None
@@ -110,6 +125,7 @@ def create_default_simulator(
         physical=physical_link_model, isl=inter_satellite_model, ground=ground_station_model,
         zone=zone_service_model, parameters=parameter_model, route=route_model)
     try:
+        backend = _backend(forwarding_backend)
         simulator = Simulator(definition)
         c = DefaultSimulatorConfiguration() if configuration is None else configuration
         if not isinstance(c, DefaultSimulatorConfiguration):
@@ -142,7 +158,7 @@ def create_default_simulator(
         if pending["parameters"] is None:
             pending["parameters"] = AccumulatedDeadbandParameterPlanningModel(c.parameter_configuration)
         if pending["route"] is None:
-            pending["route"] = GatewayHopCountRoutePlanningModel(
+            pending["route"] = _EmptyRoutes() if backend == ForwardingBackend.LINUX else GatewayHopCountRoutePlanningModel(
                 satellite_scopes=c.satellite_scopes,
                 gateway_candidate_count=c.gateway_candidate_count,
                 gateway_candidate_max_distance_m=c.gateway_candidate_max_distance_m)

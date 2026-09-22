@@ -10,6 +10,7 @@ every implementation method. Linked source owns exact signatures and constructor
 | Find a satellite, GS, orbit or Zone; read positions; calculate geometry | [Physical data and queries](physical.md) |
 | Read candidates, preparation state, connection parameters, service assignments or routes | [Planning inputs and results](planning.md) |
 | Construct a scene, assemble Simulator, advance calculation or control execution | [Assembly and control](assembly-and-control.md) |
+| Replace packet processing | [C/eBPF contract](../development/dataplane.md), [copyable template](../../templates/dataplane/README.md) |
 | Implement a replacement Model | [Authoring guide and per-role data map](../user-guides/model-extension.md#data-available-to-each-model), [minimum interfaces](../development/model-interfaces.md) |
 
 Public properties matter as much as methods: `world.autonomous_systems`,

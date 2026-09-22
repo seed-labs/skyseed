@@ -10,7 +10,7 @@ import pytest
 
 from skyseed_v2.deployment import deployer
 from tests.tools.test_runner_tool import _outcome, _snapshot
-from tools.runner import write_runner_tool
+from tools.observation.runner import write_runner_tool
 
 
 @pytest.fixture
@@ -181,7 +181,7 @@ def test_lost_client_with_created_container_reports_uncertainty_without_releasin
 
 
 @pytest.mark.parametrize('cancel', [False, True])
-def test_slow_startup_and_cancelled_client_drain_without_cutoff(docker, cancel):
+def test_slow_startup_and_cancelled_client_drain_without_cutoff(docker, cancel, capsys):
     docker.states = {'node': 'created', 'other': 'created'}
     docker.delayed = 46
     docker.cancel = cancel
@@ -194,6 +194,35 @@ def test_slow_startup_and_cancelled_client_drain_without_cutoff(docker, cancel):
     assert docker.waits == (2 if cancel else 1)
     assert not (docker.runtime / 'deployment-pending.json').exists()
     assert all(c['State']['Status'] == 'running' for c in docker.alive.values())
+    feedback = capsys.readouterr().err
+    assert ('Deployment startup succeeded' in feedback) is (not cancel)
+    assert ('admitted Docker client to drain' in feedback) is cancel
+    if not cancel:
+        assert feedback.index('Container startup') < feedback.index('Deployment startup succeeded')
+
+
+@pytest.mark.parametrize('failure_action', [None, 'stop', 'rm'])
+def test_cleanup_stage_feedback_follows_successful_operations(docker, monkeypatch, capsys, failure_action):
+    docker.owner.start()
+    capsys.readouterr()
+    original = deployer._accepted_mutation
+    primary = deployer.DeploymentError('stage failed')
+    def mutation(command, output):
+        if command[1] == failure_action:
+            raise primary
+        return original(command, output)
+    monkeypatch.setattr(deployer, '_accepted_mutation', mutation)
+    if failure_action:
+        with pytest.raises(deployer.DeploymentError) as caught:
+            docker.owner.cleanup()
+        assert caught.value is primary
+    else:
+        docker.owner.cleanup()
+    feedback = capsys.readouterr().err
+    assert 'stopping 2 containers gracefully' in feedback
+    assert ('graceful stop succeeded' in feedback) is (failure_action != 'stop')
+    assert ('removal succeeded' in feedback) is (failure_action is None)
+    assert ('Deployment cleanup verified' in feedback) is (failure_action is None)
 
 
 @pytest.mark.parametrize('failed', [False, True])
@@ -285,8 +314,8 @@ def test_startup_summary_includes_pre_admission_failure_without_measurement_repl
 @pytest.mark.parametrize('entry', ['aggregate', 'cli'])
 @pytest.mark.parametrize('available', [False, True])
 def test_both_tool_entries_consume_real_startup_or_report_missing(docker, monkeypatch, entry, available):
-    from tools import experiment as reporting
-    from tools.runner.__main__ import main
+    from tools.observation import experiment as reporting
+    from tools.observation.runner.__main__ import main
     if available:
         docker.owner.start()
     inspection = docker.output / 'visualizations'
@@ -309,7 +338,7 @@ def test_both_tool_entries_consume_real_startup_or_report_missing(docker, monkey
         results = reporting.write_experiment_tools(docker.output, physical_world=None)
         assert results['runner']['status'] == 'COMPLETED', results
     else:
-        monkeypatch.setattr('sys.argv', ['tools.runner', '--handoff', str(handoff), '--events', str(events),
+        monkeypatch.setattr('sys.argv', ['tools.observation.runner', '--handoff', str(handoff), '--events', str(events),
             '--output', str(inspection / 'runner'), '--deployment-startup',
             str(docker.runtime / 'deployment-startup.json')])
         assert main() == 0

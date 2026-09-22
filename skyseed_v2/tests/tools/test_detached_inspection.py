@@ -9,8 +9,8 @@ from examples.Sky00_tiny_network.tiny_network import build_emulator
 from examples.Sky00_tiny_network.tiny_network import create_simulator as create_complete_static_simulator
 from tests._support import drain_simulator as run_complete_static_chain
 from skyseed_v2.experiment.output.observation import _ExecutionObserver
-from tools._detached_inspection import _DetachedInspectionExecutor
-from tools.planner.reader import read_planner_history
+from tools.observation._detached_inspection import _DetachedInspectionExecutor
+from tools.observation.planner.reader import read_planner_history
 
 
 @pytest.fixture(scope="module")
@@ -126,7 +126,7 @@ def test_executor_rejects_unknown_or_duplicate_tasks(tmp_path) -> None:
 
 def test_detached_executor_has_no_domain_progression_calls() -> None:
     source = (
-        Path(__file__).resolve().parents[2] / "tools/_detached_inspection.py"
+        Path(__file__).resolve().parents[2] / "tools/observation/_detached_inspection.py"
     ).read_text()
     assert "compute_observation(" not in source
     assert "produce_next_realization(" not in source
@@ -135,7 +135,7 @@ def test_detached_executor_has_no_domain_progression_calls() -> None:
 
 def test_cancellation_drains_workers_and_preserves_other_staging(tmp_path, monkeypatch):
     from threading import Thread
-    from tools import _detached_inspection as module
+    from tools.observation import _detached_inspection as module
     context = multiprocessing.get_context('fork')
     entered, release = context.Event(), context.Event()
     def build(path, directory):
@@ -167,7 +167,7 @@ def test_cancellation_drains_workers_and_preserves_other_staging(tmp_path, monke
 
 
 def test_conflicting_publisher_rejected_without_removing_another_invocation(tmp_path, monkeypatch):
-    from tools import _detached_inspection as module
+    from tools.observation import _detached_inspection as module
     context = multiprocessing.get_context('fork')
     release = context.Event()
     def build(path, directory):
@@ -189,7 +189,7 @@ def test_conflicting_publisher_rejected_without_removing_another_invocation(tmp_
 
 def test_staging_cleanup_failure_does_not_abandon_other_accepted_workers(tmp_path, monkeypatch):
     from threading import Thread
-    from tools import _detached_inspection as module
+    from tools.observation import _detached_inspection as module
     context = multiprocessing.get_context('fork')
     entered, release = context.Event(), context.Event()
     def worker(task, source, output, staging, result_path, cancelled):

@@ -1,4 +1,4 @@
-from skyseed_v2.backend.bpf.runner import deployment as deployment_module
+from skyseed_v2.backend.runner import deployment as deployment_module
 """Finite deliveries preserve one semantic history and bounded runtime ownership."""
 from contextlib import closing
 from datetime import timedelta
@@ -9,10 +9,10 @@ import pytest
 
 from examples.Sky00_tiny_network.tiny_network import build_emulator
 from examples.Sky00_tiny_network.tiny_network import create_simulator as create_complete_static_simulator
-from skyseed_v2.backend.bpf.execution_materials.sealing import _RunnerArtifactWriter
-from skyseed_v2.backend.bpf.execution_materials.codec import _open_runner_artifact
-from skyseed_v2.backend.bpf.runner.runtime_realization import _TcBpfRuntimeRealization
-from skyseed_v2.backend.bpf.runner import lifecycle as runner_module
+from skyseed_v2.backend.execution_materials.sealing import _RunnerArtifactWriter
+from skyseed_v2.backend.execution_materials.codec import _open_runner_artifact
+from skyseed_v2.backend.bpf.dataplane.runtime import _TcBpfRuntimeRealization
+from skyseed_v2.backend.runner import lifecycle as runner_module
 from skyseed_v2.experiment.producer import Producer
 from skyseed_v2.experiment.output.observation import _ExecutionObserver
 from skyseed_v2.simulator.planner.values import plan_transition_fingerprint
@@ -91,12 +91,12 @@ def test_three_deliveries_reuse_foundation_ports_and_reclaim_only_old_readers(mo
     runtime = _TcBpfRuntimeRealization(executor=kernel, pin_root="/pins", bindings=bindings,
                                        continuation_enabled=True, batch_capacity_factor=4)
     runtime.initialize(first.physical_world_projection, zone_prefixes=first.zone_prefixes,
-                       runtime_capacity_demand=first.runtime_capacity_demand)
+                       runtime_capacity_demand=first.runtime_capacity_demand, dataplane=first.dataplane)
     identities = {}
     activated = []
     try:
         for index, artifact in enumerate(artifacts):
-            plans = runtime.prepare_all(tuple(artifact.boundaries()), logical_ports=artifact.logical_ports,
+            plans = runtime.prepare_all(tuple(artifact.boundaries()), logical_ports=artifact.logical_ports, retirements=artifact.retirements,
                 **({} if index == 0 else {"runtime_capacity_demand": artifact.runtime_capacity_demand}))
             for connection, ports in artifact.logical_ports.items():
                 assert identities.setdefault(connection, ports) == ports
@@ -122,9 +122,9 @@ def test_three_deliveries_reuse_foundation_ports_and_reclaim_only_old_readers(mo
             artifact.close()
 
 
-def _runner_with_real_maintenance(monkeypatch, paths):
+def _runner_with_real_maintenance(monkeypatch, paths, *, keep_alive=False):
     import time
-    from skyseed_v2.backend.bpf.runner.deployment import _RunnerRuntimeBinding
+    from skyseed_v2.backend.runner.deployment import _RunnerRuntimeBinding
     kernel = _Kernel(monkeypatch)
     with closing(_open_runner_artifact(paths[0])) as artifact:
         nodes = artifact.physical_world_projection.node_ids
@@ -138,11 +138,11 @@ def _runner_with_real_maintenance(monkeypatch, paths):
     monotonic, sleep = time.monotonic, time.sleep
     monkeypatch.setattr(runner_module, "monotonic", lambda: monotonic() * 10)
     monkeypatch.setattr(runner_module, "sleep", lambda seconds: sleep(seconds / 10))
-    runner = runner_module.Runner(compose_project_name="batches", runtime_artifact=paths[0], batch_capacity_factor=4)
+    runner = runner_module.Runner(compose_project_name="batches", runtime_artifact=paths[0], batch_capacity_factor=4, keep_alive=keep_alive)
     return runner, kernel
 
 
-def test_automatic_runner_loads_two_successors_without_reset_or_duplicate_b0(monkeypatch, deliveries):
+def test_automatic_runner_loads_two_successors_without_reset_or_duplicate_b0(monkeypatch, deliveries, capsys):
     paths = deliveries[3]
     runner, kernel = _runner_with_real_maintenance(monkeypatch, paths)
     record = runner._record
@@ -165,11 +165,15 @@ def test_automatic_runner_loads_two_successors_without_reset_or_duplicate_b0(mon
         assert sum(action == "initialize" for action, _ in kernel.actions) == 1
         assert runner._active_count == 4
         assert runner._batch_index == 2
+        feedback = capsys.readouterr().err
+        assert feedback.index('Runtime preparation starting') < feedback.index('Runtime preparation succeeded') < feedback.index('formal clock starting')
+        assert 'Finite execution' in feedback and 'Runtime progression ended' in feedback
+        assert 'Retained execution' not in feedback
     finally:
         runner.cleanup()
 
 
-def test_missing_delivery_waits_and_pause_is_independent(monkeypatch, deliveries):
+def test_missing_delivery_waits_and_pause_is_independent(monkeypatch, deliveries, capsys):
     from threading import Thread
     runner, _ = _runner_with_real_maintenance(monkeypatch, deliveries[3])
     errors = []
@@ -200,6 +204,11 @@ def test_missing_delivery_waits_and_pause_is_independent(monkeypatch, deliveries
         assert not errors
         assert runner._state == "prepared"
         assert runner.status()["clock"]["shift_seconds"] > 0
+        feedback = capsys.readouterr().err
+        starts = sum(e['event'] == 'material_wait_start' for e in runner.inspection_snapshot()['events'])
+        assert feedback.count('Runtime waiting for execution materials') == starts == 2
+        assert feedback.count('Runtime stop requested') == 1
+        assert 'Runtime resource cleanup succeeded' not in feedback
     finally:
         runner.cancel_runtime()
         runner.cleanup()
@@ -211,6 +220,42 @@ def _await(predicate):
     while not predicate():
         assert time.monotonic() < end, "fixture did not reach the expected state"
         time.sleep(0.005)
+
+
+def test_retained_final_range_reports_wait_once_until_cancel(monkeypatch, deliveries, capsys):
+    from threading import Thread
+    import time
+    paths = deliveries[3]
+    runner, _ = _runner_with_real_maintenance(monkeypatch, paths, keep_alive=True)
+    record = runner._record
+    def observe(event, **values):
+        record(event, **values)
+        if event == 'batch_activation_start' and values['batch_index'] == 1:
+            runner.append_batch(paths[2])
+    monkeypatch.setattr(runner, '_record', observe)
+    runner.append_batch(paths[1])
+    failures = []
+    def run():
+        try: runner.run()
+        except BaseException as error: failures.append(error)
+    runner.prepare()
+    thread = Thread(target=run)
+    thread.start()
+    try:
+        _await(lambda: failures or runner._batch_index == 2 and 'material' in runner.status()['wait_reasons'])
+        time.sleep(.1)  # Exercise several existing wait polls.
+        assert thread.is_alive() and not failures
+        feedback = capsys.readouterr().err
+        assert 'Retained execution' in feedback
+        assert feedback.count('Runtime waiting for execution materials') == 1
+        assert 'Runtime progression ended' not in feedback
+    finally:
+        runner.cancel_runtime()
+        thread.join()
+        runner.cleanup()
+    assert not failures
+    feedback = capsys.readouterr().err
+    assert feedback.index('Runtime stop requested') < feedback.index('Runtime progression ended')
 
 
 def test_preparation_may_finish_after_target(monkeypatch, deliveries):

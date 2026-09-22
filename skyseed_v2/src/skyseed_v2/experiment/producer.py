@@ -16,7 +16,7 @@ from typing import Any
 from .output.history_writer import _GenerationHistory
 from skyseed_v2.shared.recording import PerformanceRecorder, record_performance
 from .output.physical_links import _PhysicalLinkInspectionWriter
-from skyseed_v2.backend.bpf.execution_materials.sealing import _RunnerArtifactWriter
+from skyseed_v2.backend.execution_materials.sealing import _RunnerArtifactWriter
 from skyseed_v2.simulator import (
     PhysicalLinkModel,
     PhysicalLinkQueryResult,
@@ -28,7 +28,8 @@ from skyseed_v2.simulator import (
 
 from skyseed_v2.simulator.planner.diagnostics import PlanningFrontiers
 from ..backend.bpf import BpfCompilationResult
-from skyseed_v2.backend.bpf.compiler import _compile_bpf_observed, compile_bpf
+from skyseed_v2.backend.compiler import _compile_bpf_observed, compile_bpf, compile_plan, _compile_plan_observed
+from skyseed_v2.backend.selection import _backend, _validate_program
 
 
 class Producer:
@@ -56,6 +57,8 @@ class Producer:
             Callable[[PhysicalLinkQueryResult], None] | None
         ) = None,
         retain: bool = False,
+        dataplane_program=None,
+        forwarding_backend="bpf",
     ) -> None:
         if not isinstance(timeline, SimulationTimeline):
             raise TypeError("timeline must be a SimulationTimeline")
@@ -88,6 +91,9 @@ class Producer:
         self._timeline = timeline
         self._initial_end = timeline.end_time
         self._retain = retain
+        self._forwarding_backend = _backend(forwarding_backend)
+        _validate_program(self._forwarding_backend, dataplane_program)
+        self._dataplane_program = dataplane_program
         self._condition = Condition()
         self._stop = Event()
         self._requested_end = timeline.end_time
@@ -232,7 +238,7 @@ class Producer:
             else:
                 packaging = ThreadPoolExecutor(max_workers=1, thread_name_prefix="skyseed-materials")
                 writer = _RunnerArtifactWriter(output / ".control/runner-artifact", final=not self._retain and not initial,
-                    execution_observer=self._execution_observer())
+                    execution_observer=self._execution_observer(), dataplane_program=self._dataplane_program, forwarding_backend=self._forwarding_backend)
                 def package_pair(plan, result):
                     writer.append(result)
                     if traffic is not None:
@@ -371,7 +377,15 @@ class Producer:
                     )
                     return None
                 observer = self._execution_observer()
-                if observer is None:
+                if self._forwarding_backend == "linux":
+                    if observer is None:
+                        realization = compile_plan(plan, self._physical_world, self._previous_result,
+                                                   forwarding_backend=self._forwarding_backend)
+                    else:
+                        realization = _compile_plan_observed(plan, self._physical_world, self._previous_result,
+                            forwarding_backend=self._forwarding_backend, execution_observer=observer,
+                            compile_index=self._realization_count)
+                elif observer is None:
                     realization = compile_bpf(
                         plan,
                         self._physical_world,

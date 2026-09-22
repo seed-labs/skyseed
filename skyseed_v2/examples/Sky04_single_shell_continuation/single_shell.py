@@ -25,18 +25,27 @@ DEFAULT_DURATION = timedelta(seconds=600)
 def build_emulator(shell="S4"):
     """Select S4/S3/S1 from shared prepared inputs and construct that SEED scene."""
     # Preserve explicit orbit epochs/phases and the same 355-GS inventory.
-    # No ordinary AS/IX is configured. The SEED boundary supplies management.
+    # The ordinary business LAN below is separate from SEED management.
     shells = configuration.emulator.load_shell_configs(SHELLS_FILE)
     ground_stations = configuration.emulator.load_ground_station_configs(GROUND_STATIONS_FILE)
     selected = tuple(value for value in shells if value.shell_id == shell)
     if len(selected) != 1:
         raise ValueError(f"unknown Starlink Shell: {shell}")
-    return emulator.create_static_emulator(
+    network = emulator.create_static_emulator(
         configuration.emulator.StaticEmulatorConfig(skyseed_autonomous_systems=(
             configuration.emulator.SkyseedAutonomousSystemConfig(
                 asn=65040, shells=selected, ground_stations=ground_stations),
         ))
     )
+    satellite_as, = emulator.seedemu.get_skyseed_autonomous_systems(network.getLayer("Base"))
+    # Ordinary SEED business LAN; synthetic addresses are separate from node /32s,
+    # Zones, management and all native dynamic-link pools. No satellite routes.
+    ground_lan = satellite_as.createNetwork("ground-lan", "203.0.0.0/16")
+    # Leave the first host address for the Docker bridge gateway.
+    for index, station in enumerate(sorted(satellite_as.ground_stations(),
+                                         key=lambda value: value.ground_station_id), start=2):
+        station.joinNetwork(ground_lan.getName(), str(ground_lan.getPrefix()[index]))
+    return network
 
 
 def create_simulator(
@@ -116,7 +125,7 @@ def main(argv=None):
                 str(args.zones) if args.zones else "generated-global-24x48"
             ),
         },
-        through=args.through, traffic_enabled=not args.no_traffic,
+        through=args.through, traffic_enabled=not args.no_traffic, traffic_telemetry_enabled=not args.no_traffic_telemetry,
         replace=args.override,
         internet_map_enabled=not args.no_internet_map,
         deploy_parallel=args.deploy_parallel,

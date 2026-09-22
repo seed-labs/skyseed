@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     from .values import (
         EffectiveConnectionParameters,
         GroundStationRouteDemandTarget,
+        SatelliteRouteDemandTarget,
         OperationalConnection,
         OperationalConnectionId,
         OperationalConnectionKind,
@@ -41,6 +42,12 @@ if TYPE_CHECKING:
         PlanTransition,
         PlannedOperationalState,
         ReachableRouteOutcome,
+        LogicalExit,
+        PolicyRecord,
+        RouteDisposition,
+        RouteCandidate,
+        LocalRouteOutcome,
+
         RouteDemand,
         RouteDemandTarget,
         RouteOutcome,
@@ -97,6 +104,12 @@ if TYPE_CHECKING:
     )
 
 _EXPORTS = {
+    "LogicalExit": ".values",
+    "PolicyRecord": ".values",
+    "RouteDisposition": ".values",
+    "RouteCandidate": ".values",
+    "LocalRouteOutcome": ".values",
+
     "AccumulatedDeadbandParameterPlanningModel": ".parameters",
     "CandidateDecision": ".diagnostics",
     "CandidateDecisionKind": ".diagnostics",
@@ -110,6 +123,7 @@ _EXPORTS = {
     "GroundStationCandidateSearchModel": ".ground_station.model",
     "GroundStationLifecycleEvidence": ".diagnostics",
     "GroundStationRouteDemandTarget": ".values",
+    "SatelliteRouteDemandTarget": ".values",
     "HighestElevationZoneServicePlanningModel": ".zone_service",
     "InterSatelliteCandidateSearchModel": ".inter_satellite",
     "InterSatelliteConnectionPlanningModel": ".inter_satellite",
@@ -171,6 +185,12 @@ _EXPORTS = {
 }
 
 __all__ = [
+    "LogicalExit",
+    "PolicyRecord",
+    "RouteDisposition",
+    "RouteCandidate",
+    "LocalRouteOutcome",
+
     'AccumulatedDeadbandParameterPlanningModel',
     'CandidateDecision',
     'CandidateDecisionKind',
@@ -184,6 +204,7 @@ __all__ = [
     'GroundStationCandidateSearchModel',
     'GroundStationLifecycleEvidence',
     'GroundStationRouteDemandTarget',
+    'SatelliteRouteDemandTarget',
     'HighestElevationZoneServicePlanningModel',
     'InterSatelliteCandidateSearchModel',
     'InterSatelliteConnectionPlanningModel',

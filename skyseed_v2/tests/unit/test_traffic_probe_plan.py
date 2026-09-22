@@ -16,8 +16,8 @@ from examples.Sky00_tiny_network.tiny_network import create_simulator as create_
 from tests._support import drain_simulator as run_complete_static_chain
 from skyseed_v2.shared import NodeId
 from skyseed_v2.backend.bpf import Runner
-from skyseed_v2.backend.bpf.execution_materials.actions import _ForwardingBinding, _ForwardingKey
-from tools.traffic.active.probe_execution import TrafficProbeExecutor
+from skyseed_v2.backend.execution_materials.actions import _ForwardingBinding, _ForwardingKey
+from tools.generation.traffic.probe_execution import TrafficProbeExecutor
 from skyseed_v2.simulator import (
     PlannerConfiguration,
     GroundStationRouteDemandTarget,
@@ -29,7 +29,7 @@ from skyseed_v2.simulator import (
     UnreachableRouteOutcome,
     ZoneRouteDemandTarget,
 )
-from tools.traffic.active.probe_plan import (
+from tools.generation.traffic.probe_plan import (
     TrafficProbePlanBuilder,
     _BoundaryProjection,
     _DIRECTION_GROUND_TO_ZONE,
@@ -177,7 +177,7 @@ def test_probe_selection_discards_candidate_without_full_route_horizon(
     monkeypatch: pytest.MonkeyPatch,
     complete_chain,
 ) -> None:
-    from tools.traffic.active import probe_plan as probe_plan_module
+    from tools.generation.traffic import probe_plan as probe_plan_module
 
     _, plans, realizations, _ = complete_chain
     original_candidates = probe_plan_module._candidate_pairs_from_deltas
@@ -309,7 +309,7 @@ def test_probe_plan_resolves_paths_only_after_bounded_coverage_selection(
     monkeypatch: pytest.MonkeyPatch,
     complete_chain,
 ) -> None:
-    from tools.traffic.active import probe_plan as probe_plan_module
+    from tools.generation.traffic import probe_plan as probe_plan_module
 
     _, plans, realizations, _ = complete_chain
     original_candidates = probe_plan_module._candidate_pairs_from_deltas
@@ -374,7 +374,7 @@ def test_windowed_probe_reconstruction_is_event_local(
     monkeypatch: pytest.MonkeyPatch,
     complete_chain,
 ) -> None:
-    from tools.traffic.active import probe_plan as probe_plan_module
+    from tools.generation.traffic import probe_plan as probe_plan_module
 
     _, plans, realizations, _ = complete_chain
     original = probe_plan_module._resolve_path
@@ -544,7 +544,7 @@ def test_probe_plan_fails_closed_on_forwarding_loop() -> None:
 def test_probe_plan_does_not_claim_complete_experiment(
     complete_chain,
 ) -> None:
-    from tools.traffic.active.probe_plan import TrafficProbePlan
+    from tools.generation.traffic.probe_plan import TrafficProbePlan
 
     _, plans, realizations, _ = complete_chain
     artifact = TrafficProbePlanBuilder().build(plans, realizations).artifact()
@@ -709,7 +709,7 @@ def _install_fake_docker_processes(
     *,
     ignore_term: bool = False,
 ):
-    from tools.traffic.active import probe_execution as execution_module
+    from tools.generation.traffic import probe_execution as execution_module
 
     real_popen = subprocess.Popen
     processes = {}
@@ -777,7 +777,7 @@ def _install_fake_docker_processes(
 
 @pytest.mark.parametrize('state', ['active', 'identity-mismatch'])
 def test_generator_control_uses_one_owned_operation_without_elapsed_deadline(monkeypatch, state):
-    from tools.traffic.active import probe_execution as module
+    from tools.generation.traffic import probe_execution as module
     executor = TrafficProbeExecutor.__new__(TrafficProbeExecutor)
     executor._docker = 'docker'
     generator = SimpleNamespace(episode=SimpleNamespace(episode_id='episode'),
@@ -868,7 +868,7 @@ def test_slow_runner_frontier_remains_authority_for_due_traffic_actions(
         runner_snapshot=_runner_snapshot(plan),
         evidence_path=tmp_path / "slowed-runner.jsonl",
     )
-    from tools.traffic.active import probe_execution as execution_module
+    from tools.generation.traffic import probe_execution as execution_module
 
     monkeypatch.setattr(execution_module, "monotonic", lambda: 10_000.0)
     executor._await_runner_origin = lambda: 100.0
@@ -1428,7 +1428,7 @@ def test_shell_metadata_coverage_and_global_budget_match_incremental(complete_ch
     assert left['planning']['maximum_concurrent_episode_bound'] <= 8
     assert left['planning']['estimated_echo_requests'] <= 3600
     assert read_traffic_probe_plan  # artifact round trip is also checked directly
-    from tools.traffic.active.probe_plan import TrafficProbePlan
+    from tools.generation.traffic.probe_plan import TrafficProbePlan
     assert TrafficProbePlan.from_artifact(left).artifact() == left
     membership = dict(expected.shell_metadata)
     for coverage in left['shell_coverage']:
@@ -1440,8 +1440,21 @@ def test_shell_metadata_coverage_and_global_budget_match_incremental(complete_ch
             assert coverage['reason'] and coverage['status'] == 'no-eligible-candidate'
 
 
+def test_bpf_builder_does_not_query_native_geography(complete_chain, monkeypatch):
+    simulation, plans, realizations, _ = complete_chain
+    world = simulation.get_physical_world()
+    def no_native_query(*args, **kwargs):
+        pytest.fail('BPF workload queried native-only Zone geography')
+    monkeypatch.setattr(type(world), 'get_zone_layout', no_native_query)
+    builder = TrafficProbePlanBuilder(physical_world=world)
+    result = builder.build(plans, realizations)
+    assert result.forwarding_backend == 'bpf' and result.episodes
+    assert not builder._ground_coordinates and not builder._zone_coordinates
+    assert builder._geography_world is None
+
+
 def test_global_selection_covers_five_shells_without_multiplying_workload():
-    from tools.traffic.active.probe_plan import _budgeted_requests
+    from tools.generation.traffic.probe_plan import _budgeted_requests
     seeds = []
     for i in range(5):
         for direction in (_DIRECTION_GROUND_TO_ZONE, _DIRECTION_ZONE_TO_GROUND):
@@ -1460,7 +1473,7 @@ def test_global_selection_covers_five_shells_without_multiplying_workload():
 
 @pytest.mark.parametrize('incremental', [False, True])
 def test_shell_eligibility_scan_does_not_resolve_unselected_paths(monkeypatch, complete_chain, incremental):
-    from tools.traffic.active import probe_plan as module
+    from tools.generation.traffic import probe_plan as module
     simulator, plans, realizations, _ = complete_chain
     original = module._resolve_path
     calls = []
@@ -1485,7 +1498,7 @@ def test_shell_eligibility_scan_does_not_resolve_unselected_paths(monkeypatch, c
 def test_long_controls_credit_only_eligible_windows_within_shared_budget():
     from types import SimpleNamespace
     from datetime import datetime, timezone, timedelta
-    from tools.traffic.active.probe_plan import _budgeted_requests, _PERSISTENT
+    from tools.generation.traffic.probe_plan import _budgeted_requests, _PERSISTENT
     origin = datetime(2026, 1, 1, tzinfo=timezone.utc)
     seeds = []
     for shell in range(5):
@@ -1508,7 +1521,7 @@ def test_long_controls_credit_only_eligible_windows_within_shared_budget():
 
 
 def test_long_control_outside_reservoir_gets_only_reachable_window_credit():
-    from tools.traffic.active.probe_plan import _complete_control_coverage
+    from tools.generation.traffic.probe_plan import _complete_control_coverage
     ground = NodeId(65001, 'ground-station', 'g')
     satellites = [NodeId(65001, 'satellite', f's{i}') for i in range(2)]
     seed = _PairSeed(_DIRECTION_ZONE_TO_GROUND, ground, ("", 'zone'), {
@@ -1535,7 +1548,7 @@ def test_long_control_outside_reservoir_gets_only_reachable_window_credit():
 
 
 def test_same_path_access_change_retains_its_transition_boundary():
-    from tools.traffic.active.probe_plan import _append_state_interval
+    from tools.generation.traffic.probe_plan import _append_state_interval
     first = _ProbeStateInterval(START, START+timedelta(seconds=5), True, None,
                                 'sat', ('ground', 'sat'), 1, ())
     second = replace(first, start_time=first.end_time, end_time=START+timedelta(seconds=10),
@@ -1546,7 +1559,7 @@ def test_same_path_access_change_retains_its_transition_boundary():
 
 
 def test_empty_workload_is_valid_and_does_not_reconstruct_paths(monkeypatch):
-    from tools.traffic.active import probe_plan as module
+    from tools.generation.traffic import probe_plan as module
     simulation = create_complete_static_simulator(build_emulator(), zone_layout_path=None)
     plans, realizations, _ = run_complete_static_chain(simulation)
     monkeypatch.setattr(module, '_resolve_path', lambda *a: pytest.fail('empty selection reconstructed paths'))
@@ -1585,7 +1598,7 @@ def test_failed_flush_retains_accepted_delivery(complete_chain):
 def _owned_stopped_generator(executor, plan, index=0):
     import os
     import selectors
-    from tools.traffic.active.probe_execution import _RunningGenerator
+    from tools.generation.traffic.probe_execution import _RunningGenerator
     episode = plan.episodes[index]
     identity = executor._identities[episode.probe_id]
     streams = []

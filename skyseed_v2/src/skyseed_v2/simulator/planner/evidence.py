@@ -27,14 +27,15 @@ from .diagnostics import (
 )
 from .values import (
     EffectiveConnectionParameters,
-    GroundStationRouteDemandTarget,
+    GroundStationRouteDemandTarget, SatelliteRouteDemandTarget,
     OperationalConnection,
     OperationalConnectionId,
     OperationalConnectionKind,
     Plan,
     PlanTransition,
     PlannedOperationalState,
-    ReachableRouteOutcome,
+    ReachableRouteOutcome, LocalRouteOutcome, RouteDisposition, RouteCandidate,
+    LogicalExit, PolicyRecord,
     RouteDemand,
     RouteOutcome,
     RouteOutcomeTransition,
@@ -54,7 +55,7 @@ def plan_transition_to_data(value: PlanTransition) -> dict[str, object]:
     if not isinstance(value, PlanTransition):
         raise TypeError("value must be a PlanTransition")
     result = _plan_transition_material(value)
-    result["schema"] = "skyseed-v2-plan-transition-evidence-v5"
+    result["schema"] = "skyseed-v2-plan-transition-evidence-v7"
     return result
 
 
@@ -77,7 +78,7 @@ def plan_transition_from_data(value: Mapping[str, object]) -> PlanTransition:
     )
     _schema(
         record,
-        "skyseed-v2-plan-transition-evidence-v5",
+        "skyseed-v2-plan-transition-evidence-v7",
         "PlanTransition",
     )
     return PlanTransition._from_indexed_precedences(
@@ -149,7 +150,7 @@ def planned_operational_state_from_data(
     )
     _schema(
         record,
-        "skyseed-v2-planned-operational-state-v2",
+        "skyseed-v2-planned-operational-state-v4",
         "PlannedOperationalState",
     )
     return PlannedOperationalState(
@@ -181,7 +182,7 @@ def plan_to_data(value: Plan) -> dict[str, object]:
     if not isinstance(value, Plan):
         raise TypeError("value must be a Plan")
     return {
-        "schema": "skyseed-v2-plan-evidence-v5",
+        "schema": "skyseed-v2-plan-evidence-v7",
         "plan_id": value.plan_id,
         "previous_plan_id": value.previous_plan_id,
         "physical_world_fingerprint": value.physical_world_fingerprint,
@@ -218,7 +219,7 @@ def plan_from_data(value: Mapping[str, object]) -> Plan:
         },
         "Plan",
     )
-    _schema(record, "skyseed-v2-plan-evidence-v5", "Plan")
+    _schema(record, "skyseed-v2-plan-evidence-v7", "Plan")
     transitions = tuple(
         plan_transition_from_data(item)
         for item in _records(record["transitions"], "transitions")
@@ -259,7 +260,7 @@ def published_planning_evidence_to_data(
     if not isinstance(value, PublishedPlanningEvidence):
         raise TypeError("value must be PublishedPlanningEvidence")
     return {
-        "schema": "skyseed-v2-published-planning-evidence-v5",
+        "schema": "skyseed-v2-published-planning-evidence-v7",
         "plan": plan_to_data(value.plan),
         "transition_fingerprints": list(value.transition_fingerprints),
         "frames": [
@@ -285,7 +286,7 @@ def published_planning_evidence_from_data(
         },
         "PublishedPlanningEvidence",
     )
-    _schema(record, "skyseed-v2-published-planning-evidence-v5", "PublishedPlanningEvidence")
+    _schema(record, "skyseed-v2-published-planning-evidence-v7", "PublishedPlanningEvidence")
     fingerprint_values = _list(
         record["transition_fingerprints"], "transition_fingerprints"
     )
@@ -434,6 +435,12 @@ def _route_demand_from_data(value: Mapping[str, object]) -> RouteDemand:
                 )
             ), target["network_scope"]
         )
+    elif kind == "satellite":
+        _exact_keys(target, {"kind", "satellite_id", "network_scope"}, "RouteDemandTarget")
+        route_target = SatelliteRouteDemandTarget(
+            _node_from_data(_mapping(target["satellite_id"], "target.satellite_id")),
+            target["network_scope"],
+        )
     elif kind == "zone":
         _exact_keys(target, {"kind", "zone_id", "network_scope"}, "RouteDemandTarget")
         route_target = ZoneRouteDemandTarget(
@@ -453,6 +460,11 @@ def _route_outcome_from_data(value: Mapping[str, object], *, demand=None) -> Rou
     demand_fields = {"demand"} if demand is None else set()
     if demand is None:
         demand = _route_demand_from_data(_mapping(record.get("demand"), "demand"))
+    if kind == "local":
+        _exact_keys(record, demand_fields | {"kind", "disposition", "data", "candidates"}, "LocalRouteOutcome")
+        return LocalRouteOutcome(demand, RouteDisposition(record["disposition"]),
+            tuple(RouteCandidate(_policy_from_data(c["exit"]), _policy_from_data(c["data"])) for c in record["candidates"]),
+            _policy_from_data(record["data"]))
     if kind == "reachable":
         _exact_keys(
             record,
@@ -1195,3 +1207,17 @@ def _contact_window_from_data(value):
         _timestamp(record["start_timestamp"], "start_timestamp"),
         None if record["end_timestamp"] is None else _timestamp(record["end_timestamp"], "end_timestamp"),
     )
+
+
+def _policy_from_data(value):
+    if type(value) in (int, bool):
+        return value
+    if not isinstance(value, dict) or len(value) != 1:
+        raise ValueError("invalid policy value")
+    if "record" in value:
+        return PolicyRecord({k: _policy_from_data(v) for k, v in value["record"].items()})
+    if "node" in value:
+        return _node_from_data(value["node"])
+    if "exit" in value:
+        return LogicalExit(_connection_id_from_data(value["exit"]["connection"]), _node_from_data(value["exit"]["source"]))
+    raise ValueError("unsupported policy value")

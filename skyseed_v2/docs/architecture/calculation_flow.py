@@ -148,11 +148,11 @@ card(620, 1490, 500, 230, 'Parameter · effective connections', [
     'Bandwidth, delay and loss follow the Model'], model=True)
 edge('560,1600 620,1600')
 
-card(1180, 1745, 460, 230, 'Route · paths and unreachable results', [
+card(1180, 1745, 460, 230, 'Route · paths or local arrangements', [
     'In: World + effective connections, service,',
     '      demands + previous outcomes at t',
-    'Out: a path / next hop OR an explicit',
-    '      unreachable outcome for every demand',
+    'Out: paths / unreachability OR local choices',
+    '      with policy data; partial / empty allowed',
     'Demands: supplied or optional Model factory'], model=True)
 edge('1120,1600 1150,1600 1150,1860 1180,1860')
 edge('1410,1420 1410,1745', label='service assignments', at=(1425, 1600))
@@ -172,14 +172,14 @@ edge('1410,1975 1410,2040')
 edge('1580,1420 1580,1460 1670,1460 1670,2120 1640,2120')
 
 card(60, 2360, 755, 200, 'Backend Compiler · lowering, not another Model', [
-    'Producer calls compile_bpf(Plan, World, previous_result)',
+    'Producer calls compile_plan with the assembly backend',
     'Consumes the Plan and its event dependencies',
-    'Out: BpfCompilationResult with backend execution intents',
+    'Out: CompilationResult with backend execution intents',
     'Does not rerun route selection or own request publication'])
 edge('440,2195 440,2360', label='Plans', at=(455, 2322))
 card(925, 2360, 755, 200, 'Producer + Controller · packaging and publication', [
     'Producer appends compilation results, drains accepted work',
-    'and seals executable deliveries through material writers',
+    'Selected backend prepares executable actions and foundation',
     'Controller publishes completed request / bounded prefixes',
     'Published results remain readable while computation waits'])
 edge('815,2460 925,2460', label='results', at=(835, 2440))

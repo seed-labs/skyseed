@@ -1,8 +1,8 @@
 # Construct entities and choose Zones
 
 Emulator construction is upstream of physical simulation. You can declare SEED objects
-directly, as in [S4](../../examples/Sky02_s4_default/s4.py), or pass validated configuration
-to `create_static_emulator`, as in [Single Shell](../../examples/Sky04_single_shell_continuation/single_shell.py).
+directly, as in [Tiny](../../examples/Sky00_tiny_network/tiny_network.py), or pass validated configuration
+to `create_static_emulator`, as in [S4](../../examples/Sky02_s4_default/s4.py).
 Both return a real upstream SEED Emulator.
 
 ## Satellite and GroundStation inputs
@@ -33,6 +33,18 @@ Satellite records retain orbital epoch/phase and explicit device capabilities. T
 origin is separate from orbit epoch. GroundStation records retain geographic sites and optional
 access limits; station labels or antenna counts do not prove commercial capacities. See
 [data provenance](../../data/README.md) for sources, dates, transformations and assumptions.
+The same builder accepts explicit or generated orbit layouts. Configuration owns
+required-field validation and optional-field defaults; entries need not copy these
+fields into individual node calls. See the [configuration reference](../../src/skyseed_v2/configuration/emulator/README.md)
+for field contracts. Select Linux with `create_static_emulator(...,
+forwarding_backend="linux")`; otherwise the backend defaults to BPF. Controller
+inherits this choice. For backend-aware default Models, pass the same selected
+backend to `simulator.create_default_simulator(definition, forwarding_backend=backend)`:
+Linux gets empty business routes and BPF retains gateway routing. Explicit
+`route_model` overrides remain unchanged, including empty, partial or complete
+arrangements. The mode selects omitted defaults only; SimulationDefinition, Planner
+and user Models retain their independent semantics. Simulator configuration and
+experiment controls remain separate.
 Ordinary ASs, IXs, routing layers and peering stay explicit in the authored Emulator; Tiny
 shows that construction. Simulator never reads those SEED objects back through a hidden bridge.
 
@@ -48,10 +60,10 @@ settings = simulator.DefaultSimulatorConfiguration(
 simulation = simulator.create_default_simulator(definition, configuration=settings)
 ```
 
-To generate a reusable file, use `python -m tools.zone.generate --help`. Generation arguments
+To generate a reusable file, use `python -m tools.observation.zone.generate --help`. Generation arguments
 choose latitude bands, equatorial cells and longitude alignment; the Tool writes
 configuration, while configuration owns the layout algorithm. Membership answers geography;
 a Zone's current serving satellite is a separate Planner result. The default 24-band,
-48-equatorial-cell layout has 732 Zones. [Zone Tool](../../tools/zone/README.md) explains browsing.
+48-equatorial-cell layout has 732 Zones. [Zone Tool](../../tools/observation/zone/README.md) explains browsing.
 
 Change one Model role at the assembly call using the [Model authoring guide](model-extension.md).

@@ -1,7 +1,7 @@
 """Probe identity and forwarding observations are different cardinalities."""
 from datetime import datetime, timezone, timedelta
 
-from tools.traffic.reader import _ping_transactions
+from tools.observation.traffic.reader import _ping_transactions
 
 ORIGIN = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
@@ -70,7 +70,7 @@ def test_sequence_wrap_and_missing_endpoint_identity_remain_explicit():
 
 
 def test_forwarded_reply_without_delivery_evidence_is_not_a_confirmed_loss():
-    from tools.traffic.projection import _project_transaction
+    from tools.observation.traffic.projection import _project_transaction
     row = _ping_transactions((packet(1, endpoint=True), packet(1.1, 0)),
                              probe_execution=lifetime(1, 0, 2))[0]
     ground = {'asn': 65040, 'entity_kind': 'ground-station', 'entity_id': 'gs'}
@@ -86,7 +86,7 @@ def test_forwarded_reply_without_delivery_evidence_is_not_a_confirmed_loss():
 
 
 def test_health_requires_actual_relevant_transition_duration_and_recovery():
-    from tools.traffic._probe_cases import _request_cases
+    from tools.observation.traffic._probe_cases import _request_cases
     episode = {'episode_id': 'e', 'affected_activation_times': ['2026-01-01T00:00:05+00:00'],
                'state_intervals': [{'start_time': ORIGIN.isoformat(), 'end_time': (ORIGIN+timedelta(seconds=20)).isoformat(), 'expected_reachable': True}]}
     episode['state_intervals'] = [
@@ -111,7 +111,7 @@ def test_health_requires_actual_relevant_transition_duration_and_recovery():
 
 
 def test_timeout_then_late_reply_is_one_success_not_one_loss_plus_success():
-    from tools.traffic._probe_cases import _request_cases
+    from tools.observation.traffic._probe_cases import _request_cases
     episode = {'episode_id': 'e', 'state_intervals': [{'start_time': ORIGIN.isoformat(), 'end_time': (ORIGIN+timedelta(seconds=20)).isoformat(), 'expected_reachable': True}]}
     records = [{'record_type': 'generator_launched', 'segment_index': 1, 'host_monotonic_ns': 0, 'published_active_frontier': ORIGIN.isoformat()}]
     records += [{'record_type': 'ping_observation', 'segment_index': 1, 'icmp_sequence': 1,
@@ -123,7 +123,7 @@ def test_timeout_then_late_reply_is_one_success_not_one_loss_plus_success():
 
 
 def test_outstanding_reports_bound_missing_send_time_without_using_receipt_as_send():
-    from tools.traffic._probe_cases import _ping_report_ranges, _request_cases
+    from tools.observation.traffic._probe_cases import _ping_report_ranges, _request_cases
     def record(at, **values):
         return {'wall_time': (ORIGIN+timedelta(seconds=at)).isoformat(),
                 'host_monotonic_ns': int(at*1e9), **values}
@@ -172,7 +172,7 @@ def test_late_request_hop_with_intervening_reuse_remains_uncertain():
 
 
 def test_shell_transition_coverage_requires_relevant_later_observation():
-    from tools.traffic.projection import _runtime_shell_coverage
+    from tools.observation.traffic.projection import _runtime_shell_coverage
     stamp = lambda at: (ORIGIN + timedelta(seconds=at)).isoformat()
     episode = {'episode_id': 'e', 'probe_id': 'p', 'start_time': stamp(0), 'end_time': stamp(10),
         'affected_activation_times': [stamp(5)], 'coverage_cases': [{'shell_id': 'S1', 'case': 'transition'}],

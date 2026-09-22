@@ -4,9 +4,9 @@ import inspect
 from pathlib import Path
 
 from skyseed_v2.experiment import Producer
-from skyseed_v2.backend.bpf.runner.lifecycle import Runner
+from skyseed_v2.backend.runner.lifecycle import Runner
 from skyseed_v2.experiment import execution
-from skyseed_v2.backend.bpf.execution_materials.codec import _open_runner_artifact
+from skyseed_v2.backend.execution_materials.codec import _open_runner_artifact
 
 
 def test_generated_execution_passes_only_artifact_path_to_runner() -> None:
@@ -24,8 +24,8 @@ def test_generated_finite_deliveries_are_sealed_before_runner_construction(tmp_p
     import json
     from examples.Sky00_tiny_network.tiny_network import build_emulator
     from examples.Sky00_tiny_network.tiny_network import create_simulator as create_complete_static_simulator
-    from skyseed_v2.backend.bpf.runner import command_channel as module
-    from tools.traffic.active.probe_plan import TrafficProbePlanBuilder
+    from skyseed_v2.backend.runner import command_channel as module
+    from tools.generation.traffic.probe_plan import TrafficProbePlanBuilder
 
     simulator = create_complete_static_simulator(build_emulator())
     simulator.get_planner()
@@ -58,7 +58,7 @@ def test_runner_artifact_open_is_mmap_and_not_rich_reconstruction() -> None:
     source = inspect.getsource(_open_runner_artifact)
     owner = inspect.getsource(
         __import__(
-            "skyseed_v2.backend.bpf.execution_materials.codec",
+            "skyseed_v2.backend.execution_materials.codec",
             fromlist=["_RunnerArtifact"],
         )._RunnerArtifact
     )

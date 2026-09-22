@@ -45,6 +45,7 @@ if TYPE_CHECKING:
         GatewayHopCountRoutePlanningModel,
         GroundStationAccessPlanningModel,
         GroundStationRouteDemandTarget,
+        SatelliteRouteDemandTarget,
         HighestElevationZoneServicePlanningModel,
         InterSatelliteConnectionPlanningModel,
         InterSatelliteLifecycleEvidence,
@@ -71,6 +72,12 @@ if TYPE_CHECKING:
         PublishedPlanningEvidence,
         CoverageFirstGroundStationAccessPlanningModel,
         ReachableRouteOutcome,
+        LogicalExit,
+        PolicyRecord,
+        RouteDisposition,
+        RouteCandidate,
+        LocalRouteOutcome,
+
         RetainFirstInterSatelliteConfiguration,
         RetainFirstInterSatelliteConnectionPlanningModel,
         RouteDemand,
@@ -108,6 +115,12 @@ if TYPE_CHECKING:
     from .timeline import SimulationTimeline
 
 _OBJECT_MODULES = {
+    "LogicalExit": ".planner",
+    "PolicyRecord": ".planner",
+    "RouteDisposition": ".planner",
+    "RouteCandidate": ".planner",
+    "LocalRouteOutcome": ".planner",
+
     "InterSatelliteCandidateSearchModel": ".planner",
     "GroundStationCandidateSearchModel": ".planner",
     "GroundStationCandidateSearch": ".planner",
@@ -148,6 +161,7 @@ _OBJECT_MODULES = {
     "GatewayHopCountRoutePlanningModel": ".planner",
     "GroundStationAccessPlanningModel": ".planner",
     "GroundStationRouteDemandTarget": ".planner",
+    "SatelliteRouteDemandTarget": ".planner",
     "HighestElevationZoneServicePlanningModel": ".planner",
     "InterSatelliteConnectionPlanningModel": ".planner",
     "InterSatelliteLifecycleEvidence": ".planner",
@@ -211,6 +225,12 @@ _OBJECT_MODULES = {
 }
 
 __all__ = [
+    "LogicalExit",
+    "PolicyRecord",
+    "RouteDisposition",
+    "RouteCandidate",
+    "LocalRouteOutcome",
+
     "InterSatelliteCandidateSearchModel",
     "GroundStationCandidateSearchModel",
     "GroundStationCandidateSearch",
@@ -229,6 +249,7 @@ __all__ = [
     "GroundStationAccessCandidate",
     "GroundStationAccessPlanningModel",
     "GroundStationRouteDemandTarget",
+    "SatelliteRouteDemandTarget",
     "HighestElevationZoneServicePlanningModel",
     "InterSatelliteConnectionPlanningModel",
     "InterSatelliteLifecycleEvidence",

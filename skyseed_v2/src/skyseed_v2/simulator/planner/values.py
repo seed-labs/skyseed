@@ -183,6 +183,22 @@ class GroundStationRouteDemandTarget:
 
 
 @dataclass(frozen=True, slots=True)
+class SatelliteRouteDemandTarget:
+    """Identify a Satellite's stable node identity as a Route destination.
+
+    Layer: public immutable Simulator Route-planning value. This names a
+    Satellite, not a Zone service, next hop, packet prefix or backend resource.
+    """
+
+    satellite_id: NodeId
+    network_scope: str = ""
+
+    def __post_init__(self) -> None:
+        _validate_network_scope(self.network_scope)
+        _require_node_kind(self.satellite_id, "satellite", "satellite_id")
+
+
+@dataclass(frozen=True, slots=True)
 class ZoneRouteDemandTarget:
     """Identify one planned Zone Route demand destination.
 
@@ -204,7 +220,7 @@ class ZoneRouteDemandTarget:
         return self.network_scope, self.zone_id
 
 
-RouteDemandTarget = GroundStationRouteDemandTarget | ZoneRouteDemandTarget
+RouteDemandTarget = GroundStationRouteDemandTarget | SatelliteRouteDemandTarget | ZoneRouteDemandTarget
 
 
 @dataclass(frozen=True, slots=True)
@@ -224,7 +240,7 @@ class RouteDemand:
         _require_node_id(self.source, "source")
         if not isinstance(
             self.target,
-            (GroundStationRouteDemandTarget, ZoneRouteDemandTarget),
+            (GroundStationRouteDemandTarget, SatelliteRouteDemandTarget, ZoneRouteDemandTarget),
         ):
             raise TypeError("target must be a supported Route demand target")
 
@@ -292,7 +308,128 @@ class UnreachableRouteOutcome:
             raise TypeError("reason must be a RouteUnreachableReason")
 
 
-RouteOutcome = ReachableRouteOutcome | UnreachableRouteOutcome
+@dataclass(frozen=True, slots=True)
+class LogicalExit:
+    """A directed operational connection endpoint, independent of any backend."""
+    connection: OperationalConnectionId
+    source: NodeId
+
+    def __post_init__(self):
+        if not isinstance(self.connection, OperationalConnectionId):
+            raise TypeError("logical exit requires an OperationalConnectionId")
+        if self.source not in (self.connection.endpoint_a, self.connection.endpoint_b):
+            raise ValueError("logical exit source must be a connection endpoint")
+
+    @property
+    def peer(self):
+        return (self.connection.endpoint_b if self.source == self.connection.endpoint_a
+                else self.connection.endpoint_a)
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class PolicyRecord:
+    """Immutable named scalar/reference/record values; layout is declared separately."""
+    fields: tuple
+
+    def __init__(self, values=(), **fields):
+        from collections.abc import Mapping
+        if isinstance(values, PolicyRecord):
+            values = values.fields
+        pairs = tuple(values.items()) if isinstance(values, Mapping) else tuple(values)
+        values = dict(pairs)
+        if len(values) != len(pairs) or values.keys() & fields.keys():
+            raise ValueError("duplicate policy field")
+        values.update(fields)
+        def freeze(value):
+            if isinstance(value, Mapping):
+                return PolicyRecord(value)
+            if type(value) in (int, bool) or isinstance(value, (NodeId, LogicalExit, PolicyRecord)):
+                return value
+            raise TypeError("policy values support integers, booleans, logical references and records")
+        if any(not isinstance(k, str) or not k.isidentifier() for k in values):
+            raise ValueError("policy field names must be identifiers")
+        object.__setattr__(self, "fields", tuple(sorted((k, freeze(v)) for k, v in values.items())))
+
+    def __getitem__(self, name):
+        return dict(self.fields)[name]
+
+
+class RouteDisposition(Enum):
+    FORWARD = "forward"
+    DROP = "drop"
+    PASS = "pass"
+
+
+@dataclass(frozen=True, slots=True)
+class RouteCandidate:
+    exit: LogicalExit
+    data: PolicyRecord = field(default_factory=PolicyRecord)
+
+    def __post_init__(self):
+        if not isinstance(self.exit, LogicalExit):
+            raise TypeError("candidate exit must be a LogicalExit")
+        object.__setattr__(self, "data", PolicyRecord(self.data))
+
+
+@dataclass(frozen=True, slots=True)
+class LocalRouteOutcome:
+    """One explicit node/target arrangement; no end-to-end reachability claim.
+
+    Empty forwarding candidates are allowed. PASS requests Linux processing,
+    not confirmed delivery. Returning a result replaces all previous outcomes.
+    """
+    demand: RouteDemand
+    disposition: RouteDisposition = RouteDisposition.FORWARD
+    candidates: tuple[RouteCandidate, ...] = ()
+    data: PolicyRecord = field(default_factory=PolicyRecord)
+
+    def __post_init__(self):
+        if not isinstance(self.demand, RouteDemand) or not isinstance(self.disposition, RouteDisposition):
+            raise TypeError("local arrangement requires a demand and RouteDisposition")
+        candidates = tuple(self.candidates)
+        if any(not isinstance(c, RouteCandidate) for c in candidates):
+            raise TypeError("candidates must contain RouteCandidate values")
+        if any(c.exit.source != self.demand.source for c in candidates):
+            raise ValueError("candidate exits must belong to the arrangement source")
+        if self.disposition is not RouteDisposition.FORWARD and candidates:
+            raise ValueError("only forwarding arrangements have candidates")
+        if len({c.exit for c in candidates}) != len(candidates):
+            raise ValueError("duplicate candidate exit")
+        object.__setattr__(self, "candidates", candidates)
+        object.__setattr__(self, "data", PolicyRecord(self.data))
+
+
+def _policy_material(value):
+    if isinstance(value, PolicyRecord):
+        return {"record": {k: _policy_material(v) for k, v in value.fields}}
+    if isinstance(value, NodeId):
+        return {"node": _node_material(value)}
+    if isinstance(value, LogicalExit):
+        return {"exit": {"connection": _connection_id_material(value.connection), "source": _node_material(value.source)}}
+    return value
+
+
+def _policy_references(value):
+    if isinstance(value, PolicyRecord):
+        for _, member in value.fields:
+            yield from _policy_references(member)
+    elif isinstance(value, (NodeId, LogicalExit)):
+        yield value
+
+
+def _outcome_edges(outcome):
+    if isinstance(outcome, ReachableRouteOutcome):
+        return _path_edges(outcome.path)
+    if isinstance(outcome, LocalRouteOutcome):
+        exits = [c.exit for c in outcome.candidates]
+        exits.extend(v for record in (outcome.data, *(c.data for c in outcome.candidates))
+                     for v in _policy_references(record) if isinstance(v, LogicalExit))
+        return tuple(dict.fromkeys(_connection_edge(v.connection) for v in exits))
+    return ()
+
+
+RouteOutcome = ReachableRouteOutcome | UnreachableRouteOutcome | LocalRouteOutcome
+
 
 
 @dataclass(frozen=True, slots=True)
@@ -385,7 +522,7 @@ class RouteOutcomeTransition:
         for field_name in ("previous", "current"):
             value = getattr(self, field_name)
             if value is not None and not isinstance(
-                value, (ReachableRouteOutcome, UnreachableRouteOutcome)
+                value, (ReachableRouteOutcome, UnreachableRouteOutcome, LocalRouteOutcome)
             ):
                 raise TypeError(
                     f"{field_name} must be a Route outcome or None"
@@ -548,6 +685,7 @@ class SemanticEventKind(Enum):
     ZONE_SERVICE_ASSIGN = "zone-service-assign"
     ZONE_SERVICE_CHANGE = "zone-service-change"
     ZONE_SERVICE_UNASSIGN = "zone-service-unassign"
+    ROUTE_LOCAL = "route-local"
     ROUTE_REACHABLE = "route-reachable"
     ROUTE_CHANGE = "route-change"
     ROUTE_WITHDRAW = "route-withdraw"
@@ -609,6 +747,7 @@ class SemanticEventReference:
             SemanticEventKind.ZONE_SERVICE_UNASSIGN,
         }
         route_kinds = {
+            SemanticEventKind.ROUTE_LOCAL,
             SemanticEventKind.ROUTE_REACHABLE,
             SemanticEventKind.ROUTE_CHANGE,
             SemanticEventKind.ROUTE_WITHDRAW,
@@ -722,8 +861,8 @@ def semantic_event_references(
                 )
             )
     for change in transition.route_outcome_transitions:
-        old_reachable = isinstance(change.previous, ReachableRouteOutcome)
-        new_reachable = isinstance(change.current, ReachableRouteOutcome)
+        old_reachable = isinstance(change.previous, (ReachableRouteOutcome, LocalRouteOutcome))
+        new_reachable = isinstance(change.current, (ReachableRouteOutcome, LocalRouteOutcome))
         if new_reachable:
             references.append(
                 SemanticEventReference(
@@ -731,7 +870,7 @@ def semantic_event_references(
                     (
                         SemanticEventKind.ROUTE_CHANGE
                         if old_reachable
-                        else SemanticEventKind.ROUTE_REACHABLE
+                        else (SemanticEventKind.ROUTE_LOCAL if isinstance(change.current, LocalRouteOutcome) else SemanticEventKind.ROUTE_REACHABLE)
                     ),
                     route_demand=change.demand,
                 )
@@ -1027,7 +1166,7 @@ def _set_state_collections(state, previous, connections, assignments, outcomes):
     for name, values, value_type, key in (
         ("operational_connections", connections, OperationalConnection, lambda v: _connection_key(v.connection_id)),
         ("zone_service_assignments", assignments, ZoneServiceAssignment, lambda v: v.service_key),
-        ("route_outcomes", outcomes, (ReachableRouteOutcome, UnreachableRouteOutcome), lambda v: _route_demand_key(v.demand)),
+        ("route_outcomes", outcomes, (ReachableRouteOutcome, UnreachableRouteOutcome, LocalRouteOutcome), lambda v: _route_demand_key(v.demand)),
     ):
         collection = (() if previous is None else getattr(previous, name)) if values is None else _ordered_unique(values, value_type, key, name)
         object.__setattr__(state, name, collection)
@@ -1231,7 +1370,7 @@ def _plan_identifier(
 ) -> str:
     return _json_fingerprint(
         {
-            "schema": "skyseed-v2-plan-v4",
+            "schema": "skyseed-v2-plan-v6",
             "previous_plan_id": previous_plan_id,
             "physical_world_fingerprint": physical_world_fingerprint,
             "input_state_fingerprint": input_state_fingerprint,
@@ -1250,7 +1389,7 @@ def _planned_operational_state_material(
     state: PlannedOperationalState,
 ) -> dict[str, object]:
     return {
-        "schema": "skyseed-v2-planned-operational-state-v2",
+        "schema": "skyseed-v2-planned-operational-state-v4",
         "timestamp": state.timestamp.isoformat(),
         "operational_connections": [
             _connection_material(value) for value in state.operational_connections
@@ -1277,7 +1416,7 @@ def _plan_transition_material(transition: PlanTransition) -> dict[str, object]:
         if transition.semantic_event_precedences else {}
     )
     return {
-        "schema": "skyseed-v2-plan-transition-v4",
+        "schema": "skyseed-v2-plan-transition-v6",
         "timestamp": transition.timestamp.isoformat(),
         "established_connections": [
             _connection_material(value)
@@ -1362,6 +1501,9 @@ def _route_demand_material(demand: RouteDemand) -> dict[str, object]:
                 ),
             }
             if isinstance(target, GroundStationRouteDemandTarget)
+            else {"kind": "satellite", "satellite_id": _node_material(target.satellite_id),
+                  "network_scope": target.network_scope}
+            if isinstance(target, SatelliteRouteDemandTarget)
             else {"kind": "zone", "zone_id": target.zone_id, "network_scope": target.network_scope}
         ),
     }
@@ -1369,6 +1511,10 @@ def _route_demand_material(demand: RouteDemand) -> dict[str, object]:
 
 def _route_outcome_material(outcome: RouteOutcome, *, include_demand=True) -> dict[str, object]:
     common = {"demand": _route_demand_material(outcome.demand)} if include_demand else {}
+    if isinstance(outcome, LocalRouteOutcome):
+        return {**common, "kind": "local", "disposition": outcome.disposition.value,
+                "data": _policy_material(outcome.data),
+                "candidates": [{"exit": _policy_material(c.exit), "data": _policy_material(c.data)} for c in outcome.candidates]}
     if isinstance(outcome, ReachableRouteOutcome):
         return {
             **common,
@@ -1443,6 +1589,8 @@ def _route_demand_key(demand: RouteDemand) -> tuple:
     source = _node_key(demand.source)
     if isinstance(demand.target, GroundStationRouteDemandTarget):
         return source, demand.target.network_scope, "G", _node_key(demand.target.ground_station_id)
+    if isinstance(demand.target, SatelliteRouteDemandTarget):
+        return source, demand.target.network_scope, "S", _node_key(demand.target.satellite_id)
     return source, demand.target.network_scope, "Z", demand.target.zone_id
 
 
@@ -1598,6 +1746,7 @@ def _required_semantic_precedences(
         elif event.kind is SemanticEventKind.ZONE_SERVICE_UNASSIGN:
             zone_unassignments[event.service_key] = event
         elif event.kind in {
+            SemanticEventKind.ROUTE_LOCAL,
             SemanticEventKind.ROUTE_REACHABLE,
             SemanticEventKind.ROUTE_CHANGE,
         }:
@@ -1619,8 +1768,7 @@ def _required_semantic_precedences(
     }
     for demand, readiness in route_readiness.items():
         route_change = changes_by_demand[demand]
-        assert isinstance(route_change.current, ReachableRouteOutcome)
-        for edge in _path_edges(route_change.current.path):
+        for edge in _outcome_edges(route_change.current):
             parameter_readiness = parameter_readiness_by_edge.get(edge)
             if parameter_readiness is not None:
                 precedences.append(
@@ -1639,8 +1787,7 @@ def _required_semantic_precedences(
             )
     for demand, withdrawal in route_withdrawals.items():
         route_change = changes_by_demand[demand]
-        assert isinstance(route_change.previous, ReachableRouteOutcome)
-        for edge in _path_edges(route_change.previous.path):
+        for edge in _outcome_edges(route_change.previous):
             connection_withdrawal = withdrawal_by_edge.get(edge)
             if connection_withdrawal is not None:
                 precedences.append(

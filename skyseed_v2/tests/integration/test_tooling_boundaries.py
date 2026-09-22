@@ -4,11 +4,12 @@ import ast
 import json
 from pathlib import Path
 
-from tools._presentation.html import finalize_runtime_aggregate_index, write_aggregate_index
+from tools.observation._presentation.html import finalize_runtime_aggregate_index, write_aggregate_index
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 TOOLS_ROOT = PROJECT_ROOT / "tools"
+OBSERVATION_ROOT = TOOLS_ROOT / "observation"
 CURRENT_TOOL_PACKAGES = {
     "physical_world",
     "zone",
@@ -52,9 +53,10 @@ def _called_names(source: str) -> set[str]:
 
 def test_tools_are_repository_local_and_slice_tool_is_absent() -> None:
     assert (TOOLS_ROOT / "__init__.py").is_file()
+    assert {p.name for p in TOOLS_ROOT.iterdir() if p.is_dir() and (p / "__init__.py").is_file()} == {"observation", "development", "generation"}
     assert {
         path.name
-        for path in TOOLS_ROOT.iterdir()
+        for path in OBSERVATION_ROOT.iterdir()
         if path.is_dir()
         and path.name not in {"__pycache__", "_presentation"}
         and (path / "__init__.py").is_file()
@@ -84,13 +86,13 @@ def test_tools_do_not_advance_or_recompute_domain_state() -> None:
         "run",
     }
     for package in CURRENT_TOOL_PACKAGES:
-        source = _python_source(TOOLS_ROOT / package)
+        source = _python_source(OBSERVATION_ROOT / package)
         assert not (_called_names(source) & forbidden_calls), package
 
 
 def test_planner_and_compiler_tools_read_public_detached_values() -> None:
-    planner = _python_source(TOOLS_ROOT / "planner")
-    compiler = _python_source(TOOLS_ROOT / "bpf_compiler")
+    planner = _python_source(OBSERVATION_ROOT / "planner")
+    compiler = _python_source(OBSERVATION_ROOT / "bpf_compiler")
     assert "PublishedPlanningEvidence" in planner
     assert "read_planner_history" in planner
     assert "Plan" in compiler
@@ -107,7 +109,7 @@ def test_planner_and_compiler_tools_read_public_detached_values() -> None:
 
 
 def test_observation_groups_describe_the_actual_round_b_pipeline() -> None:
-    source = _python_source(TOOLS_ROOT / "performance")
+    source = _python_source(OBSERVATION_ROOT / "performance")
     lowered = source.lower()
     for required in (
         "physical projection",
@@ -170,7 +172,7 @@ def test_runtime_aggregate_finalization_preserves_static_results(
 
 
 def test_detached_executor_supports_only_semantic_side_work() -> None:
-    source = (TOOLS_ROOT / "_detached_inspection.py").read_text(
+    source = (OBSERVATION_ROOT / "_detached_inspection.py").read_text(
         encoding="utf-8"
     )
     assert '_SUPPORTED_TASKS = frozenset({"planner", "compiler", "performance"})' in source
@@ -180,7 +182,7 @@ def test_detached_executor_supports_only_semantic_side_work() -> None:
 
 def test_tool_readmes_describe_observation_not_domain_ownership() -> None:
     for package in CURRENT_TOOL_PACKAGES:
-        readme = (TOOLS_ROOT / package / "README.md").read_text(encoding="utf-8")
+        readme = (OBSERVATION_ROOT / package / "README.md").read_text(encoding="utf-8")
         assert "Tool" in readme
         assert any(
             word in readme.lower()
@@ -192,17 +194,17 @@ def test_tool_readmes_describe_observation_not_domain_ownership() -> None:
 
 def test_concise_namespace_reexports_canonical_capabilities():
     import tools
-    from tools.planner.export import write_network_export
-    from tools.traffic.export import write_traffic_export
-    from tools.experiment import write_experiment_tools
+    from tools.observation.planner.export import write_network_export
+    from tools.observation.traffic.export import write_traffic_export
+    from tools.observation.experiment import write_experiment_tools
     assert tools.write_network_export is write_network_export
     assert tools.write_traffic_export is write_traffic_export
     assert tools.write_experiment_tools is write_experiment_tools
     assert tools.finalize_runtime_aggregate_index is finalize_runtime_aggregate_index
     for name in CURRENT_TOOL_PACKAGES:
-        assert getattr(tools, name).__name__ == 'tools.' + name
+        assert getattr(tools, name).__name__ == 'tools.observation.' + name
 
 
 def test_active_traffic_consumes_existing_facts_without_computation():
-    source = _python_source(TOOLS_ROOT / "traffic/active")
+    source = _python_source(PROJECT_ROOT / "tools/generation/traffic")
     assert not (_called_names(source) & {"frame_at", "compute_observation", "observe", "compile_bpf"})

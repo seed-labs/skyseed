@@ -86,7 +86,7 @@ def _collapsed_group(module_name: str) -> str:
     if module_name == "skyseed_v2.backend" or module_name.startswith(
         "skyseed_v2.backend."
     ):
-        return "BPF"
+        return "BACKEND"
     for prefix, group in (
         ("skyseed_v2.configuration.emulator", "CONFIG_EMU"),
         ("skyseed_v2.configuration.simulator", "CONFIG_SIM"),
@@ -285,22 +285,33 @@ def main() -> int:
             target.startswith("skyseed_v2.simulator") for target in targets
         )
         # The root exports selectable modules but performs no cross-domain adaptation.
-        if has_emulator and has_simulator and module_name != PACKAGE_NAME:
+        if has_emulator and has_simulator and module_name not in {PACKAGE_NAME, "skyseed_v2.experiment.controller"}:
             bridge_modules.append(module_name)
         backend = "skyseed_v2.backend.bpf."
-        if module_name.startswith(backend + "compiler") and any(
-            target.startswith(backend + "runner") for target in targets
+        calculation = {backend + "dataplane.translation", backend + "dataplane.program"}
+        runtime = {backend + "dataplane.runtime", backend + "dataplane.runtime_command", "skyseed_v2.backend.linux.runtime", "skyseed_v2.backend.linux.runtime_command"}
+        calculation |= {"skyseed_v2.backend.linux.translation", "skyseed_v2.backend.linux.environment"}
+        pure_linux = {"skyseed_v2.backend.linux.materials", "skyseed_v2.backend.linux.environment"}
+        if module_name in calculation and any(t in runtime or t.startswith("skyseed_v2.backend.runner") or (t.startswith("skyseed_v2.backend.linux") and t not in pure_linux and not (module_name == backend + "dataplane.program" and t == "skyseed_v2.backend.linux.elf")) for t in targets):
+            raise AssertionError(f"Pure DataPlane translation depends on runtime: {module_name} -> {targets}")
+        if (module_name in runtime or module_name.startswith("skyseed_v2.backend.runner")
+            or module_name in {backend + "dataplane.materials", backend + "dataplane.object_contract", "skyseed_v2.backend.execution_materials.codec"}) and any(t in calculation or t.startswith("skyseed_v2.backend.compiler") or t == "skyseed_v2.backend.execution_materials.sealing" for t in targets):
+            raise AssertionError(f"DataPlane execution depends on calculation: {module_name} -> {targets}")
+        if module_name.startswith("skyseed_v2.backend.linux") and any(t.startswith(backend) for t in targets):
+            raise AssertionError(f"Linux mechanisms depend on forwarding policy: {module_name} -> {targets}")
+        if module_name.startswith("skyseed_v2.backend.compiler") and any(
+            target.startswith("skyseed_v2.backend.runner") for target in targets
         ):
             raise AssertionError(f"Compiler depends on runtime: {module_name} -> {targets}")
-        if module_name.startswith(backend + "execution_materials"):
-            if any(target.startswith(backend + "runner") for target in targets):
+        if module_name.startswith("skyseed_v2.backend.execution_materials"):
+            if any(target.startswith("skyseed_v2.backend.runner") for target in targets):
                 raise AssertionError(f"Pure materials depend on runtime: {module_name} -> {targets}")
             if not module_name.endswith(".sealing") and any(
-                target.startswith(backend + "compiler") for target in targets
+                target.startswith("skyseed_v2.backend.compiler") for target in targets
             ):
                 raise AssertionError(f"Material reading/rules depend on Compiler: {module_name} -> {targets}")
-        if module_name.startswith(backend + "runner") and any(
-            target.startswith(backend + "compiler") or target == backend + "execution_materials.sealing"
+        if module_name.startswith("skyseed_v2.backend.runner") and any(
+            target.startswith("skyseed_v2.backend.compiler") or target == "skyseed_v2.backend.execution_materials.sealing"
             for target in targets
         ):
             raise AssertionError(f"Runner depends on compilation: {module_name} -> {targets}")
@@ -344,10 +355,13 @@ def main() -> int:
             if any(name == "tools" or name.startswith("tools.") for name in names):
                 allowed = {"experiment/controller.py", "experiment/execution.py"}
                 if path.relative_to(PACKAGE_ROOT).as_posix() not in allowed or not all(
-                    name in {"tools.traffic.active.probe_plan", "tools.traffic.active.probe_execution"}
+                    name in {"tools.generation.traffic.probe_plan", "tools.generation.traffic.probe_execution"}
                     for name in names if name == "tools" or name.startswith("tools.")):
                     raise AssertionError(f"non-boundary production imports Tools: {path}")
-        if "sys.modules" in source:
+        # Preparation is a source loader in a dedicated subprocess, not a
+        # compatibility alias for production packages. It registers captured
+        # author packages to prevent imports from falling back to live sources.
+        if "sys.modules" in source and path.relative_to(PACKAGE_ROOT).as_posix() != "experiment/preparation.py":
             raise AssertionError(f"compatibility module alias found: {path}")
 
     for relative in RETIRED_PATHS:
@@ -392,7 +406,7 @@ def main() -> int:
     print("Simulator -> Emulator/SEED: absent")
     print("Simulator -> backend: absent")
     print("SEED -> Simulator/Tools/Deployment/examples: absent")
-    print("compatibility forwarding: absent")
+    print("sys.modules compatibility aliases: absent")
     print("import dependency result: PASS")
     return 0
 

@@ -29,7 +29,7 @@ DELIVERED_COVERAGE = timedelta(seconds=300)
 
 def build_emulator():
     """Build all five prepared Shells and one shared physical GroundStation inventory."""
-    # Shared 4408-satellite inventory and 355 physical GSs; no ordinary AS/IX.
+    # Shared 4408-satellite inventory and 355 physical GSs.
     # The SEED boundary supplies management. Only GS capability differs here.
     shells = configuration.emulator.load_shell_configs(SHELLS_FILE)
     ground_stations = configuration.emulator.load_ground_station_configs(GROUND_STATIONS_FILE)
@@ -41,12 +41,21 @@ def build_emulator():
         replace(station, max_simultaneous_satellite_accesses=GROUND_STATION_TOTAL_CAPACITY)
         for station in ground_stations
     )
-    return emulator.create_static_emulator(
+    network = emulator.create_static_emulator(
         configuration.emulator.StaticEmulatorConfig(skyseed_autonomous_systems=(
             configuration.emulator.SkyseedAutonomousSystemConfig(
                 asn=65040, shells=shells, ground_stations=stations),
         ))
     )
+    satellite_as, = emulator.seedemu.get_skyseed_autonomous_systems(network.getLayer("Base"))
+    # Ordinary SEED business LAN; synthetic addresses are separate from node /32s,
+    # Zones, management and all native dynamic-link pools. No satellite routes.
+    ground_lan = satellite_as.createNetwork("ground-lan", "203.0.0.0/16")
+    # Leave the first host address for the Docker bridge gateway.
+    for index, station in enumerate(sorted(satellite_as.ground_stations(),
+                                         key=lambda value: value.ground_station_id), start=2):
+        station.joinNetwork(ground_lan.getName(), str(ground_lan.getPrefix()[index]))
+    return network
 
 
 def create_simulator(network, *, duration=DEFAULT_DURATION):
@@ -113,7 +122,7 @@ def main(argv=None):
             "ground_station_total_capacity": GROUND_STATION_TOTAL_CAPACITY,
             "duration_seconds": args.duration_seconds,
         },
-        through=args.through, traffic_enabled=not args.no_traffic,
+        through=args.through, traffic_enabled=not args.no_traffic, traffic_telemetry_enabled=not args.no_traffic_telemetry,
         replace=args.override,
         internet_map_enabled=not args.no_internet_map,
         delivery_ends=delivery_ends,

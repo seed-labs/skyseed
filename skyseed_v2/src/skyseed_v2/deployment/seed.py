@@ -35,3 +35,35 @@ class _InterfaceLessRuntimeDocker(Docker):
             "        network_mode: none\n",
             1,
         )
+
+
+def _prepare_internet_map(output):
+    """Stage the adapted SEED Map source as an ordinary generated build context."""
+    from pathlib import Path
+    from shutil import copytree, ignore_patterns
+    from yaml import safe_load, safe_dump
+    import seedemu
+    output = Path(output)
+    compose_path = output / 'deployment/docker-compose.yml'
+    compose = safe_load(compose_path.read_text())
+    service = compose['services'].get('seedemu_internet_map')
+    if service is None:
+        return
+    source = Path(seedemu.__file__).resolve().parent.parent / 'tools/InternetMap2'
+    if not (source / 'backend/src/utils/live-connections.ts').is_file():
+        raise RuntimeError('SkySEED Map requires the adapted SEED checkout with tools/InternetMap2; use --no-internet-map to omit it')
+    copytree(source, output / 'deployment/seedemu_internet_map',
+             ignore=ignore_patterns('node_modules', 'dist', '.git', '*.tsbuildinfo'))
+    handoff = output / '.control/internet-map'
+    handoff.mkdir(parents=True, exist_ok=True)
+    service['build'] = './seedemu_internet_map'
+    service.pop('container_name', None)
+    service.setdefault('volumes', []).append({'type': 'bind', 'source': str(handoff),
+                                            'target': '/skyseed', 'read_only': True})
+    env = service.setdefault('environment', {})
+    if isinstance(env, list):
+        env.extend(('SKYSEED_LIVE_CONNECTIONS=/skyseed/live.json', 'SKYSEED_COMPOSE_PROJECT=${COMPOSE_PROJECT_NAME}'))
+    else:
+        env['SKYSEED_LIVE_CONNECTIONS'] = '/skyseed/live.json'
+        env['SKYSEED_COMPOSE_PROJECT'] = '${COMPOSE_PROJECT_NAME}'
+    compose_path.write_text(safe_dump(compose, sort_keys=False))

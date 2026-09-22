@@ -8,11 +8,11 @@ from datetime import datetime, timezone
 
 import pytest
 
-from tools.traffic.export import _request_timestamps, write_traffic_export
-from tools.traffic._spatial import _observed_steps, _browser_index, _write_spatial_assets
-from tools.planner.projection import _route_activity
-from tools.planner._route_display import _ROUTE_SCRIPT
-from tools._presentation.shell_display import _SHELL_SCRIPT
+from tools.observation.traffic.export import _request_timestamps, write_traffic_export
+from tools.observation.traffic._spatial import _observed_steps, _browser_index, _write_spatial_assets
+from tools.observation.planner.projection import _route_activity
+from tools.observation.planner._route_display import _ROUTE_SCRIPT
+from tools.observation._presentation.shell_display import _SHELL_SCRIPT
 
 
 def test_export_associates_episode_segment_and_sequence_without_guessing(tmp_path):

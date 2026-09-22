@@ -2,13 +2,18 @@
 
 | Status | Direction | Boundary |
 |---|---|---|
-| Implemented and reviewed | Retained defaults, completed-range publication, output/control organization, documentation and demos | [Current capability and validation](../CURRENT.md) records the accepted scope |
-| Completed within recorded scope | Six-example closing live campaign and later fresh-environment Tiny verification | [Campaign](../history/2026-09-18-closing-campaign.md) preserves coverage and unresolved Traffic losses |
-| Prospective | Native routing protocols and SEED Layer support | S3 currently computes OSPF-like routes locally; it does not run a protocol |
-| Prospective | AI assistance for authoring/explaining Models | No mandatory agent or plugin framework |
-| Motivation only | Multi-machine separation/distributed computation | Earlier discussion explains component separation, not implementation approval |
-| Confirmed | Project name: SkySEED; official source: seed-labs/skyseed, main | Existing technical names and package version 0.1.0 are retained; no release suffix or tag |
+| Implemented | Retained calculation, completed-range publication, independent runtime controls and joined cleanup | [Current scope](../CURRENT.md); request acceptance is separate from completed drainage |
+| Implemented | Ordinary node payloads, BPF C/ELF authoring and structured/local route arrangements | [Payload guide](../user-guides/node-payloads.md), [BPF customization](../development/dataplane.md); no mandatory plugin layer |
+| Implemented within recorded limits | Native IPv4 forwarding with authored protocol software and explicit route arrangements | [BIRD S4 workflow](../../examples/Sky06_s4_native_ospf/README.md); BPF S3 remains a precomputed OSPF-like Model, not a protocol daemon |
+| Completed within dated scope | BPF closing campaign and native S3/S4 experiments, including manual S4 acceptance | [Evidence index](../history/README.md); does not imply lossless or all-pairs convergence |
+| Next conversation | Runtime feedback and future-decision revision | Not implemented by this closeout; no new interface promised here |
+| Prospective | Hybrid forwarding, IPv6/SRv6, process-restart recovery, public backend plugins | Existing native/BPF support is not a plugin API or recovery system |
+| Prospective | AI assistance for authoring/explaining Models | No mandatory agent framework |
+| Motivation only | Multi-machine separation/distributed computation | Research rationale, not implementation approval |
 
-Process-restart recovery, arbitrary external material import, mid-session stage promotion,
-a public backend plugin API, automatic rollback and continuously streaming live UI are not
-current capabilities. Research discussion is preserved in [history](../history/paper-discussion.md).
+Arbitrary external material import, mid-session stage promotion, automatic rollback and
+an exhaustive continuous live-observation UI are not current capabilities. Dynamic Map
+support is a bounded local SEED adaptation. Research proposals remain in
+[research/history](../history/paper-discussion.md) under their original source conditions.
+The project is SkySEED; existing technical/API names and version `0.1.0` remain, with no
+release tag or public API rename introduced for documentation cleanup.

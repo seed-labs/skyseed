@@ -459,7 +459,7 @@ Kubernetes 可作为大量 UT 部署、调度或重新部署的候选实现手�
 2. 主机侧控制器持有明确的 namespace 目标及对应 Netlink 通道，直接执行网络变更；正式 Main 无需为每个动作经过 docker exec／nsenter／shell，再在容器内启动 ip／tc。减少的是整条跨容器执行和命令控制路径的反复成本。
 3. 用一次 veth 创建请求同时表达两端 namespace 与可合并属性；用 Netlink 直接配置内核 qdisc、地址、邻居和必要路由，用 BPF 接口准备及切换转发状态。保留内核真实设备和排队处理，减少外围工具及分散配置往返。
 
-上述部分均已实现。所体现的设计是：让控制器直接表达网络变化，按实际连接语义组织底层操作，减少容器管理层与命令工具层对每次动态更新的介入。来源：无静态接口节点的部署（历史源路径：`../../src/skyseed_v2/compose/launcher.py`）、[namespace 控制通道](../../src/skyseed_v2/backend/bpf/runner/privileged_runtime_command.py)、[直接内核操作](../../src/skyseed_v2/backend/bpf/runner/kernel_netlink.py)。这些是运行第二项的首选代表，不把“减少 docker exec”降格为普通去重，也不声称所有 Linux networking 组件均已移除。
+上述部分均已实现。所体现的设计是：让控制器直接表达网络变化，按实际连接语义组织底层操作，减少容器管理层与命令工具层对每次动态更新的介入。来源：无静态接口节点的部署（历史源路径：`../../src/skyseed_v2/compose/launcher.py`）、[namespace 控制通道](../../src/skyseed_v2/backend/bpf/dataplane/runtime_command.py)、[直接内核操作](../../src/skyseed_v2/backend/linux/netlink.py)。这些是运行第二项的首选代表，不把“减少 docker exec”降格为普通去重，也不声称所有 Linux networking 组件均已移除。
 
 **同一理念的未来延伸。** qdisc 参数序列／函数随已知计划交付给内核，执行端按时间应用，进一步减少控制器逐时刻跨边界重配置。状态：未实现。它与现有直接 Netlink 控制分别说明减少单次控制路径、减少控制发生次数；按已知批次补充时间表、连续参数语义与执行机制留待后续设计。
 
@@ -475,7 +475,7 @@ Kubernetes 可作为大量 UT 部署、调度或重新部署的候选实现手�
 
 2026-09-11 源码核对：首次 Preparation 初始化会话、准备并预写首批材料、执行 B0；Maintenance 为后继批次装载／构造／预写、标 READY 并安全回收；Main 到点执行连接／参数变化和活动 generation 发布。这是当前组织方式，不否定首批与后继批次共享同一准备职责的设计。
 
-当前控制 helper 仍在用户态，经绑定 namespace 的 Netlink socket 操作内核；veth 创建一次携带对端 namespace、名称、MAC、队列和分组属性。Main 的 netem 更新仍是逐时点提交，未预装时间表。事实入口：[内核请求](../../src/skyseed_v2/backend/bpf/runner/kernel_netlink.py)、[控制通道与执行顺序](../../src/skyseed_v2/backend/bpf/runner/privileged_runtime_command.py)。[rtnetlink](https://man7.org/linux/man-pages/man7/rtnetlink.7.html) 和 [netem](https://man7.org/linux/man-pages/man8/tc-netem.8.html) 文档用于后续实现术语核对；不能把当前接口现状当作未来设计边界。
+当前控制 helper 仍在用户态，经绑定 namespace 的 Netlink socket 操作内核；veth 创建一次携带对端 namespace、名称、MAC、队列和分组属性。Main 的 netem 更新仍是逐时点提交，未预装时间表。事实入口：[内核请求](../../src/skyseed_v2/backend/linux/netlink.py)、[控制通道与执行顺序](../../src/skyseed_v2/backend/bpf/dataplane/runtime_command.py)。[rtnetlink](https://man7.org/linux/man-pages/man7/rtnetlink.7.html) 和 [netem](https://man7.org/linux/man-pages/man8/tc-netem.8.html) 文档用于后续实现术语核对；不能把当前接口现状当作未来设计边界。
 
 事实入口：[优化机制及原始证据导航](../architecture/mechanisms.md)、reverse BFS（历史源路径：`../../src/skyseed_v2/simulator/_routing_core.py`）、路由分组与依赖（历史源路径：`../../src/skyseed_v2/simulator/_route_computation.py`）、GS 分配（历史源路径：`../../src/skyseed_v2/simulator/_ground_station_allocation.py`）、[BPF map 与执行职责](../../src/skyseed_v2/backend/bpf/runner/README.md)。证据继续保留在既有性能与 provenance 记录，当前仅调整候选论文主线。
 
@@ -533,7 +533,7 @@ Kubernetes 可作为大量 UT 部署、调度或重新部署的候选实现手�
 
 主体先说明“最终网络可见 → 形成过程可见 → 自定义过程也能接入观察”的关系。最终高级前端仅简述；过程可观测作为重点；Agent 作为扩展支持附在其下。随后可按需要插入物理候选与所选连接对照、路由 Model 的选路结果、某一步参数变化等整页例子。AI 辅助自定义 Model 的示意例子留待选用，不立即制作 PPT 或图示。
 
-已有素材入口：[Tools 总览](../../tools/README.md)、[Physical World Tool](../../tools/physical_world/README.md)、[Planner Tool](../../tools/planner/README.md)、[Compiler Tool](../../tools/bpf_compiler/README.md)、[Runner Tool](../../tools/runner/README.md)、[Traffic Tool](../../tools/traffic/README.md)。本轮只做定向资料核对，未开展完整 Tool／Model 解耦审计、运行测试或修改实现。
+已有素材入口：[Tools 总览](../../tools/README.md)、[Physical World Tool](../../tools/observation/physical_world/README.md)、[Planner Tool](../../tools/observation/planner/README.md)、[Compiler Tool](../../tools/observation/bpf_compiler/README.md)、[Runner Tool](../../tools/observation/runner/README.md)、[Traffic Tool](../../tools/observation/traffic/README.md)。本轮只做定向资料核对，未开展完整 Tool／Model 解耦审计、运行测试或修改实现。
 
 ## PPT 整套编排与制作方式（主体稿已制作）
 
@@ -656,7 +656,7 @@ Kubernetes 可作为大量 UT 部署、调度或重新部署的候选实现手�
 - [FRR OSPF 文档](https://docs.frrouting.org/en/latest/ospfd.html)：协议、area、前缀重分发。
 - [FRR Zebra 文档](https://docs.frrouting.org/en/latest/zebra.html)：内核路由安装与 IP forwarding。
 - [Netfilter iptables 文档](https://www.netfilter.org/projects/iptables/index.html)：包过滤工具职责。
-- [当前 BPF 路由表示](../../src/skyseed_v2/backend/bpf/README.md)、[Compiler 冲突出口约束](../../src/skyseed_v2/backend/bpf/compiler/__init__.py)：目的地址转发与现有语义边界。
+- [当前 BPF 路由表示](../../src/skyseed_v2/backend/bpf/README.md)、[Compiler 冲突出口约束](../../src/skyseed_v2/backend/compiler/__init__.py)：目的地址转发与现有语义边界。
 - [RFC 3031：MPLS Architecture](https://www.rfc-editor.org/rfc/rfc3031.html)：标签交换与现有 BPF 数据面区别；[RFC 9717：A Routing Architecture for Satellite Networks](https://www.rfc-editor.org/rfc/rfc9717.html)：独立提交的信息性架构提案。
 - [NetSatBench 2026 预印本](https://arxiv.org/html/2604.27854v1) 与 [固定仓库版本](https://github.com/mSvcBench/NetSatBench/tree/32ccf79faf4a3d767c21d308150673d79666a33e)：同类容器框架、预计算路由及 SRv6 接入案例；具体文档和源码入口见独立调查小节。
 - [RFC 8754](https://www.rfc-editor.org/rfc/rfc8754.html)、[RFC 8986](https://www.rfc-editor.org/rfc/rfc8986.html)：SRH 与 SRv6 节点行为。

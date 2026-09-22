@@ -26,7 +26,17 @@ establish that capability. The tested dependency commit is
 [`05ad40bd22374496691d4b4fd516b4ee9b36eb4b`](https://github.com/EMLionHeart/seed-emulator/commit/05ad40bd22374496691d4b4fd516b4ee9b36eb4b):
 one generic ExtensionNode commit on upstream `seed-labs/seed-emulator` development
 [`97ead673aaaa4cd65f28cebc6719390913e8fdb7`](https://github.com/seed-labs/seed-emulator/commit/97ead673aaaa4cd65f28cebc6719390913e8fdb7).
-Upstream was rechecked on 18 September 2026 without a newer development commit.
+This dependency relationship was checked on 18 September 2026; it is not a claim
+about today's upstream branch head.
+
+The native software adapter uses ordinary Node methods and requires no local Routing
+convenience APIs. **Dynamic Internet Map support is a separate local adaptation** of
+`tools/InternetMap2`: applied-connection handoff, project scoping and capture/terminal
+fixes are not supplied by the ExtensionNode commit alone or guaranteed in unmodified
+upstream. Deployer builds the Map source from the installed checkout. To reproduce the
+recorded Map behavior, use the separately reviewed local Map changes; use
+`--no-internet-map` when that optional support is unavailable. SEED changes are maintained
+and reviewed separately from SkySEED.
 
 ```bash
 # From your workspace directory, alongside the cloned skyseed source tree:
@@ -111,7 +121,7 @@ example: 172 satellites, ten GSs and 184 Zones with three local Models. Its norm
 entry is `python examples/Sky01_s5_custom_models/s5.py`. Consult the
 [scale reference](scale-and-resources.md) before choosing a larger scene.
 [Inputs and scenes](inputs-and-scenes.md), [Model authoring](model-extension.md)
-and the [six-example index](../../examples/README.md) give the next steps.
+and the [example index](../../examples/README.md) give the next steps.
 
 ## Verify a candidate in isolation
 
@@ -138,3 +148,8 @@ controls when authorized. This checks the chosen candidate from a clean tree. Of
 source retrieval still requires repository access; SEED's public HTTPS retrieval is a
 separate dependency check. See the [development workflow](../development/workflow.md)
 for focused checks and [CURRENT](../CURRENT.md) for recorded installation evidence.
+
+C/eBPF execution-material preparation also requires Clang/LLVM BPF support, Linux
+UAPI and libbpf development headers, plus `libbpf.so.1`. See the
+[build versus execution requirements](../development/dataplane.md#dependencies-and-validation-boundary).
+Existing Example configuration remains unchanged.

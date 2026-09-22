@@ -10,6 +10,7 @@ from threading import Condition, Event, Thread
 from time import perf_counter
 
 from seedemu.core import Emulator
+from skyseed_v2.backend.selection import _backend, _emulator_backend, _validate_program
 from skyseed_v2.deployment import Deployer
 from skyseed_v2.deployment.deployer import _startup_parallel
 from skyseed_v2.simulator.planner.routing import validate_route_worker_limit
@@ -18,6 +19,7 @@ from .output.generation import (
     _append_phase, _guard_existing_output, _write_orchestration_timing, _prepare_generated_output,
 )
 from .output.provenance import _capture_inputs, _describe_simulator, _write_inputs, _write_json
+from skyseed_v2.shared._console import _console
 from .producer import Producer
 from .output.observation import _ExecutionObserver
 from .output.occupancy import claim_output
@@ -84,19 +86,45 @@ class ExperimentController:
         batch_lead_fraction: float = 0.75,
         batch_capacity_factor: int = 2,
         traffic_options: Mapping[str, object] | None = None,
-        traffic_enabled: bool = True,
+        traffic_enabled: bool | None = None,
+        traffic_telemetry_enabled: bool | None = None,
         deploy_parallel: int | None = None,
         runtime_workers: int | None = None,
         route_workers: int | None = None,
+        dataplane_program=None,
+        forwarding_backend=None,
+        initial_readiness_command: Sequence[str] | None = None,
+        preparation=None,
+        preparation_inputs: Mapping[str, object] | None = None,
     ) -> None:
         if not isinstance(emulator, Emulator) or not isinstance(simulator, Simulator):
             raise TypeError("ExperimentController requires an Emulator and Simulator")
         if through not in _THROUGH_STAGES:
             raise ValueError(f"through must be one of {_THROUGH_STAGES}")
+        if forwarding_backend is not None:
+            selected = _backend(forwarding_backend)
+            if hasattr(emulator, "_skyseed_forwarding_backend") and _emulator_backend(emulator) != selected:
+                raise ValueError("Emulator and experiment select incompatible forwarding backends")
+            emulator._skyseed_forwarding_backend = selected
+        self._forwarding_backend = _emulator_backend(emulator)
+        emulator._skyseed_forwarding_backend = self._forwarding_backend
+        _validate_program(self._forwarding_backend, dataplane_program)
         self._emulator, self._simulator = emulator, simulator
         self._output = Path(output).expanduser().resolve()
         self._entry_path = Path(entry_path).resolve()
         self._input_files = tuple(input_files)
+        from .preparation import _function_source
+        import json
+        if preparation is not None and initial_readiness_command is not None:
+            raise ValueError("choose preparation or initial_readiness_command, not both")
+        self._preparation = None if preparation is None else _function_source(preparation)
+        # Detach and validate inputs before modifying generated output.
+        self._preparation_inputs = json.loads(json.dumps(dict(preparation_inputs or {}), allow_nan=False))
+        if self._preparation is not None:
+            self._input_files += (self._preparation[0],)
+        from .execution import _validate_readiness_command
+        self._initial_readiness_command = _validate_readiness_command(initial_readiness_command)
+        self._captured_readiness_command = None
         self._parameters = dict(scenario_parameters or {})
         self._through, self._replace = through, replace
         self._docker_compiler = docker_compiler
@@ -104,13 +132,21 @@ class ExperimentController:
         self._delivery_ends = None if delivery_ends is None else tuple(delivery_ends)
         self._lead, self._capacity = batch_lead_fraction, batch_capacity_factor
         self._traffic_options = dict(traffic_options or {})
+        if traffic_enabled is None:
+            traffic_enabled = self._forwarding_backend == "bpf"
         self._traffic_enabled = traffic_enabled
+        if traffic_telemetry_enabled is None:
+            traffic_telemetry_enabled = self._forwarding_backend == "bpf"
+        if self._forwarding_backend == "linux" and traffic_telemetry_enabled:
+            raise ValueError("BPF traffic telemetry is unavailable for Linux forwarding")
+        self._traffic_telemetry_enabled = traffic_telemetry_enabled
         self._deployer = Deployer(self._output)
         self._observer = None
         self._recording_failure = None
         self._completed_materials = []
         self._deploy_parallel, self._runtime_workers = deploy_parallel, runtime_workers
         self._route_workers = route_workers
+        self._dataplane_program = dataplane_program
         self._generated = False
         self._condition = Condition()
         self._stop = Event()
@@ -142,10 +178,15 @@ class ExperimentController:
         keeps Producer alive. ``run=True`` uses the existing deployment and runtime
         execution operation, with normal teardown after runtime cancellation.
         """
+        session_error = None
         try:
             if run and self._through != "compiler":
                 raise ValueError("managed runtime execution requires compiler materials")
             self._validate_duration(delivery_duration)
+            _console("Retained calculation session (serve): this terminal stays open after range readiness. "
+                     "Use continue or cancel-computation from experiment_control.py. "
+                     "run.sh has a separate runtime owner and retains the final network for continuation; "
+                     "--operation generate selects finite calculation and execution materials.")
             self._runtime_managed = run
             self._presentation_callback = on_completed
             self._batch_duration = delivery_duration
@@ -223,6 +264,7 @@ class ExperimentController:
                 raise self._session_error
             return self._output
         except BaseException as error:
+            session_error = error
             if self._producer is None:
                 try:
                     self._simulator.shutdown()
@@ -231,6 +273,13 @@ class ExperimentController:
                     for note in getattr(cleanup_error, "__notes__", ()):
                         error.add_note(note)
             raise
+        finally:
+            if self._serve_finished:
+                failure = self._session_error if self._session_error is not None else session_error
+                if failure is not None and not isinstance(failure, KeyboardInterrupt):
+                    _console(f"Calculation session closed with errors: {type(failure).__name__}: {failure}")
+                else:
+                    _console(f"Calculation session closed: owned work and presentation drained. {self._output}")
 
     def _validate_duration(self, duration):
         interval = self._simulator.get_timeline().observation_interval
@@ -244,10 +293,13 @@ class ExperimentController:
         snapshot = self._producer.request_extension(additional_duration=additional_duration,
             end_time=end_time, delivery_duration=delivery_duration)
         self._event("calculation_requested", requested_end=snapshot["requested_end"])
+        _console(f"Calculation continuation starting: requested through {snapshot['requested_end']}.")
         return self.status()
 
     def cancel_computation(self) -> None:
         """Cancel computation and drain accepted work without stopping the network."""
+        if not self._stop.is_set():
+            _console("Calculation stop requested: draining owned calculation and presentation work before session closure.")
         self._stop.set()
         if self._producer is not None:
             self._producer.cancel_computation()
@@ -334,7 +386,7 @@ class ExperimentController:
         if index == 0:
             self._first_seal = {"manifest_sha256": metadata["manifest_sha256"],
                 "manifest": {key: metadata["manifest"][key] for key in (
-                    "format_version", "encoding", "realization_count", "sequence_sha256", "timeline")}}
+                    "backend", "format_version", "encoding", "realization_count", "sequence_sha256", "timeline")}}
             self._first_seal["manifest"]["physical_world"] = {"fingerprint": metadata["manifest"]["physical_world"]["fingerprint"]}
         if self._batch_duration is None or index == 0:
             self._completed_materials.append(reference)
@@ -349,7 +401,9 @@ class ExperimentController:
             sealed_metadata=self._first_seal,
             runner_batches=tuple(self._completed_materials[1:]),
             batch_lead_fraction=self._lead, batch_capacity_factor=self._capacity,
-            keep_alive=self._batch_duration is not None, traffic_enabled=self._traffic_enabled)
+            keep_alive=self._batch_duration is not None, traffic_enabled=self._traffic_enabled,
+            traffic_telemetry_enabled=self._traffic_telemetry_enabled,
+            initial_readiness_command=self._captured_readiness_command)
         _append_jsonl(self._output / "results/compiler/materials.jsonl", reference)
         self._published_count = index + 1
         self._published_end = reference["end"]
@@ -379,9 +433,9 @@ class ExperimentController:
                 self._presentation_pending = publication
                 self._condition.notify_all()
         self._materials_ready.set()
-        print(f"Completed through {self._completed_end}; "
-              f"{'waiting for continuation' if snapshot['retained'] else 'finite range ready'}: {self._output}\n"
-              f"Controls: {self._output / 'experiment_control.py'}; views: {self._output / 'index.html'}", flush=True)
+        _console(f"Calculation range ready through {self._completed_end}; "
+                 f"{'waiting for continuation (calculation IDLE; runtime is independent)' if snapshot['retained'] else 'finite range ready'}: {self._output}\n"
+                 f"Controls: {self._output / 'experiment_control.py'}; views: {self._output / 'index.html'}")
 
     def _present_completed(self):
         while True:
@@ -412,6 +466,10 @@ class ExperimentController:
 
     def _prepare_static(self):
         from .execution import _write_generated_run_script
+        from skyseed_v2.emulator.construction import _prepare_forwarding
+        if _emulator_backend(self._emulator) != self._forwarding_backend:
+            raise ValueError("experiment forwarding backend changed after assembly")
+        _prepare_forwarding(self._emulator)
         self._deployer.prepare(self._emulator, compiler=self._docker_compiler,
             internet_map_enabled=self._internet_map_enabled,
             prefix="skyseed_v2_" + self._entry_path.parent.name,
@@ -444,7 +502,8 @@ class ExperimentController:
         parser.add_argument("--through", choices=_THROUGH_STAGES, default="compiler")
         parser.add_argument("--override", action="store_true", help="replace inactive existing output")
         parser.add_argument("--no-tools", action="store_true", help="skip optional offline presentation; active Traffic is controlled separately")
-        parser.add_argument("--no-traffic", action="store_true", help="disable active Traffic probes and their collection")
+        parser.add_argument("--no-traffic", action="store_true", help="disable scheduled GS/Zone traffic generation")
+        parser.add_argument("--no-traffic-telemetry", action="store_true", help="disable BPF packet/path collection independently of sending")
         parser.add_argument("--no-internet-map", action="store_true")
         parser.add_argument("--deploy-parallel", type=int, help="generated Compose startup limit (default 8)")
         parser.add_argument("--runtime-workers", type=int, help="generated BPF preparation workers (existing runtime default)")
@@ -481,6 +540,8 @@ class ExperimentController:
         origin, phases = perf_counter(), []
         self._generation_origin = origin
         self._computation_state = "COMPUTING"
+        _console(f"Calculation starting: {simulator.get_timeline().start_time.isoformat()} through "
+                 f"{simulator.get_timeline().end_time.isoformat()} ({'retained' if retain else 'finite'}).")
         stage, prepared = "configuration", False
         status = self._generation_status = {"format_version": 2, "artifact_type": "experiment-generation-status",
                   "through": self._through, "status": "GENERATING", "producer": None,
@@ -496,7 +557,7 @@ class ExperimentController:
             validate_route_worker_limit(self._route_workers)
             traffic = None
             if self._through == "compiler":
-                from skyseed_v2.backend.bpf.runner.lifecycle import _runtime_worker_count, _validate_batch_configuration
+                from skyseed_v2.backend.runner.lifecycle import _runtime_worker_count, _validate_batch_configuration
                 if self._deploy_parallel is not None:
                     _startup_parallel(self._deploy_parallel)
                 if self._runtime_workers is not None:
@@ -507,7 +568,7 @@ class ExperimentController:
                 # probe options and only captures static inputs; append comes later.
                 if self._traffic_enabled:
                     try:
-                        from tools.traffic.active.probe_plan import TrafficProbePlanBuilder
+                        from tools.generation.traffic.probe_plan import TrafficProbePlanBuilder
                     except ImportError as error:
                         raise RuntimeError("Traffic is enabled but its Tool is unavailable; install Tools or use traffic_enabled=False") from error
                     traffic = TrafficProbePlanBuilder(
@@ -525,7 +586,23 @@ class ExperimentController:
             _prepare_generated_output(output, replace=self._replace)
             prepared = True
             allow_execution()
-            _write_inputs(output, captured, self._parameters, descriptors)
+            from .preparation import _package_root
+            source_root = None if self._preparation is None else _package_root(
+                self._preparation[0], self._preparation[2])
+            sources = _write_inputs(output, captured, self._parameters, descriptors, source_root=source_root)
+            if self._preparation is not None:
+                source, name, package = self._preparation
+                snapshots = {row['source']: 'inputs/' + row['snapshot'] for row in sources}
+                _write_json(output / 'inputs/preparation.json', {'inputs': self._preparation_inputs})
+                self._captured_readiness_command = (sys.executable, '-m',
+                    'skyseed_v2.experiment.preparation', '--function-file', snapshots[str(source)],
+                    '--function-name', name, '--function-package', package)
+            elif self._initial_readiness_command is not None:
+                snapshots = {row['source']: str(Path('inputs') / row['snapshot']) for row in sources}
+                # Replace only exact captured source arguments, never substrings,
+                # command text or arbitrary references inside user options.
+                self._captured_readiness_command = tuple(
+                    snapshots.get(argument, argument) for argument in self._initial_readiness_command)
             _write_control_client(output)
             (output / "README.md").write_text(
                 "# Experiment output\n\n"
@@ -535,9 +612,13 @@ class ExperimentController:
                 "`visualizations/`: browser pages and relative assets. `.control/`: internal coordination.\n\n"
                 "For compiler output: `./deploy.sh`, `./run.sh`, then `./cleanup.sh`.\n"
                 "`python experiment_control.py status` reports live owners; `continue --seconds 300` extends the original computation.\n")
+            map_link = ('<p><a href="http://localhost:8080">Open live Internet Map after deployment</a> (capture is opt-in).</p>'
+                        if self._internet_map_enabled and self._through == 'compiler' else '')
+            preview_link = ('<p><a href="visualizations/traffic-generation/index.html">Traffic generation preview</a> · planned, before deployment</p>'
+                            if self._traffic_enabled and self._through == 'compiler' else '')
             (output / "index.html").write_text('<!doctype html><meta charset="utf-8"><title>SkySEED output</title>'
                 '<h1>SkySEED experiment</h1><p><a href="visualizations/index.html">Open visualizations</a></p>'
-                '<p>Views become available after a completed request. See README.md for controls and output ownership.</p>')
+                '<p>Views become available after a completed request. See README.md for controls and output ownership.</p>' + preview_link + map_link)
             status["configuration"] = descriptors
             status["resources"] = {
                 "route_computation": {"requested_workers": self._route_workers,
@@ -560,7 +641,8 @@ class ExperimentController:
                 _append_phase(phases, stage, "other", perf_counter() - started, additive=True)
             stage = self._through + "-production"
             self._producer = Producer(timeline, simulator.get_physical_world(), simulator.get_physical_link_model(),
-                simulator.get_planner(), evidence_path=output / "results", retain=retain)
+                simulator.get_planner(), evidence_path=output / "results", retain=retain,
+                dataplane_program=self._dataplane_program, forwarding_backend=self._forwarding_backend)
             if self._stop.is_set():
                 self._producer.cancel_computation()
             with _route_worker_override(self._route_workers):
@@ -590,7 +672,10 @@ class ExperimentController:
                 status["orchestration_recording_failure"] = str(error)
             _write_json(output / "results/experiment/generation-status.json", status)
             self._computation_state = "CLOSED" if retain else "MATERIALS_READY"
-            print(f"{'Retained session closed' if retain else 'Materials ready'} after {elapsed:.3f}s: {output}", flush=True)
+            if not retain:
+                _console((f"Finite calculation cancelled before range readiness after {elapsed:.3f}s: {output}."
+                          if cancelled_incomplete else f"Materials ready after {elapsed:.3f}s: {output}. Finite calculation closed;")
+                         + " this terminal returns after any requested Tool generation.")
             return output
         except BaseException as error:
             # Preserve the primary failure even if writing its diagnostic also fails.

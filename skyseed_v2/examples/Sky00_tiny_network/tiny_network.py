@@ -3,12 +3,14 @@ import argparse
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import shlex
 import sys
 
 EXAMPLE_ROOT = Path(__file__).resolve().parent
 PROJECT_ROOT = EXAMPLE_ROOT.parents[1]
 DEFAULT_OUTPUT = EXAMPLE_ROOT / "output"
 ZONE_LAYOUT_FILE = EXAMPLE_ROOT / "zones.yaml"
+HELLO_SCRIPT_FILE = EXAMPLE_ROOT / "hello.sh"
 sys.path.insert(0, str(PROJECT_ROOT))
 
 import seedemu as seed
@@ -77,6 +79,11 @@ def build_emulator() -> seed.Emulator:
     ground_router = ground_as.createRouter("ground-router")
     ground_router.joinNetwork("ground-net", "10.202.0.254")
     ground_router.joinNetwork("ix100", "10.100.0.102")
+
+    # These are the actual SEED nodes; run the script once per container startup.
+    for node in (*skyseed_as.satellites(), ground_station, ground_router):
+        node.importFile(str(HELLO_SCRIPT_FILE), "/hello.sh")
+        node.appendStartCommand(shlex.join(["/bin/sh", "/hello.sh", node.getName()]))
 
     # SEED routing connects the ordinary ground network and GS through IX100.
     # These layers do not supply the Simulator's satellite Route Model.
@@ -190,9 +197,10 @@ def main(argv=None):
         simulator,
         args.output or DEFAULT_OUTPUT,
         entry_path=Path(__file__),
-        input_files=(ZONE_LAYOUT_FILE,),
+        forwarding_backend="bpf",
+        input_files=(ZONE_LAYOUT_FILE, HELLO_SCRIPT_FILE),
         scenario_parameters={"duration_seconds": args.duration_seconds},
-        through=args.through, traffic_enabled=not args.no_traffic,
+        through=args.through, traffic_enabled=not args.no_traffic, traffic_telemetry_enabled=not args.no_traffic_telemetry,
         replace=args.override,
         docker_compiler=seed.Docker(
             namingScheme="as{asn}{role}-{displayName}",

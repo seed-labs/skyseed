@@ -33,7 +33,7 @@ def test_s3_fixed_interfaces_cover_default_potential_links_and_cyclic_boundary()
     assert next(c.area_id for c in interfaces if {c.connection_id.endpoint_a,c.connection_id.endpoint_b} == {first.node_id,last.node_id}) == 1
     start = datetime(2026,1,1,tzinfo=timezone.utc)
     sim = simulator.create_default_simulator(simulator.SimulationDefinition(static,
-        simulator.SimulationTimeline(start,start+example.DURATION,example.CADENCE)))
+        simulator.SimulationTimeline(start,start+example.DEFAULT_DURATION,example.CADENCE)))
     try:
         possible = sim.get_planner()._inter_satellite_model.create_inter_satellite_candidate_pairs(sim.get_physical_world())
         assert {frozenset(pair) for pair in possible} == {frozenset((c.connection_id.endpoint_a,c.connection_id.endpoint_b)) for c in interfaces}
@@ -53,7 +53,7 @@ def test_single_s3_entry_generates_once_then_ordinary_tools(tmp_path, monkeypatc
             assert isinstance(simulation.get_planner()._route_model, OspfRoutePlanningModel)
             assert options['entry_path'].name == 's3_ospf.py'
             assert len(options['scenario_parameters']['node_labels']) == 355
-            assert simulation.get_timeline().end_time-simulation.get_timeline().start_time == example.DURATION
+            assert simulation.get_timeline().end_time-simulation.get_timeline().start_time == example.DEFAULT_DURATION
             assert simulation.get_timeline().observation_interval == example.CADENCE
         def generate(self):
             calls.append('generate'); self.simulation.shutdown(); return tmp_path
@@ -67,10 +67,10 @@ def test_single_s3_entry_generates_once_then_ordinary_tools(tmp_path, monkeypatc
 
 def test_comparison_product_removed():
     import tools
-    import tools.planner
+    import tools.observation.planner
     root = Path(__file__).resolve().parents[2]
     assert not list((root/'examples/route_model_comparison').glob('*.py'))
-    assert not (root/'tools/planner/comparison.py').exists()
-    assert not (root/'tools/planner/_comparison_renderer.py').exists()
+    assert not (root/'tools/observation/planner/comparison.py').exists()
+    assert not (root/'tools/observation/planner/_comparison_renderer.py').exists()
     assert not hasattr(tools,'write_planner_comparison')
-    assert not hasattr(tools.planner,'write_planner_comparison')
+    assert not hasattr(tools.observation.planner,'write_planner_comparison')

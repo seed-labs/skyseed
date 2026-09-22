@@ -27,5 +27,5 @@ classDiagram
 
 ZoneLayout keeps immutable definitions. Membership and rectangle display geometry
 are distinct; custom membership need not expose the default geometry helpers.
-The [PhysicalWorld Tool](../../../../../tools/physical_world/README.md) reads stored
+The [PhysicalWorld Tool](../../../../../tools/observation/physical_world/README.md) reads stored
 frames and public static facts without calling `frame_at()` again.

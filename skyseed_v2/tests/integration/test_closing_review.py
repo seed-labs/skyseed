@@ -115,8 +115,8 @@ else:
 
 
 def test_network_export_pins_advancing_publication_and_ignores_stale_view(tmp_path, monkeypatch):
-    from tools.physical_world import write_physical_world_tool
-    from tools.planner import export
+    from tools.observation.physical_world import write_physical_world_tool
+    from tools.observation.planner import export
     network=tiny.build_emulator(); simulation=tiny.create_simulator(network,duration=timedelta(seconds=20))
     output=tmp_path/'output'
     controller=ExperimentController(network,simulation,output,entry_path=Path(tiny.__file__),through='planner',traffic_enabled=False)
@@ -165,7 +165,7 @@ if args[:2]==['-m','skyseed_v2.experiment.execution']:
     directory.mkdir(parents=True,exist_ok=True)
     generation=Path(args[2])/'results/experiment/generation-performance.jsonl'
     (directory/'execution-observations.jsonl').write_text(json.dumps({{'record_type':'execution_observation_header','format_version':2,'metadata':{{'generation_reference':os.path.relpath(generation,directory)}}}})+'\\n')
-elif args[:2]==['-m','tools.performance']:
+elif args[:2]==['-m','tools.observation.performance']:
     os.execv(sys.executable,[sys.executable,*args])
 ''');driver.chmod(0o755)
     _write_generated_run_script(output,python_executable=str(driver),tool_package_parent=Path(tiny.__file__).resolve().parents[2])

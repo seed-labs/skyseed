@@ -11,8 +11,8 @@ from skyseed_v2.experiment._control import _request
 from skyseed_v2.experiment.output.history import _reading_completed_range
 from skyseed_v2.simulator import planner
 from tools import write_experiment_tools
-from tools._history import read_sealed_physical_frames
-from tools.planner import read_planner_history
+from tools.observation._history import read_sealed_physical_frames
+from tools.observation.planner import read_planner_history
 from tests.integration.test_retained_workflow import await_state
 
 
@@ -116,7 +116,7 @@ def test_completed_range_is_browseable_before_exit_and_reuses_state(tmp_path, th
         assert route.timestamps == finite_route.timestamps
 
 
-def test_slow_and_failed_presentation_does_not_block_domain_progress(tmp_path):
+def test_slow_and_failed_presentation_does_not_block_domain_progress(tmp_path, capsys):
     simulation, route, controller = configured(tmp_path/'output', 'planner')
     entered, release = Event(), Event()
     def presentation(output, publication):
@@ -130,6 +130,14 @@ def test_slow_and_failed_presentation_does_not_block_domain_progress(tmp_path):
         assert controller.status()['presentation'] == 'BUILDING'
         assert controller.status()['completed_end'].endswith('00:00:40+00:00')
     finally:
-        release.set(); controller.cancel_computation(); thread.join()
+        controller.cancel_computation()
+        try:
+            await_state(lambda: controller._computation_state == 'CLOSED')
+            assert 'Calculation session closed' not in capsys.readouterr().err
+            assert thread.is_alive()  # Presentation remains owned until released.
+        finally:
+            release.set(); thread.join()
     assert controller.status()['presentation'] == 'DEGRADED'
     assert json.loads((tmp_path/'output/results/experiment/generation-status.json').read_text())['status'] == 'MATERIALS_READY'
+    feedback = capsys.readouterr().err
+    assert feedback.index('Presentation failed') < feedback.index('Calculation session closed: owned work and presentation drained')

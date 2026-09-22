@@ -617,10 +617,10 @@ def test_public_plan_transition_replay_fingerprints_and_codecs_are_one_truth():
     assert state == _oracle_apply(None, transition)
     assert state.timestamp == EPOCH
     assert plan_transition_fingerprint(transition) == (
-        "c1d8344def300e6879a71a96eb5906cab4e124a3d59aa3dd57836d28c67770e5"
+        "0c486a78c13e36c2bfe50d3c69d9cabc4d2b2508372eb38773ed0395e45bcf7d"
     )
     assert planned_operational_state_fingerprint(state) == (
-        "d73485badf2b704909f69cb6faa4bfd29176bbad361cf9b7ef0b8dbfb9a23542"
+        "00a463a4f77782a40ce25ba07d7ad150695994c9bbb28e667ea58d0f064bcf4c"
     )
     assert plan_transition_from_data(plan_transition_to_data(transition)) == transition
     assert (
@@ -660,7 +660,7 @@ def test_plan_has_exact_final_fields_self_contained_lineage_and_no_overlap():
     )
     detached_first = plan_to_data(first)
     assert first.plan_id == (
-        "ba02cc8df2183fcd007285bfbf42a364c6a85ae25bd43eecc0462b2982829578"
+        "5ed97f8f46f0a1aa5824d6bfaefe9423e1509cf0bd198a600c5ace812bc0cf8b"
     )
     assert plan_from_data(detached_first) == first
     second_transition = PlanTransition(EPOCH + timedelta(seconds=5))
@@ -1221,7 +1221,7 @@ def test_evidence_carries_exact_candidates_lifecycle_remaining_and_gs_selection(
         timedelta(0)
     )
     detached = published_planning_evidence_to_data(evidence)
-    assert detached["schema"] == "skyseed-v2-published-planning-evidence-v5"
+    assert detached["schema"] == "skyseed-v2-published-planning-evidence-v7"
     assert set(detached["frames"][0]) == {
         "timestamp",
         "inter_satellite_candidate_summary",
@@ -2436,9 +2436,9 @@ def test_gs_valid_pending_and_operational_incumbents_ignore_quality_churn():
 
 def test_formal_semantics_and_incremental_compiler_are_batch_independent(tmp_path):
     from skyseed_v2.backend.bpf import compile_bpf
-    from skyseed_v2.backend.bpf.execution_materials.sealing import _RunnerArtifactWriter
-    from skyseed_v2.backend.bpf.execution_materials.codec import _open_runner_artifact
-    from skyseed_v2.backend.bpf.execution_materials.boundaries import _resolve_nominal_boundaries
+    from skyseed_v2.backend.execution_materials.sealing import _RunnerArtifactWriter
+    from skyseed_v2.backend.execution_materials.codec import _open_runner_artifact
+    from skyseed_v2.backend.execution_materials.boundaries import _resolve_nominal_boundaries
     from skyseed_v2.simulator import PhysicalContactWindow
     world, satellites, stations = _world()
     sequences, compiled = [], []
@@ -2481,7 +2481,12 @@ def test_formal_semantics_and_incremental_compiler_are_batch_independent(tmp_pat
             reader = _open_runner_artifact(manifest)
             try:
                 # Full decode is qualification work, outside generation.
-                assert tuple(reader.boundary(i) for i in range(len(boundaries))) == tuple(expected_nominal)
+                from dataclasses import fields
+                for i, expected in enumerate(expected_nominal):
+                    decoded = reader.boundary(i)
+                    assert decoded.executable is not None
+                    assert all(getattr(decoded, f.name) == getattr(expected, f.name)
+                               for f in fields(decoded) if f.name != 'executable')
             finally:
                 reader.close()
         finally:

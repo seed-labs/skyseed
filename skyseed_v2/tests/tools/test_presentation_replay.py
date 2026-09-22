@@ -7,11 +7,11 @@ import subprocess
 
 import pytest
 
-from tools.planner.projection import _pair_index
-from tools.planner._route_display import _ROUTE_SCRIPT, _PAIR_SCRIPT
-from tools.traffic._spatial import _browser_index
-from tools.traffic._spatial_renderer import _traffic_spatial_script
-from tools._presentation.shell_display import _SHELL_SCRIPT
+from tools.observation.planner.projection import _pair_index
+from tools.observation.planner._route_display import _ROUTE_SCRIPT, _PAIR_SCRIPT
+from tools.observation.traffic._spatial import _browser_index
+from tools.observation.traffic._spatial_renderer import _traffic_spatial_script
+from tools.observation._presentation.shell_display import _SHELL_SCRIPT
 
 
 def _node():
@@ -182,7 +182,7 @@ def test_planner_model_panel_resolves_actual_assembly_and_historical_descriptors
     # Execute the panel's selection expression, including the GS validation gate.
     # The renderer is a Python f-string; only the literal braces need unescaping.
     import re
-    from tools.planner import renderer
+    from tools.observation.planner import renderer
     source = Path(renderer.__file__).read_text()
     expression = re.search(r'const descriptors=(.*?);modelDetail', source).group(1)
     expression = expression.replace('{{', '{').replace('}}', '}')

@@ -48,6 +48,7 @@ sequenceDiagram
   participant L as PhysicalLink Model
   participant N as Planner
   participant C as Compiler
+  participant T as Backend material translation
   participant O as Experiment records
   P->>W: frame_at(timestamp)
   W-->>P: immutable positions
@@ -55,9 +56,11 @@ sequenceDiagram
   L-->>P: candidates and optional search feedback
   P->>N: observe(frame, observation)
   N-->>P: zero or more published Plans
-  P->>C: compile_bpf(plan, world, previous_result)
-  C-->>P: BpfCompilationResult
-  P->>O: append owned facts and seal deliveries
+  P->>C: compile_plan(plan, world, previous_result, forwarding_backend=mode)
+  C-->>P: CompilationResult
+  P->>T: material writer appends result
+  T-->>P: sealed actions and selected backend foundation
+  P->>O: seal deliveries and append owned facts
   Note over P,O: At requested endpoint: flush and publish completed prefixes
 ```
 
@@ -66,3 +69,5 @@ cutoff additionally prepares static deployment files and seals executable delive
 SEED preparation supports later deployment; it does not introduce another formal timestamp.
 A subsequent request starts at the next cadence, preserving Models and operational memory.
 See [experiment semantics](../development/experiment-control.md) and [local Producer interfaces](../../src/skyseed_v2/experiment/README.md).
+
+RouteModel results may be replacement snapshots of local candidates, dispositions and policy records. Planner adopts and serializes the entire value. Compiler translates supported expressions into forwarding bindings; the selected backend validates representability while sealing. For BPF, `DataPlane` applies its declared schema and scoped program selection, so a field-only edit reaches material generation even if its next-hop projection is unchanged. Linux accepts the documented native route subset without interpreting arbitrary policy data. See the [routing contract](../development/planner-state-and-plans.md#routes).

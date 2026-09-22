@@ -42,7 +42,10 @@ class RoutePlanningModel(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class RoutePlanningResult:
-    """Return complete Route outcomes.
+    """Return a replacement snapshot of explicit Route outcomes.
+
+    Omitted entries withdraw previous arrangements. Local entries may cover any
+    known source/target, independently of requested complete-path demands.
 
     Layer: public Simulator planning-Model boundary value. It is public because
     replaceable Route Models must return one validated contract to ``Planner``.
@@ -50,7 +53,7 @@ class RoutePlanningResult:
     state.
     """
 
-    outcomes: tuple[RouteOutcome, ...]
+    outcomes: tuple[RouteOutcome, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "outcomes", tuple(self.outcomes))

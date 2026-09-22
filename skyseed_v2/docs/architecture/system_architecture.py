@@ -10,7 +10,7 @@ from pathlib import Path
 W, H = 1480, 2615
 parts = [f'''<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" viewBox="0 0 {W} {H}" role="img" aria-labelledby="title description">
 <title id="title">SkySEED — complete system architecture</title>
-<desc id="description">Authored inputs, Emulator, pure simulation, chronological production, BPF execution and separately owned evidence. Nested groups show ownership; blue arrows transfer values, dashed purple arrows call or control, and diamond lines hold objects.</desc>
+<desc id="description">Authored inputs, Emulator, pure simulation, chronological production, selected BPF/Linux execution and separately owned evidence. Nested groups show ownership; blue arrows transfer values, dashed purple arrows call or control, and diamond lines hold objects.</desc>
 <defs>
  <marker id="data" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#176a9d"/></marker>
  <marker id="call" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10" fill="none" stroke="#7952a3"/></marker>
@@ -126,24 +126,25 @@ card(520,1155,440,255,'Producer · chronological work',[
  '_timeline; _previous_result; bounded queues',
  'produce(); request_extension(); close()',
  'Calls World → physical query → Planner',
- 'Then compile_bpf for the Compiler cutoff',
+ 'Then compile_plan for the Compiler cutoff',
  'Suffix-only cursor; retained Models / state',
  'Seals deliveries; publishes completed range'])
-card(1000,1155,440,255,'BPF Compiler · compile_bpf',[
- 'BpfCompilationResult: exact Plan lowering',
+card(1000,1155,440,255,'Compiler · compile_plan',[
+ 'CompilationResult: exact Plan lowering',
  'Inputs: Plan / PhysicalWorld / predecessor',
  'source_plan_id; output_planned_state',
  'compiled_activation_boundaries; constraints',
  'Resource / parameter / forwarding intents',
  'Predecessor indexes retain incremental work',
- 'Backend lowering consumes dependencies'])
+ 'Material writer selects backend translation'])
 edge('480,1260 520,1260','owns')
 edge('740,1155 740,1085','call','advance one formal timestamp',(755,1125))
 edge('1210,1055 1210,1155','data','Plan',(1225,1125))
 edge('960,1310 1000,1310','call')
-card(520,1470,920,130,'Sealed deliveries + request publication',[
- 'results/compiler/: binary Runner artifact, manifest, material references, execution.json',
- 'results/experiment/completed.json: one atomic request boundary and bounded stream prefixes'])
+card(520,1470,920,145,'Selected backend preparation → sealed deliveries',[
+ 'BPF: ELF + table deltas; Linux: identity + ordered link, Zone and IPv4 route actions',
+ 'results/compiler/: v8 binary / backend manifest and v5 execution.json',
+ 'results/experiment/completed.json: atomic request boundary and bounded stream prefixes'])
 edge('740,1410 740,1470');edge('1220,1410 1220,1470')
 
 card(40,1680,395,255,'Deployer · SEED deployment',[
@@ -162,29 +163,29 @@ card(40,1980,395,175,'deployment/ — deployed identity',[
  'Cleanup follows Runner resource drainage'])
 edge('240,1935 240,1980')
 
-group(470,1680,970,475,'Runner — BPF backend','_artifact; _active_frontier; _runtime_realization; _helper. run(), pause(), resume(), cancel_runtime(), cleanup().')
+group(470,1680,970,475,'Runner — shared BPF/Linux lifecycle','_artifact; _active_frontier; _runtime_realization; _helper. run(), pause(), resume(), cancel_runtime(), cleanup().')
 text(490,1770,'The three cards below are responsibilities of Runner, not three public classes.','caption')
 card(490,1800,292,205,'Initialization',[
  'prepare()',
  'Load initial artifact / identities',
  'Acquire privileged helper',
  'Open namespace FDs / sockets',
- 'Prepare first batch; activate B0'])
+ 'Bind / prepare; activate B0'])
 card(804,1800,292,205,'Execution',[
  'run(); activate_next()',
  'Create resources → READY',
- 'Publish forwarding generation',
+ 'Apply selected backend work',
  'Withdraw old; expose ACTIVE',
  'Pause / material hold keep state'])
 card(1118,1800,302,205,'Maintenance',[
  'append_batch(path)',
  'Successor: preparing → READY',
- 'Construct / prewrite future work',
+ 'Prepare sealed backend deltas',
  'Execution alone activates',
- 'Reclaim after reader release'])
-card(490,2040,930,90,'Owned Linux resources',[
- '_TcBpfRuntimeRealization + _PrivilegedHelper: netns FDs, sockets, veths, qdiscs, BPF maps / programs'])
-edge('1050,1600 1050,1680','data','sealed immutable paths',(1065,1645))
+ 'BPF: reclaim after readers exit'])
+card(490,2040,930,90,'Runner-owned BPF or native adapter + shared Linux resources',[
+ 'Shared helper, netns, identities, veths, qdiscs; BPF adds maps/libbpf. Native: ordered completion, no publication.'])
+edge('1050,1615 1050,1680','data','sealed immutable paths',(1065,1645))
 edge('435,2090 470,2090')
 edge('782,1900 804,1900')
 edge('1118,1940 1096,1940','data')
@@ -199,14 +200,14 @@ card(40,2240,440,285,'Calculated evidence — results/',[
  'the retained computation process'])
 card(520,2240,440,285,'Optional Tools — visualizations/',[
  'PhysicalWorld / Zone / Planner / Compiler',
- 'Runner / Traffic / Performance views',
+ 'Traffic preview / observations / Performance',
  'Relative browser assets, no Model replay',
  'Runtime reads wait for completed invocation',
  'Presentation can lag; failure preserves facts',
  'inputs/: captured sources / effective config',
  '.control/: internal requests and ownership'])
-card(1000,2240,440,285,'Active Traffic + observed runs/',[
- 'Active tool owns probes and telemetry',
+card(1000,2240,440,285,'Traffic + observed runs/',[
+ 'Generation owns sender; Runner telemetry',
  'Runner owns network state and ACTIVE time',
  'runs/<id>/runner, traffic, performance',
  'Actual outcomes / resource measurements',

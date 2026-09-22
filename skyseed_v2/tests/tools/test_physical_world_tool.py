@@ -21,14 +21,14 @@ from skyseed_v2.simulator.input import (
     SatelliteSimulationInput,
     SimulatorStaticInput,
 )
-from tools._presentation.display_geometry import EARTH_REFERENCE_RADIUS_M, physical_display_radius
-from tools._presentation.earth_reference import _natural_earth_coastline_lines
-from tools._presentation.html import write_failed_tool
-from tools._inspection_evidence import (
+from tools.observation._presentation.display_geometry import EARTH_REFERENCE_RADIUS_M, physical_display_radius
+from tools.observation._presentation.earth_reference import _natural_earth_coastline_lines
+from tools.observation._presentation.html import write_failed_tool
+from tools.observation._inspection_evidence import (
     iter_physical_link_inspection,
     read_physical_link_inspection_index,
 )
-from tools.physical_world import collect_physical_world_data, write_physical_world_tool
+from tools.observation.physical_world import collect_physical_world_data, write_physical_world_tool
 
 
 class _UnusedPositionModel:
@@ -99,8 +99,8 @@ def ground_station_input(
 
 def test_public_projection_isolates_input_and_owned_path_retains_frames(physical_world):
     from copy import deepcopy
-    from tools.physical_world.reader import read_physical_world
-    from tools.physical_world.projection import project_physical_world_data, _project_owned_snapshot
+    from tools.observation.physical_world.reader import read_physical_world
+    from tools.observation.physical_world.projection import project_physical_world_data, _project_owned_snapshot
     read = read_physical_world(physical_world)
     before = deepcopy(read.snapshot)
     projected = project_physical_world_data(read)
@@ -376,7 +376,7 @@ def test_failed_page_is_conspicuous_and_contains_no_success_claim(
 
 
 def test_physical_consuming_read_hashes_bytes_once_and_validates_count(physical_world, tmp_path, monkeypatch):
-    from tools import _inspection_evidence as reader
+    from tools.observation import _inspection_evidence as reader
     writer = _PhysicalLinkInspectionWriter(tmp_path, physical_world)
     writer.record(PhysicalLinkQueryResult(datetime(2026, 1, 1, tzinfo=timezone.utc)))
     manifest_path = writer.finalize()

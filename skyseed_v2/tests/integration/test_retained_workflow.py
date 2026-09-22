@@ -21,7 +21,7 @@ def await_state(predicate):
         time.sleep(0.01)
 
 
-def test_live_computation_idle_continue_multiple_deliveries_and_input_seal(tmp_path):
+def test_live_computation_idle_continue_multiple_deliveries_and_input_seal(tmp_path, capsys):
     network = tiny.build_emulator()
     simulation = tiny.create_simulator(network, observation_interval=timedelta(seconds=5))
     output = tmp_path / "retained"
@@ -52,12 +52,18 @@ def test_live_computation_idle_continue_multiple_deliveries_and_input_seal(tmp_p
         assert state["producer"]["formal_frame_count"] == 13
         assert state["producer"]["prehistory_frame_count"] == 0
         assert not state["producer"]["planner_finished"]
+        feedback = capsys.readouterr().err
+        assert feedback.index('Calculation starting') < feedback.index('Calculation range ready')
+        assert 'Retained calculation session' in feedback and 'runtime is independent' in feedback
+        assert 'Calculation session closed' not in feedback
         assert sha256(first.read_bytes()).hexdigest() == original_hash
         _read_and_verify_execution_definition(output)
     finally:
         workflow.cancel_computation()
         thread.join()
     assert not failures
+    feedback = capsys.readouterr().err
+    assert feedback.index('Calculation stop requested') < feedback.index('Calculation session closed')
     assert json.loads((output / "results/experiment/domain-history-manifest.json").read_text())["counts"]["formal_frames"] == 13
     with pytest.raises(RuntimeError, match="original live process"):
         _request(output, "computation", "continue", seconds=15)
@@ -71,7 +77,7 @@ def test_live_computation_idle_continue_multiple_deliveries_and_input_seal(tmp_p
 def test_control_explicit_arguments_override_editable_defaults(monkeypatch, tmp_path, arguments, expected):
     from skyseed_v2.experiment import _control
     calls = []
-    monkeypatch.setattr(_control, "_request", lambda out, owner, command, **kw: calls.append((owner, command, kw)))
+    monkeypatch.setattr(_control, "_request", lambda out, owner, command, **kw: calls.append((owner, command, kw)) or {'state': 'COMPUTING'})
     assert control_main(tmp_path, additional_seconds=60, target_end="2026-01-01T00:20:00+00:00",
                         batch_seconds=90, argv=arguments) == 0
     assert calls == [("computation", "continue", expected)]

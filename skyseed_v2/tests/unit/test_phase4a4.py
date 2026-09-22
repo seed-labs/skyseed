@@ -30,9 +30,9 @@ def start_generation(controller):
 
 
 def test_runner_project_label_uses_one_normalized_value(monkeypatch):
-    from skyseed_v2.backend.bpf.runner.lifecycle import Runner
-    from skyseed_v2.backend.bpf.runner import deployment
-    from skyseed_v2.backend.bpf.execution_materials.actions import _PhysicalWorldProjection
+    from skyseed_v2.backend.runner.lifecycle import Runner
+    from skyseed_v2.backend.runner import deployment
+    from skyseed_v2.backend.execution_materials.actions import _PhysicalWorldProjection
     commands = []
     def execute(command):
         commands.append(command)
@@ -62,7 +62,7 @@ def test_compute_claim_blocks_replace_but_allows_same_experiment_execution(tmp_p
 
 def test_static_preparation_precedes_production_and_sealed_publication(tmp_path, monkeypatch):
     from skyseed_v2.deployment import Deployer
-    from skyseed_v2.backend.bpf.execution_materials.sealing import _RunnerArtifactWriter
+    from skyseed_v2.backend.execution_materials.sealing import _RunnerArtifactWriter
     from skyseed_v2.experiment.controller import ExperimentController
     order = []
     for owner, name in ((Deployer, 'prepare'), (Producer, 'produce'), (_RunnerArtifactWriter, 'finalize'),
@@ -98,6 +98,7 @@ class Runner:
     def __init__(self, **kwargs): pass
     def _bind_execution_input(self, **kwargs): pass
     def _enable_event_history(self, path): pass
+    def _enable_traffic_telemetry(self, path): pass
     def prepare(self): pass
     def run(self): pass
     def cleanup(self): pass
@@ -199,7 +200,7 @@ def test_controller_status_aggregates_the_live_runtime_without_constructing_it(t
 
 
 def test_computed_plan_is_not_published_until_packaging_seals(tmp_path, monkeypatch):
-    from skyseed_v2.backend.bpf.execution_materials.sealing import _RunnerArtifactWriter
+    from skyseed_v2.backend.execution_materials.sealing import _RunnerArtifactWriter
     entered, release = Event(), Event()
     original = _RunnerArtifactWriter.finalize
     def seal(writer):
@@ -225,7 +226,7 @@ def test_computed_plan_is_not_published_until_packaging_seals(tmp_path, monkeypa
 
 
 def test_computation_cancel_drains_accepted_packaging_without_publishing_partial_batch(tmp_path, monkeypatch):
-    from skyseed_v2.backend.bpf.execution_materials.sealing import _RunnerArtifactWriter
+    from skyseed_v2.backend.execution_materials.sealing import _RunnerArtifactWriter
     entered, release, completed = Event(), Event(), Event()
     original = _RunnerArtifactWriter.append
     def append(writer, result):
@@ -279,7 +280,7 @@ def test_requested_traffic_missing_fails_clearly_before_output_replacement(tmp_p
     import builtins
     original = builtins.__import__
     def import_module(name, *args, **kwargs):
-        if name == 'tools.traffic.active.probe_plan':
+        if name == 'tools.generation.traffic.probe_plan':
             raise ImportError('Tool intentionally absent')
         return original(name, *args, **kwargs)
     monkeypatch.setattr(builtins, '__import__', import_module)
@@ -360,31 +361,20 @@ def test_terminal_failure_is_visible_while_other_daemon_work_remains_unresolved(
 
 
 def test_deployer_builds_each_content_group_once_and_reuses_completed_images(tmp_path, monkeypatch):
+    from tests.unit.test_deployment_images import DockerImages
+    docker = DockerImages(monkeypatch)
+    docker.add('handsonsecurity/seedemu-base:2.0', 'seed-base')
+    docker.add('handsonsecurity/seedemu-router:2.0', 'seed-router')
     _, controller = configured(tmp_path / 'output', traffic_enabled=False)
     output = controller.generate()
     owner = deployer.Deployer(output)
-    services = deployer.safe_load((output / 'deployment/docker-compose.yml').read_text())['services']
     plan = [line.split()[1] for line in (output / 'deployment/skyseed-build-plan.txt').read_text().splitlines()
             if line and not line.startswith('#')]
-    images, built = {}, []
-    def command(args, **kwargs):
-        if args[1] == 'ps':
-            return CompletedProcess(args, 0, '', '')
-        assert args[1:3] == ['image', 'inspect']
-        missing = [ref for ref in args[3:] if ref not in images]
-        return CompletedProcess(args, int(bool(missing)),
-            json.dumps([images[ref] for ref in args[3:] if ref in images]),
-            'No such image' if missing else '')
-    def build(args, guard):
-        service = args[-1]; built.append(service)
-        reference = services[service]['image'].replace('${COMPOSE_PROJECT_NAME}', owner.project_name)
-        images[reference] = {'Id': 'id-' + service, 'Config': {'Labels': {'com.docker.compose.project': owner.project_name}}}
-    monkeypatch.setattr(deployer, 'run', command)
-    monkeypatch.setattr(deployer, '_startup_command', build)
     owner.build()
-    assert built == plan
+    assert [name for batch in docker.batches for name in batch] == plan
+    count = len(docker.batches)
     owner.build()
-    assert built == plan
+    assert len(docker.batches) == count
 
 
 def test_history_failure_drains_other_work_and_closes_all_streams():

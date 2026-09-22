@@ -66,9 +66,9 @@ def test_bpf_package_layout_and_private_residue_are_exact() -> None:
     }
     assert {
         path.name
-        for path in (PROJECT_ROOT / "tools/traffic/active").iterdir()
+        for path in (PROJECT_ROOT / "tools/generation/traffic").iterdir()
         if path.suffix == ".py"
-    } == {"__init__.py", "probe_plan.py", "probe_execution.py"}
+    } == {"__init__.py", "__main__.py", "probe_plan.py", "probe_execution.py", "preview.py"}
     assert not tuple(
         (PROJECT_ROOT / "src/skyseed_v2").glob("*generated*execution.py")
     )
@@ -76,7 +76,7 @@ def test_bpf_package_layout_and_private_residue_are_exact() -> None:
         path.name for path in experiment.iterdir() if path.suffix == ".py"
     } == {
         "__init__.py",
-        "execution.py",
+        "execution.py", "preparation.py",
         "producer.py", "controller.py", "_control.py",
     }
     assert {
@@ -90,10 +90,18 @@ def test_bpf_package_layout_and_private_residue_are_exact() -> None:
     assert {p.name for p in (BPF_PACKAGE_ROOT / "compiler").glob("*.py")} == {
         "__init__.py", "result.py",
     }
-    assert {p.name for p in (BPF_PACKAGE_ROOT / "execution_materials").glob("*.py")} == {
+    assert {p.name for p in (BPF_PACKAGE_ROOT.parent / "execution_materials").glob("*.py")} == {
         "__init__.py", "actions.py", "boundaries.py", "codec.py", "sealing.py", "mechanics.py",
     }
-    runner_private = BPF_PACKAGE_ROOT / "runner"
+    assert {p.name for p in (BPF_PACKAGE_ROOT / "dataplane").glob("*.py")} == {
+        "__init__.py", "program.py", "translation.py", "materials.py", "object_contract.py",
+        "runtime.py", "runtime_command.py", "telemetry_abi.py", "data.py", "scopes.py", "local_ingress.py",
+    }
+    assert {p.name for p in (BPF_PACKAGE_ROOT.parent / "linux").glob("*.py")} == {
+        "__init__.py", "bpf.py", "netlink.py", "elf.py", "environment.py",
+        "materials.py", "translation.py", "runtime.py", "runtime_command.py", "network.py",
+    }
+    runner_private = BPF_PACKAGE_ROOT.parent / "runner"
     assert {
         path.name for path in runner_private.iterdir() if path.suffix == ".py"
     } == {
@@ -101,15 +109,9 @@ def test_bpf_package_layout_and_private_residue_are_exact() -> None:
             "lifecycle.py",
             "deployment.py",
             "command_channel.py",
-            "bpf.py",
-            "kernel_netlink.py",
-            "event_history.py",
-            "privileged_runtime_command.py",
+            "event_history.py", "connection_observer.py",
             "process_incarnation.py",
-        "runtime_realization.py",
-        "traffic_telemetry.py",
-        "traffic_telemetry_abi.py",
-        "traffic_telemetry_collector.py",
+        "runtime_command.py",
     }
 
     source = "\n".join(
@@ -182,7 +184,7 @@ def test_plan_is_the_only_planner_to_compiler_semantic_handoff() -> None:
         source_root / "experiment/producer.py"
     ).read_text(encoding="utf-8")
     compiler_source = (
-        source_root / "backend/bpf/compiler/__init__.py"
+        source_root / "backend/compiler/__init__.py"
     ).read_text(encoding="utf-8")
     boundary_source = planner_source + producer_source + compiler_source
 

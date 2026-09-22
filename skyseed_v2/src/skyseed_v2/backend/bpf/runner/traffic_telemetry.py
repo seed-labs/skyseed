@@ -69,9 +69,10 @@ class _TrafficTelemetryRecorder:
                     "pin_root": foundation["pin_root"],
                     "ring_capacity_bytes": foundation["ring_capacity_bytes"],
                     "source_observation": {
-                        "hook": "ingress-only",
-                        "source_outbound_observed": False,
-                        "first_link": "inferred-from-first-observed-ingress",
+                        "hook": "network-and-local-ingress",
+                        "source_outbound_observed": True,
+                        "scope": "covered-nodes",
+                        "first_link": "source-selection-recorded-arrival-requires-peer-ingress",
                     },
                 }
             )

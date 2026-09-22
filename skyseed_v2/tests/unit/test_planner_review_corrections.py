@@ -218,7 +218,7 @@ def test_compact_dependencies_share_canonical_events_and_construct_validate_once
     from skyseed_v2.simulator.planner import values
     transition = dependency_fixture()
     data = plan_transition_to_data(transition)
-    assert data['schema'] == 'skyseed-v2-plan-transition-evidence-v5'
+    assert data['schema'] == 'skyseed-v2-plan-transition-evidence-v7'
     assert len(semantic_event_references(transition)) == 5
     pairs = data['semantic_event_precedences']
     assert len(pairs) == 4 and all(len(pair) == 2 and all(type(i) is int for i in pair) for pair in pairs)
@@ -248,7 +248,7 @@ def test_compact_dependencies_share_canonical_events_and_construct_validate_once
     assert plan_transition_fingerprint(decoded) == decoded._fingerprint
     material = values._plan_transition_material(decoded)
     assert material['semantic_event_precedences'] == pairs
-    assert material['schema'] == 'skyseed-v2-plan-transition-v4'
+    assert material['schema'] == 'skyseed-v2-plan-transition-v6'
     assert plan_transition_to_data(replace(transition, semantic_event_precedences=tuple(reversed(transition.semantic_event_precedences)))) == data
 
 

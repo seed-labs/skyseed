@@ -102,3 +102,7 @@ S3's [OSPF Model](../../examples/Sky03_s3_ospf/ospf_model.py) is a local route c
 explicit Area metadata for explanation. It is not a live routing protocol or mandatory core
 algorithm. Native routing protocols/Layer integration and AI assistance remain
 [prospective](../plans/roadmap.md).
+
+## Independent authoring checks
+
+Use the [development functions](../../tools/development/README.md) with explicit Model instances and a fresh small-scene factory. Checks can stop at Position, PhysicalLink, Planner, Compiler or sealed materials; a short continuation is optional. For structured routing: define data, run the [Python driver](../../templates/dataplane/threshold/develop.py) to generate headers, include them and write C, run desired checks, then prepare normally. The [DataPlane contract](../development/dataplane.md) is authoritative; RouteModels keep logical values and no BPF dependencies.

@@ -77,15 +77,22 @@ linked by the [Model table](../development/model-interfaces.md).
 | `ZoneServiceAssignment` | `zone_id`, `satellite_id`, `network_scope`; `satellite_id=None` is explicitly unserved; `service_key` is `(network_scope, zone_id)`; `is_served` reports service |
 | `RouteDemand` | `source` NodeId and `target` |
 | `GroundStationRouteDemandTarget` | `ground_station_id`, `network_scope` |
+| `SatelliteRouteDemandTarget` | `satellite_id` (satellite `NodeId`), `network_scope`; existing stable node /32 |
 | `ZoneRouteDemandTarget` | `zone_id`, `network_scope`, `service_key` |
 | `ReachableRouteOutcome` | `demand`, `next_hop`, `path` (source-to-terminal NodeId tuple) |
 | `UnreachableRouteOutcome` | `demand`, `reason` (RouteUnreachableReason) |
-| `RoutePlanningResult` | `outcomes` tuple corresponding to the supplied demands |
+| `LocalRouteOutcome` | `demand`, `disposition`, `candidates`, `data`; local choices make no complete-path claim |
+| `RouteCandidate` | `exit: LogicalExit`, `data: PolicyRecord` |
+| `LogicalExit` | `connection: OperationalConnectionId`, `source: NodeId`; `peer` is derived |
+| `PolicyRecord` | immutable named integer/boolean/reference/nested-record fields |
+| `RouteDisposition` | `FORWARD`, `DROP`, `PASS`; PASS requests Linux processing |
+| `RoutePlanningResult` | replacement `outcomes` tuple; omitted entries withdraw previous arrangements |
 
 Routing receives operational connections, service assignments, demands and previous
 outcomes, plus World and timestamp. Build your graph from those connections; physical
 candidates and preparing selections are not usable edges yet. For a Zone target the
-terminal is its serving satellite; a GS is a terminal, not a transit router. Preserve
+terminal is its serving satellite; a Satellite target terminates at that named node.
+A GS may be an endpoint but cannot be an intermediate shortcut. Preserve
 scope when looking up service. Required route representation and destination consistency
 are in the [planning contract](../development/planner-state-and-plans.md), with a
 small working algorithm in the [routing template](../../templates/models/routing.py).
@@ -101,6 +108,7 @@ use hook arguments instead of querying the owner mid-update.
 | `get_state()` | Current PlannedOperationalState: timestamp, operational connections, service assignments and route outcomes |
 | `get_last_transition()` | Last PlanTransition: established/withdrawn/parameter-updated connections, service/route changes and semantic event dependencies |
 | `get_frontiers()` | Physical-observation, planning and publication datetimes; individual fields can be `None` before progress |
+| `get_route_demands()` | Demands supplied at the latest completed formal step |
 | `get_route_recomputation_count()` | Count of actual route computations |
 
 State and last-transition reads raise `RuntimeError` before a formal state exists.

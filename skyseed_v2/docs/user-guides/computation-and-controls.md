@@ -1,8 +1,12 @@
 # Generate, continue, deploy and control
 
-All six examples default to foreground retained computation. They compute only the initial
+All seven maintained examples default to foreground retained computation. They compute only the initial
 finite request, publish results and optional views, and wait efficiently for another request.
 They do not deploy, execute or calculate an unbounded future by default.
+Startup explains this retained lifetime. The calculation terminal returns after
+`cancel-computation` drains owned work and presentation; `--operation generate` selects
+finite publication and return. A separate `run.sh` with retained materials keeps the final
+network active until continuation or runtime cancellation, even when calculation is `IDLE`.
 
 ## Initial range and finite cutoffs
 
@@ -22,7 +26,7 @@ python examples/Sky00_tiny_network/tiny_network.py --through planner --output /t
 PhysicalWorld produces positions/candidates. Planner additionally publishes Plans. Compiler
 additionally creates execution materials and deployment controls. Partial cutoffs do not
 prepare deployment or execute downstream stages. `--no-tools` disables optional rendering;
-`--no-traffic` disables active Traffic inputs/collection. Neither option changes Model results.
+`--no-traffic` disables traffic generation; `--no-traffic-telemetry` independently disables BPF packet/path collection. Neither option changes Model results.
 
 Observation cadence, `PlannerConfiguration.frames_per_batch`, and delivery duration are
 independent. A delivery can flush a partial Plan while retaining operational state. Example
@@ -71,10 +75,18 @@ align to the original cadence. Status separates initial/requested/completed endp
 material batches, computation waiting and presentation. Refresh the browser after a completed
 request; the view may lag while rendering and identifies its recorded data. A terminated
 calculation process cannot be recovered by `continue`.
+The control client prints a concise human summary on stderr before detailed JSON on stdout.
+It compares runtime's active frontier with the requested range and available materials,
+identifies preparation/pause/wait/errors and suggests the relevant next action. Endpoint
+unavailability does not prove that an owner cleaned up successfully.
 
 ## Deployment and execution
 
 For Compiler output only:
+
+Deployment reports image reuse, native Docker build/pull/start output and confirmed service
+startup. Cleanup reports counts and elapsed time for graceful stops and removals. Long stops
+retain configured hooks/signals/grace periods; request acceptance is not completion.
 
 ```bash
 ./deploy.sh                      # Deployer builds and starts Compose
@@ -108,6 +120,18 @@ python experiment_control.py shutdown
 ```
 
 Ctrl-C follows the foreground operation's owned drain. Cancellation requests are not proof
-that cleanup has finished. Independently deployed containers remain Deployer-owned until
+that cleanup has finished. The control terminal acknowledges accepted requests while
+keeping its JSON response on stdout. Watch the original `run.sh` terminal for
+`Runtime resource cleanup succeeded`, then the separate observation Tool result.
+A stop before preparation instead confirms that no runtime resources were acquired.
+Watch the original calculation terminal for `Calculation session closed`; it waits
+for owned calculation and presentation work. Any failure message needs inspection;
+a disappeared endpoint or terminal exit alone does not confirm cleanup.
+`cleanup.sh` prints `Deployment cleanup starting` and, only after successful removal,
+`Deployment cleanup succeeded` (or a failure). Independently deployed containers remain Deployer-owned until
 `cleanup.sh`; managed execution performs that teardown after runtime drainage. Repeated Ctrl-C
 cannot abandon accepted cleanup. No elapsed-time cutoff forces a process kill.
+
+A user preparation function can wait or configure the initial prepared network
+before Traffic and formal time begin, including when `run.sh` is invoked later.
+See the [captured function and context example](../api/assembly-and-control.md#user-preparation-function).

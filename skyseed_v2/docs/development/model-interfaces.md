@@ -10,7 +10,9 @@ and [public API reference](../api/README.md).
 A Model is an independently injected algorithm. Constructors, representation and research
 assumptions belong to its author. Structural Protocols require only the calls below; there
 is no inheritance, registry, plugin discovery, worker, geometry or optimality requirement.
-Default assembly remains in Simulator. The actual S3/S5 algorithms remain example-local.
+Built-in Model composition remains in Simulator. `create_default_simulator` selects an empty
+RouteModel by default for Linux; BPF retains the gateway default. Explicit Models
+pass through unchanged. See [assembly](../api/assembly-and-control.md#simulator-assembly). The actual S3/S5 algorithms remain example-local.
 
 
 | Role and minimum result | Copyable template | Default implementation | Example |
@@ -39,7 +41,7 @@ not a replaceable Model. Explicit dependency values remain part of the Plan cont
 ## Values and author freedom
 
 Results refer to the supplied World's identities. Selections resolve to supplied candidates;
-identity, timestamps, complete output correspondence, endpoint capacity and executable route
+identity, timestamps, required result correspondence, endpoint capacity and declared route
 representation remain checked. No geometric plausibility, stability or “best algorithm”
 proof is required. ISL pair enumeration supplies the potential query envelope, not current
 selection. `NO_ELIGIBLE_PATH` describes the chosen algorithm's eligibility rules.
@@ -111,3 +113,5 @@ Resource-free Models omit shutdown. Published immutable facts remain readable af
 
 Default optimizations and their costs are explained in [mechanisms](../architecture/mechanisms.md).
 Use the [authoring guide](../user-guides/model-extension.md) for injection and finite verification.
+
+Route results include partial/empty local arrangements and typed policy records; see the [planning contract](planner-state-and-plans.md#routes). DataPlane layouts belong to the [data definition](dataplane.md), never to the RouteModel.

@@ -1,10 +1,11 @@
 """Validate and execute one generated SkySEED experiment runtime package."""
 
 from __future__ import annotations
+from skyseed_v2.shared._console import _console
 
 import argparse
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import datetime, timezone
 from importlib import metadata
 import json
 import os
@@ -16,7 +17,7 @@ import signal
 import subprocess
 import sys
 from time import perf_counter
-from threading import Event, Thread
+from threading import Event, Thread, current_thread, main_thread
 from uuid import uuid4
 from typing import Any
 
@@ -24,15 +25,161 @@ from skyseed_v2.shared._durable_evidence import _append_jsonl
 from skyseed_v2.shared.recording import record_performance
 from skyseed_v2.experiment.output.observation import _ExecutionObserver, _semantic_value
 
-from skyseed_v2.backend.bpf.runner.lifecycle import Runner, _runtime_worker_count
+from skyseed_v2.backend.runner.lifecycle import Runner, _runtime_worker_count
+from skyseed_v2.backend.selection import _backend
 from .output.occupancy import claim_output, claim_runtime
 from ._control import _ControlUnavailable, _request, _serve_control
 
 
-_FORMAT_VERSION = 4
-_KIND = "skyseed-v2-generated-bpf-execution"
+_FORMAT_VERSION = 6
+_KIND = "skyseed-v2-generated-forwarding-execution"
 _PROJECT_NAME_FILE = "deployment/compose-project-name"
 _PROJECT_NAME_PATTERN = re.compile(r"[a-z0-9][a-z0-9_-]*")
+
+
+def _validate_readiness_command(value):
+    if value is None:
+        return None
+    from collections.abc import Sequence
+    if (isinstance(value, (str, bytes)) or not isinstance(value, Sequence) or not value
+            or any(not isinstance(arg, str) or '\0' in arg for arg in value) or not value[0]):
+        raise ValueError('initial_readiness_command must be a nonempty argv sequence of strings or None')
+    return tuple(value)
+
+
+class _ReadinessCancelled(Exception):
+    """A control handoff to normal cleanup, not a command failure."""
+
+
+def _check_runtime_stop(controls):
+    if controls['cancel'].is_set() or controls['reset'].is_set():
+        raise _ReadinessCancelled()
+
+
+def _signal_readiness_group(process):
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+
+
+def _drain_readiness_process(process):
+    # The session is owned by this invocation. Never kill unrelated processes,
+    # escalate to SIGKILL, or let elapsed time authorize Runner cleanup.
+    _signal_readiness_group(process)
+    process.wait()
+    while True:
+        try:
+            os.killpg(process.pid, 0)
+        except ProcessLookupError:
+            return
+        # Orphan zombies cannot execute and are reaped by their adopting parent.
+        # A cooperative command normally reaps its own children before exit.
+        active = False
+        for path in Path('/proc').iterdir():
+            if not path.name.isdecimal():
+                continue
+            try:
+                stat = (path / 'stat').read_text().rsplit(')', 1)[1].split()
+            except (FileNotFoundError, ProcessLookupError, PermissionError):
+                continue
+            if int(stat[2]) == process.pid and stat[0] not in ('Z', 'X'):
+                active = True
+                break
+        if not active:
+            return
+        Event().wait(0.05)
+
+
+def _run_initial_readiness(output, invocation, definition, runner, controls, lifecycle, observer):
+    """One optional prepared-input subprocess in the existing execution owner."""
+    argv = list(_validate_readiness_command(definition['initial_readiness_command']))
+    if argv[0] == definition.get('environment', {}).get('python_executable'):
+        argv[0] = sys.executable
+    argv.extend(('--output', str(output), '--invocation-directory', str(invocation)))
+    directory = invocation / 'readiness'
+    directory.mkdir(parents=True, exist_ok=True)
+    started = perf_counter()
+    interrupted = Event()
+    row = {'argv': argv, 'cwd': str(output), 'status': 'waiting',
+           'started_at': datetime.now(timezone.utc).isoformat(), 'ended_at': None,
+           'exit_code': None, 'elapsed_seconds': None, 'error': None,
+           'stdout': 'readiness/stdout.log', 'stderr': 'readiness/stderr.log'}
+    process = primary = None
+    stop_sent = False
+    previous_handler = None
+    if current_thread() is main_thread():
+        # Deferring Ctrl-C closes Popen's launch/assignment race and permits the
+        # command to drain even when the user presses Ctrl-C repeatedly.
+        previous_handler = signal.signal(signal.SIGINT, lambda *_: interrupted.set())
+    try:
+        _write_runner_inspection_handoff(invocation / 'runner/prepared.json',
+            runner.inspection_snapshot(), {'status': 'prepared'}, invocation_id=invocation.name)
+        _write_json_file_atomic(directory / 'command.json', row)
+        controls['readiness'] = dict(row)
+        lifecycle('initial_readiness_start', **row)
+        _console(f"User preparation starting; formal clock has not started. Logs: {directory}")
+        _check_runtime_stop(controls)
+        if interrupted.is_set():
+            raise KeyboardInterrupt()
+        with (directory / 'stdout.log').open('wb') as stdout, (directory / 'stderr.log').open('wb') as stderr:
+            process = subprocess.Popen(argv, cwd=output, stdout=stdout, stderr=stderr, start_new_session=True)
+            row['pid'] = process.pid
+            while process.poll() is None:
+                if not stop_sent and (interrupted.is_set() or controls['cancel'].is_set() or controls['reset'].is_set()):
+                    _signal_readiness_group(process)
+                    stop_sent = True
+                Event().wait(0.05)
+            row['exit_code'] = process.returncode
+        if process.returncode and not (stop_sent and process.returncode in (-signal.SIGTERM, -signal.SIGINT, 130, 143)):
+            raise subprocess.CalledProcessError(process.returncode, argv)
+        if interrupted.is_set():
+            raise KeyboardInterrupt()
+        _check_runtime_stop(controls)
+    except BaseException as error:
+        primary = error
+    finally:
+        try:
+            if process is not None:
+                _drain_readiness_process(process)
+                row['exit_code'] = process.returncode
+        except BaseException as error:
+            if primary is None:
+                primary = error
+            else:
+                primary.add_note(f'readiness process drainage also failed: {error}')
+        # Cancellation may arrive after command exit or while draining children.
+        if primary is None:
+            if interrupted.is_set():
+                primary = KeyboardInterrupt()
+            elif controls['cancel'].is_set() or controls['reset'].is_set():
+                primary = _ReadinessCancelled()
+        row.update(status=('interrupted' if isinstance(primary, KeyboardInterrupt) else
+            'cancelled' if isinstance(primary, _ReadinessCancelled) else 'failed' if primary else 'completed'),
+            ended_at=datetime.now(timezone.utc).isoformat(), elapsed_seconds=perf_counter() - started,
+            error=None if isinstance(primary, _ReadinessCancelled) else _error_fact(primary))
+        controls['readiness'] = dict(row)
+        try:
+            _write_json_file_atomic(directory / 'command.json', row)
+            lifecycle('initial_readiness_end', **row)
+            record_performance(observer, component='experiment', stage='initial-readiness', phase='one-shot',
+                duration_seconds=row['elapsed_seconds'], duration_role='stage',
+                scope={'invocation_id': invocation.name}, work={'completed': int(primary is None)},
+                started_monotonic=started)
+        except BaseException as error:
+            if primary is None:
+                primary = error
+            else:
+                primary.add_note(f'readiness evidence also failed: {error}')
+        finally:
+            if previous_handler is not None:
+                signal.signal(signal.SIGINT, previous_handler)
+    if primary is not None:
+        state = row['status'] if row['status'] != 'completed' else 'failed'
+        _console(f"User preparation {state}: {type(primary).__name__}: {primary}. "
+                 "Formal clock did not start; runtime cleanup follows.")
+        raise primary
+    _console(f"User preparation succeeded after {row['elapsed_seconds']:.1f}s; ready for the formal clock.")
 
 
 def _run_generated_control(script: Path) -> None:
@@ -115,11 +262,12 @@ def run_generated_experiment(output: Path, *, cleanup: bool = True) -> None:
 def _write_execution_definition(output_directory, *, generated_output_identity,
         timeline_start, timeline_end, observation_interval,
         runner_artifact, realization_producer, sealed_metadata, runner_batches=(),
-        batch_lead_fraction=0.75, batch_capacity_factor=2, keep_alive=False, traffic_enabled=True):
+        batch_lead_fraction=0.75, batch_capacity_factor=2, keep_alive=False, traffic_enabled=True, traffic_telemetry_enabled=None,
+        initial_readiness_command=None):
     """Publish facts already sealed by the backend writer; never rescan its bytes."""
     manifest = sealed_metadata["manifest"]
     value = {
-        "format_version": _FORMAT_VERSION, "kind": _KIND, "backend": "bpf",
+        "format_version": _FORMAT_VERSION, "kind": _KIND, "backend": manifest["backend"],
         "generated_output_identity": generated_output_identity,
         "progression": {"strategy": "sealed-precomputed-runner-artifact", "producer": realization_producer},
         "runner_artifact": {"manifest": runner_artifact,
@@ -131,7 +279,9 @@ def _write_execution_definition(output_directory, *, generated_output_identity,
             "observation_interval_seconds": observation_interval.total_seconds(), "bounded": True},
         "runner": {"execution_contract": "sealed-precomputed-only", "keep_alive": keep_alive},
         "traffic_enabled": traffic_enabled,
-        "environment": {"python_implementation": platform.python_implementation(),
+        "initial_readiness_command": _validate_readiness_command(initial_readiness_command),
+        "traffic_telemetry_enabled": (manifest["backend"] == "bpf" if traffic_telemetry_enabled is None else traffic_telemetry_enabled),
+        "environment": {"python_executable": sys.executable, "python_implementation": platform.python_implementation(),
             "python_version": platform.python_version(), "seedemu_distribution_version": metadata.version("seedemu")},
     }
     if keep_alive or runner_batches:
@@ -206,49 +356,67 @@ PYTHONPATH="$TOOL_PYTHONPATH" $PYTHON -m skyseed_v2.experiment.execution "$SCRIP
 # Raw invocation evidence is drained. Retained calculation may still be live;
 # Traffic pins its latest completed request across all domain readers.
 if [[ "${{SKYSEED_NO_TOOLS:-0}}" == "1" || ! -f "$SCRIPT_DIR/results/experiment/completed.json" || ! -f "$TOOL_PACKAGE_PARENT/tools/__init__.py" ]]; then
+    echo "Observation Tool generation skipped." >&2 || true
     exit "$execution_status"
 fi
 
+echo "Observation Tool generation starting; this is separate from runtime resource cleanup." >&2 || true
 runner_tool_status=0
-PYTHONPATH="$TOOL_PYTHONPATH" $PYTHON -m tools.runner \\
+PYTHONPATH="$TOOL_PYTHONPATH" $PYTHON -m tools.observation.runner \\
     --handoff "$INVOCATION_DIR/runner/runner-invocation.json" \\
     --events "$INVOCATION_DIR/runner/runner-events.jsonl" \\
     --deployment-startup "$STARTUP_EVIDENCE" \\
     --output "$SCRIPT_DIR/visualizations/runner" \\
     || runner_tool_status=$?
+if (( runner_tool_status != 0 )); then
+    echo "Runner observation Tool failed (exit $runner_tool_status)." >&2 || true
+fi
 
 traffic_tool_status=0
+if [[ -f "$SCRIPT_DIR/results/traffic/probe-plan.json" || -f "$INVOCATION_DIR/traffic/traffic-telemetry.jsonl" ]]; then
+TRAFFIC_INPUTS=()
 if [[ -f "$SCRIPT_DIR/results/traffic/probe-plan.json" ]]; then
-PYTHONPATH="$TOOL_PYTHONPATH" $PYTHON -m tools.traffic \\
+    TRAFFIC_INPUTS=(--probe-plan "$SCRIPT_DIR/results/traffic/probe-plan.json" --probe-execution "$INVOCATION_DIR/traffic/probe-execution.jsonl" --runner-events "$INVOCATION_DIR/runner/runner-events.jsonl")
+fi
+PYTHONPATH="$TOOL_PYTHONPATH" $PYTHON -m tools.observation.traffic \\
     --telemetry "$INVOCATION_DIR/traffic/traffic-telemetry.jsonl" \\
     --physical-frames "$SCRIPT_DIR/results/physical-world/physical-frames.jsonl" \\
     --physical-links "$SCRIPT_DIR/results/physical-world/candidates/physical-link-observations.jsonl.gz" \\
     --planning "$SCRIPT_DIR/results/planner/planning.jsonl.gz" \\
     --bpf-compiler "$SCRIPT_DIR/results/compiler/compiler.jsonl" \\
-    --probe-plan "$SCRIPT_DIR/results/traffic/probe-plan.json" \\
-    --probe-execution "$INVOCATION_DIR/traffic/probe-execution.jsonl" \\
-    --runner-events "$INVOCATION_DIR/runner/runner-events.jsonl" \\
+    "${{TRAFFIC_INPUTS[@]}}" \\
     --output "$SCRIPT_DIR/visualizations/traffic" \\
     || traffic_tool_status=$?
+if (( traffic_tool_status != 0 )); then
+    echo "Traffic observation Tool failed (exit $traffic_tool_status)." >&2 || true
+fi
 fi
 
 performance_tool_status=0
-PYTHONPATH="$TOOL_PYTHONPATH" $PYTHON -m tools.performance \
+PYTHONPATH="$TOOL_PYTHONPATH" $PYTHON -m tools.observation.performance \
     --generated "$SCRIPT_DIR" \
     --observations "$INVOCATION_DIR/performance/execution-observations.jsonl" \
     --output "$SCRIPT_DIR/visualizations/performance" \
     || performance_tool_status=$?
+if (( performance_tool_status != 0 )); then
+    echo "Performance observation Tool failed (exit $performance_tool_status)." >&2 || true
+fi
 
 aggregate_status=0
-PYTHONPATH="$TOOL_PYTHONPATH" $PYTHON -c 'import importlib,sys; from pathlib import Path; importlib.import_module("tools._presentation.html").finalize_runtime_aggregate_index(Path(sys.argv[1]))' \\
+PYTHONPATH="$TOOL_PYTHONPATH" $PYTHON -c 'import importlib,sys; from pathlib import Path; importlib.import_module("tools.observation._presentation.html").finalize_runtime_aggregate_index(Path(sys.argv[1]))' \\
     "$SCRIPT_DIR/visualizations" \\
     || aggregate_status=$?
+if (( aggregate_status != 0 )); then
+    echo "Observation index generation failed (exit $aggregate_status)." >&2 || true
+fi
 
+if (( runner_tool_status != 0 || traffic_tool_status != 0 || performance_tool_status != 0 || aggregate_status != 0 )); then
+    echo "Observation Tool generation failed: one or more detached inspection Tools failed; runtime exit status is unchanged." >&2 || true
+else
+    echo "Observation Tool generation succeeded." >&2 || true
+fi
 if (( execution_status != 0 )); then
     exit "$execution_status"
-fi
-if (( runner_tool_status != 0 || traffic_tool_status != 0 || performance_tool_status != 0 || aggregate_status != 0 )); then
-    echo "runtime completed; one or more detached inspection Tools failed" >&2
 fi
 exit 0
 """,
@@ -266,7 +434,8 @@ def _run_generated_bpf_experiment(
     """Run fresh invocations over retained references; reset never tears down Compose."""
     output = Path(output_directory).resolve()
     controls = {"runner": None, "traffic": None, "reset": Event(), "cancel": Event(),
-                "pause": False, "invocation_id": None, "delivery_count": 1, "delivery_error": None}
+                "pause": False, "invocation_id": None, "delivery_count": 1, "delivery_error": None,
+                "readiness": None}
 
     def dispatch(request):
         command = request["command"]
@@ -278,6 +447,8 @@ def _run_generated_bpf_experiment(
         if command in {"reset", "cancel-runtime"}:
             if runner is not None:
                 runner.cancel_runtime()
+            else:
+                _console(f"Runtime {command} requested before Runner preparation; draining admitted work.")
         elif command == "pause":
             controls["pause"] = True
             if runner is not None:
@@ -292,6 +463,7 @@ def _run_generated_bpf_experiment(
             "reset_pending": controls["reset"].is_set(), "cancel_requested": controls["cancel"].is_set(),
             "delivered_batches": controls["delivery_count"],
             "delivery_error": controls["delivery_error"],
+            "initial_readiness": controls["readiness"],
             "runner": None if runner is None else runner.status(),
             "traffic": None if controls["traffic"] is None else controls["traffic"].snapshot()}
 
@@ -306,6 +478,7 @@ def _run_generated_bpf_experiment(
             session = {}
         managed = session.get("runtime_managed", False)
         if managed and session["shutdown_requested"]:
+            _console("Runtime stopped before preparation; no runtime resources were acquired.")
             return  # No Runner/Traffic construction before an accepted handoff.
         primary_error = None
         try:
@@ -313,12 +486,15 @@ def _run_generated_bpf_experiment(
                 controls["reset"].clear()
                 controls["delivery_count"] = 1
                 controls["delivery_error"] = None
+                controls["readiness"] = None
                 _run_runtime_invocation(output, invocation_directory=invocation_directory,
                                         verified=verified, controls=controls, reset_from=previous)
                 if controls["cancel"].is_set() or not controls["reset"].is_set():
                     break
                 previous = controls["invocation_id"]
                 invocation_directory = output / "runs" / f"reset-{uuid4().hex}"
+            if controls["invocation_id"] is None:
+                _console("Runtime stopped before preparation; no runtime resources were acquired.")
         except BaseException as error:
             primary_error = error
             raise
@@ -376,8 +552,8 @@ def _run_runtime_invocation(
     probe_plan = None
     if traffic_enabled:
         try:
-            from tools.traffic.active.probe_execution import TrafficProbeExecutor
-            from tools.traffic.active.probe_plan import read_traffic_probe_plan
+            from tools.generation.traffic.probe_execution import TrafficProbeExecutor
+            from tools.generation.traffic.probe_plan import read_traffic_probe_plan
         except ImportError as error:
             raise RuntimeError("Traffic is enabled but its Tool is unavailable") from error
         probe_plan_path = output / "results/traffic/probe-plan.json"
@@ -388,6 +564,7 @@ def _run_runtime_invocation(
     runner = Runner(
         compose_project_name=project_name,
         runtime_artifact=artifact_path,
+        forwarding_backend=definition["backend"],
         **{key: definition["runner"][key] for key in ("batch_lead_fraction", "batch_capacity_factor", "keep_alive")
            if key in definition["runner"]},
     )
@@ -397,8 +574,14 @@ def _run_runtime_invocation(
     runner._enable_event_history(
         runner_evidence / "runner-events.jsonl"
     )
-    if traffic_enabled:
+    if definition.get("traffic_telemetry_enabled", traffic_enabled and definition["backend"] == "bpf"):
         runner._enable_traffic_telemetry(traffic_evidence)
+    connection_observer = None
+    if (output / '.control/internet-map').is_dir():
+        from skyseed_v2.backend.runner.connection_observer import _ConnectionObserver
+        connection_observer = _ConnectionObserver(output / '.control/internet-map',
+            invocation=invocation_id, backend=definition['backend'])
+        runner._connection_observer = connection_observer
     controls["runner"] = runner
     if controls.get("pause", False):
         runner.pause()
@@ -472,6 +655,9 @@ def _run_runtime_invocation(
             except Exception as error:
                 print(f"container observation degraded: {error}", file=sys.stderr)
         runner.prepare()
+        if definition.get('initial_readiness_command') is not None:
+            _run_initial_readiness(output, invocation, definition, runner, controls, lifecycle, runtime_observer)
+        _check_runtime_stop(controls)
         if traffic_enabled:
             traffic_started = perf_counter()
             traffic_executor = TrafficProbeExecutor(
@@ -482,14 +668,17 @@ def _run_runtime_invocation(
                     traffic_evidence / "probe-execution.jsonl"
                 ),
             )
+            _check_runtime_stop(controls)
             traffic_executor.start(runner)
             controls["traffic"] = traffic_executor
+        _check_runtime_stop(controls)
         delivery_thread = Thread(target=deliver, name="skyseed-experiment-delivery")
         delivery_thread.start()
         raw_activation_limit = os.environ.get(
             "SKYSEED_RUNNER_ACTIVATION_LIMIT"
         )
         if raw_activation_limit is None:
+            _check_runtime_stop(controls)
             runner.run()
         else:
             try:
@@ -498,9 +687,13 @@ def _run_runtime_invocation(
                 raise ValueError(
                     "SKYSEED_RUNNER_ACTIVATION_LIMIT must be a positive int"
                 ) from error
+            _check_runtime_stop(controls)
             runner._run_bounded(activation_limit)
+    except _ReadinessCancelled:
+        pass  # Reset/cancel returns through normal cleanup and the existing loop.
     except BaseException as error:
         primary_error = error
+    _console("Runtime cleanup starting: draining delivery, Traffic and Runner resources.")
     delivery_stop.set()
     if delivery_thread is not None:
         delivery_thread.join()
@@ -545,6 +738,20 @@ def _run_runtime_invocation(
         lifecycle("runner_cleanup_complete")
     except BaseException as error:
         cleanup_error = error
+    finally:
+        if connection_observer is not None:
+            try:
+                connection_observer.close()
+            except BaseException as error:
+                if cleanup_error is None:
+                    cleanup_error = error
+                else:
+                    cleanup_error.add_note(f"connection observer cleanup also failed: {type(error).__name__}: {error}")
+    if cleanup_error is not None or traffic_error is not None:
+        failure = cleanup_error if cleanup_error is not None else traffic_error
+        _console(f"Runtime resource cleanup failed: {type(failure).__name__}: {failure}")
+    else:
+        _console("Runtime resource cleanup succeeded. Deployment containers remain until cleanup.sh.")
     record_performance(runtime_observer,
         component="runner",
         stage="runner-total",
@@ -740,14 +947,20 @@ def _read_and_verify_execution(
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise RuntimeError(
-            f"generated BPF execution definition is unavailable: {path}"
+            f"generated execution definition is unavailable: {path}"
         ) from error
     if not isinstance(value, dict):
-        raise RuntimeError("generated BPF execution definition must be an object")
-    if value.get("format_version") not in {3, _FORMAT_VERSION} or value.get("kind") != _KIND:
-        raise RuntimeError("generated BPF execution definition is unsupported")
-    if value.get("backend") != "bpf":
-        raise RuntimeError("generated execution backend is not BPF")
+        raise RuntimeError("generated execution definition must be an object")
+    if value.get("format_version") not in (5, _FORMAT_VERSION) or value.get("kind") != _KIND:
+        raise RuntimeError("generated execution definition is unsupported")
+    if value['format_version'] == 5:
+        # The actual previous format has no readiness handoff.
+        value.pop('initial_readiness_command', None)
+    else:
+        _validate_readiness_command(value.get('initial_readiness_command'))
+    backend = _backend(value.get("backend"))
+    if backend == "linux" and value.get("traffic_telemetry_enabled", False):
+        raise RuntimeError("Linux execution cannot collect BPF packet telemetry")
     simulation = _mapping(value.get("simulation"), "simulation")
     start_time = _aware_datetime(simulation.get("start_time"), "start_time")
     end_time = _aware_datetime(simulation.get("end_time"), "end_time")
@@ -776,6 +989,13 @@ def _read_and_verify_execution(
     manifest_path = output / relative_manifest
     # Runner's real reader validates material format, binary seals, nodes and
     # lineage during admission. These are reference facts, not a second reader.
+    from skyseed_v2.backend.execution_materials.codec import _FORMAT_VERSION as material_version
+    if handoff.get("format_version") != material_version:
+        raise RuntimeError("execution materials are unsupported; regenerate the experiment")
+    # Verify the small backend identity before deployment; Runner owns full binary validation.
+    material = json.loads(manifest_path.read_text())
+    if material.get("backend") != backend:
+        raise RuntimeError("execution definition and materials select different forwarding backends")
     snapshot = dict(handoff)
     project_name = _read_compose_project_name(output)
     if value.get("generated_output_identity") != project_name:
@@ -884,10 +1104,10 @@ def main() -> int:
             invocation_directory=arguments.invocation_directory,
         )
     except KeyboardInterrupt:
-        print("BPF Runner interrupted", file=sys.stderr)
+        _console("Runner interrupted.")
         return 130
     except Exception as error:
-        print(f"BPF Runner failed: {error}", file=sys.stderr)
+        _console(f"Runner failed: {error}")
         return 1
     return 0
 

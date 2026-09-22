@@ -7,7 +7,7 @@ import pytest
 from examples.Sky00_tiny_network.tiny_network import build_emulator
 from examples.Sky00_tiny_network.tiny_network import create_simulator as create_complete_static_simulator
 from tests._support import drain_simulator as run_complete_static_chain
-from skyseed_v2.backend.bpf.execution_materials.sealing import _write_runner_artifact, _RunnerArtifactWriter
+from skyseed_v2.backend.execution_materials.sealing import _write_runner_artifact, _RunnerArtifactWriter
 from skyseed_v2.experiment.execution import (
     _read_and_verify_execution_definition,
     _write_execution_definition,
@@ -69,15 +69,15 @@ def test_generated_definition_is_persisted_only(tmp_path, compiled_chain) -> Non
     definition = _read_and_verify_execution_definition(output)
     serialized = json.loads(path.read_text(encoding="utf-8"))
     assert definition == serialized
-    assert definition["format_version"] == 4
+    assert definition["format_version"] == 6
     assert definition["progression"] == {
         "strategy": "sealed-precomputed-runner-artifact",
         "producer": "common-incremental-realization-producer-v1",
     }
     handoff = definition["runner_artifact"]
     assert handoff["manifest"] == "results/compiler/runner-artifact/manifest.json"
-    assert handoff["format_version"] == 4
-    assert handoff["encoding"] == "typed-packed-runtime-tables-v4"
+    assert handoff["format_version"] == 8
+    assert handoff["encoding"] == "prepared-forwarding-v8"
     assert handoff["realization_count"] == 1
     assert len(handoff["sequence_sha256"]) == 64
     assert len(handoff["manifest_sha256"]) == 64
@@ -124,7 +124,7 @@ def test_generated_definition_rejects_old_handoff_format(
         ),
         encoding="utf-8",
     )
-    from skyseed_v2.backend.bpf.execution_materials.codec import _open_runner_artifact
+    from skyseed_v2.backend.execution_materials.codec import _open_runner_artifact
     with pytest.raises(ValueError, match="schema differs"):
         _open_runner_artifact(manifest)
 
@@ -136,15 +136,15 @@ def test_manifest_whitespace_is_not_execution_incompatibility(
     manifest = output / "results/compiler/runner-artifact/manifest.json"
     value = json.loads(manifest.read_text(encoding="utf-8"))
     manifest.write_text(json.dumps(value, indent=4) + "\n", encoding="utf-8")
-    from skyseed_v2.backend.bpf.execution_materials.codec import _open_runner_artifact
+    from skyseed_v2.backend.execution_materials.codec import _open_runner_artifact
     artifact = _open_runner_artifact(manifest)
     artifact.close()
     assert _read_and_verify_execution_definition(output)["backend"] == "bpf"
 
 
 def test_scene_binding_fails_at_actual_reader_before_deployment(tmp_path, compiled_chain, monkeypatch):
-    from skyseed_v2.backend.bpf.runner.lifecycle import Runner
-    from skyseed_v2.backend.bpf.runner import deployment
+    from skyseed_v2.backend.runner.lifecycle import Runner
+    from skyseed_v2.backend.runner import deployment
     output, _, _, _ = _generated_output(tmp_path, compiled_chain)
     def unexpected(*args, **kwargs):
         raise AssertionError('deployment touched before scene validation')
@@ -182,7 +182,7 @@ def test_generated_run_script_consumes_only_persisted_domain_history(
     assert "results/physical-world/physical-frames.jsonl" in script
     assert "results/planner/planning.jsonl.gz" in script
     assert "performance/execution-observations.jsonl" in script
-    assert "-m tools.performance" in script
+    assert "-m tools.observation.performance" in script
     assert '--generated "$SCRIPT_DIR"' in script
     assert 'exit "$traffic_tool_status"' not in script
     assert 'exit "$runner_tool_status"' not in script
@@ -243,7 +243,7 @@ with open(os.environ["RUNNER_SCRIPT_TEST_LOG"], "a") as stream:
     assert all(executable == "record-python" for executable, _ in execution)
     assert execution[0][1][:2] == ["-m", "skyseed_v2.experiment.execution"]
     assert not (output / 'deployment/deployment-startup.json').exists()
-    runner_arguments = next(args for _, args in execution if args[:2] == ['-m', 'tools.runner'])
+    runner_arguments = next(args for _, args in execution if args[:2] == ['-m', 'tools.observation.runner'])
     assert runner_arguments[runner_arguments.index('--deployment-startup') + 1] == str(
         output / 'deployment/deployment-startup.json')
     assert all("main.py" not in " ".join(args) for _, args in execution)
@@ -286,10 +286,10 @@ def test_checkpoint_write_failure_never_skips_runner_cleanup(tmp_path, monkeypat
         if 'before-cleanup' in destination.name:
             raise OSError('checkpoint write failed')
     monkeypatch.setattr(module, 'Runner', Runner)
-    monkeypatch.setattr('tools.traffic.active.probe_execution.TrafficProbeExecutor', Traffic)
-    monkeypatch.setattr('tools.traffic.active.probe_plan.read_traffic_probe_plan', lambda path: SimpleNamespace(episodes=()))
+    monkeypatch.setattr('tools.generation.traffic.probe_execution.TrafficProbeExecutor', Traffic)
+    monkeypatch.setattr('tools.generation.traffic.probe_plan.read_traffic_probe_plan', lambda path: SimpleNamespace(episodes=()))
     monkeypatch.setattr(module, '_read_and_verify_execution', lambda output: (
-        {'format_version': 3, 'generated_output_identity':'test', 'runner':{}}, tmp_path/'artifact',
+        {'format_version': 3, 'backend': 'bpf', 'generated_output_identity':'test', 'runner':{}}, tmp_path/'artifact',
         {'realization_count':1, 'boundary_count':1}))
     monkeypatch.setattr(module, '_record_container_checkpoint', checkpoint)
     for name in ('_write_runtime_invocation_index', '_write_runtime_execution_observations', '_write_runner_inspection_handoff'):
@@ -304,3 +304,42 @@ def test_checkpoint_write_failure_never_skips_runner_cleanup(tmp_path, monkeypat
     else:
         module._run_generated_bpf_experiment(output, invocation_directory=output/'runs/test')
     assert calls == ['prepare', 'cleanup']
+
+
+@pytest.mark.parametrize('runtime_status,failed_tool', [
+    (0, None), (0, 'runner'), (7, 'traffic'), (130, 'performance'), (0, 'index'),
+])
+def test_generated_tool_feedback_preserves_runtime_exit(tmp_path, compiled_chain, runtime_status, failed_tool):
+    import subprocess
+    import sys
+    output, project, _, _ = _generated_output(tmp_path, compiled_chain)
+    (project / 'tools').mkdir()
+    (project / 'tools/__init__.py').write_text('')
+    (output / 'results/experiment').mkdir(exist_ok=True)
+    (output / 'results/experiment/completed.json').write_text('{}')
+    (output / 'results/traffic').mkdir()
+    (output / 'results/traffic/probe-plan.json').write_text('{}')
+    executable = tmp_path / 'fake-python'
+    executable.write_text(f'''#!{sys.executable}
+import sys
+module = sys.argv[2] if sys.argv[1] == '-m' else 'index'
+if module == 'skyseed_v2.experiment.execution': sys.exit({runtime_status})
+if module.rsplit('.', 1)[-1] == {failed_tool!r}: sys.exit(9)
+''')
+    executable.chmod(0o755)
+    script = _write_generated_run_script(output, python_executable=str(executable), tool_package_parent=project)
+    completed = subprocess.run(['bash', str(script)], capture_output=True, text=True)
+    assert completed.returncode == runtime_status
+    assert not completed.stdout
+    assert 'Observation Tool generation starting' in completed.stderr
+    # An execution subprocess returning 0 alone proves no resource cleanup.
+    assert 'Runtime resource cleanup succeeded' not in completed.stderr
+    if failed_tool is None:
+        assert 'Observation Tool generation succeeded' in completed.stderr
+        assert 'Observation Tool generation failed' not in completed.stderr
+    else:
+        label = ('Observation index generation' if failed_tool == 'index'
+                 else failed_tool.title() + ' observation Tool')
+        assert label + ' failed (exit 9)' in completed.stderr
+        assert 'Observation Tool generation failed' in completed.stderr
+        assert 'Observation Tool generation succeeded' not in completed.stderr

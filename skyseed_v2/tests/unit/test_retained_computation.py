@@ -6,8 +6,8 @@ import pytest
 
 from examples.Sky00_tiny_network import tiny_network as tiny
 from skyseed_v2.experiment.producer import Producer
-from tools.traffic.active.probe_plan import TrafficProbePlanBuilder
-from skyseed_v2.backend.bpf.execution_materials.sealing import _RunnerArtifactWriter
+from tools.generation.traffic.probe_plan import TrafficProbePlanBuilder
+from skyseed_v2.backend.execution_materials.sealing import _RunnerArtifactWriter
 from skyseed_v2.simulator.planner.values import plan_transition_fingerprint
 
 

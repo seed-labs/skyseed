@@ -14,7 +14,7 @@ its measurements do not establish general hardware requirements.
 | Bounded Plan and packaging queues | Retain chronological ownership while overlapping serialization. Flush can change Plan grouping without skipping formal transitions. |
 | Incremental hashes and compressed evidence | Publish completed byte prefixes without rereading or copying history. Readers must honor one completion record and stream format. |
 | Compiler precedence folding and predecessor indexes | Avoid expanded redundant edges and rebuilding unchanged lowering state; unsupported ordering still retains exact constraints. |
-| Prepared deltas and future forwarding generations | Move decoding and semantic prewrite outside formal Execution. Fixed capacity and retained material consume memory; unknown future demands can exceed admission. |
+| Prepared deltas and future forwarding generations | Compile C/ELF objects and prepare action deltas and map patches before sealing; bind and prewrite outside formal Execution. Fixed capacity and retained material consume memory; unknown future demands can exceed admission. |
 | Retained namespace sockets and grouped deletion | Avoid per-action subprocess overhead and overlap independent namespace work. Each current boundary still waits for its physical withdrawals; cleanup responsibility is preserved. |
 | Reader/reference-safe version sharing | Reuse equal node content, reclaim only retired versions with no readers/references. Monotonic identities and accounting add complexity. |
 | Shared SEED build contexts and grouped Compose operations | Avoid rebuilding identical content while preserving deployment identity and dependencies. Startup/teardown remain explicit Deployer operations. |
@@ -30,3 +30,5 @@ intended pacing and measured resource scopes. A summed stage duration is not aut
 an end-to-end elapsed time. Historical host changes (cgroup driver, D-Bus/inotify limits,
 NVMe layout) retain their original experimental conditions in
 [history](../history/optimization-decision-history.md#宿主机配置记录).
+
+Structured route records use schema-generated C layout and encoding. Translation caches unchanged values, emits policy-only deltas and withdraws omitted arrangements. Capacity tracks encoded contents per covered table instance; generation versions share unchanged content, and reader-safe reclamation touches only managed entries. Program counters/sensing maps persist with their object. The [DataPlane contract](../development/dataplane.md) owns these details.

@@ -51,8 +51,9 @@ from .values import (
     Plan,
     PlanTransition,
     PlannedOperationalState,
-    GroundStationRouteDemandTarget,
-    ReachableRouteOutcome,
+    GroundStationRouteDemandTarget, SatelliteRouteDemandTarget,
+    ReachableRouteOutcome, LocalRouteOutcome, LogicalExit,
+    _policy_references, _route_demand_key,
     RouteDemand,
     RouteOutcomeTransition,
     RouteUnreachableReason,
@@ -310,6 +311,10 @@ class Planner:
             state = self._selection_state(observation.timestamp, self._ground_lifecycle_by_pair,
                 OperationalConnectionKind.GROUND_STATION_ACCESS, self._configuration.ground_station_acquisition_duration)
         return self._physical_queries._expanded_candidate_request(request, observation, state)
+
+    def get_route_demands(self):
+        """Return the demands supplied at the latest completed formal step."""
+        return self._last_route_demands
 
     def set_route_demands(self, demands: Iterable[RouteDemand]) -> None:
         if self._finished_end is not None or self._shutdown:
@@ -963,9 +968,6 @@ class Planner:
             )
         else:
             route_outcomes = previous_state.route_outcomes
-            active_route_demands = tuple(
-                value.demand for value in route_outcomes
-            )
             route_recomputed = False
             route_changes = ()
         reachable_count = sum(
@@ -984,7 +986,7 @@ class Planner:
                     "route_demands": len(active_route_demands),
                     "route_recomputed": int(route_recomputed),
                     "reachable_routes": reachable_count,
-                    "unreachable_routes": len(route_outcomes) - reachable_count,
+                    "unreachable_routes": sum(isinstance(v, UnreachableRouteOutcome) for v in route_outcomes),
                 },
                 resources={
                     **_model_statistics(self._route_model, "route_resource_statistics"),
@@ -1059,7 +1061,7 @@ class Planner:
             zones_served=served_count,
             zones_unserved=len(zone_assignments) - served_count,
             routes_reachable=reachable_count,
-            routes_unreachable=len(route_outcomes) - reachable_count,
+            routes_unreachable=sum(isinstance(v, UnreachableRouteOutcome) for v in route_outcomes),
             route_recomputed=route_recomputed,
             acquisition_started=acquisition_started,
             acquisition_completed=acquisition_completed,
@@ -1570,12 +1572,13 @@ def _validate_route_result(
         )
     outcomes = _unique_by(
         result.outcomes,
-        (ReachableRouteOutcome, UnreachableRouteOutcome),
+        (ReachableRouteOutcome, UnreachableRouteOutcome, LocalRouteOutcome),
         lambda value: value.demand,
         "Route model outcomes",
     )
-    if set(outcomes) != set(demands):
-        raise ValueError("Route model must return exactly one outcome per demand")
+    requested = frozenset(demands)
+    if any(not isinstance(v, LocalRouteOutcome) and d not in requested for d, v in outcomes.items()):
+        raise ValueError("complete-path outcomes must correspond to requested demands")
     return outcomes
 
 
@@ -1590,26 +1593,31 @@ def _validate_route_outcomes(
     if by_demand is None:
         values = tuple(outcomes)
         if any(
-            not isinstance(value, (ReachableRouteOutcome, UnreachableRouteOutcome))
+            not isinstance(value, (ReachableRouteOutcome, UnreachableRouteOutcome, LocalRouteOutcome))
             for value in values
         ):
             raise TypeError("Route model returned an invalid outcome")
         by_demand = {value.demand: value for value in values}
-        if set(by_demand) != set(demands) or len(values) != len(demands):
-            raise ValueError("Route model must return exactly one outcome per demand")
+        if len(by_demand) != len(values):
+            raise ValueError("duplicate Route outcome")
     assignments = {value.service_key: value.satellite_id for value in zone_assignments}
     edges = {
         pair for value in connections
         for pair in ((value.connection_id.endpoint_a, value.connection_id.endpoint_b),
                      (value.connection_id.endpoint_b, value.connection_id.endpoint_a))
     }
-    for demand in demands:
+    operational = {c.connection_id for c in connections}
+    for demand in dict.fromkeys((*demands, *by_demand)):
+        outcome = by_demand.get(demand)
         physical_world.get_node(demand.source)
-        outcome = by_demand[demand]
         ground_target = isinstance(demand.target, GroundStationRouteDemandTarget)
         if ground_target:
             terminal = demand.target.ground_station_id
             physical_world.get_ground_station(terminal)
+            unserved = False
+        elif isinstance(demand.target, SatelliteRouteDemandTarget):
+            terminal = demand.target.satellite_id
+            physical_world.get_satellite(terminal)
             unserved = False
         else:
             if not isinstance(demand.target, ZoneRouteDemandTarget):
@@ -1618,7 +1626,19 @@ def _validate_route_outcomes(
                 raise ValueError("Route demand references a foreign Zone")
             terminal = assignments[demand.target.service_key]
             unserved = terminal is None
-        if isinstance(outcome, ReachableRouteOutcome):
+        if outcome is None:
+            continue
+        if isinstance(outcome, LocalRouteOutcome):
+            references = [c.exit for c in outcome.candidates]
+            references.extend(v for record in (outcome.data, *(c.data for c in outcome.candidates))
+                              for v in _policy_references(record))
+            for value in references:
+                if isinstance(value, LogicalExit):
+                    if value.source != demand.source or value.connection not in operational:
+                        raise ValueError("local arrangement references a foreign or non-operational exit")
+                else:
+                    physical_world.get_node(value)
+        elif isinstance(outcome, ReachableRouteOutcome):
             if unserved:
                 raise ValueError("an unserved Zone cannot have a reachable Route")
             assert terminal is not None
@@ -1868,16 +1888,6 @@ def _connection_key(identifier: OperationalConnectionId) -> tuple:
         _node_key(identifier.endpoint_a),
         _node_key(identifier.endpoint_b),
     )
-
-
-def _route_demand_key(demand: RouteDemand) -> tuple:
-    target = demand.target
-    identity = (
-        ("G", _node_key(target.ground_station_id))
-        if hasattr(target, "ground_station_id")
-        else ("Z", target.zone_id)
-    )
-    return _node_key(demand.source), identity
 
 
 def _node_key(node_id: NodeId) -> tuple[int, str, str]:

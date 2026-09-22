@@ -28,17 +28,17 @@ MAXIMUM_GROUND_STATION_ACCESS_COUNT = 4
 GATEWAY_CANDIDATE_COUNT = 3
 GATEWAY_CANDIDATE_MAX_DISTANCE_M = None
 STARLINK_GEN1_PLAN_BATCH_FRAMES = 32
-from tools.zone import generate as generate_zone_layout
+from tools.observation.zone import generate as generate_zone_layout
 from data.starlink import rebuild_frozen_ground_stations
 from skyseed_v2.backend.bpf import compile_bpf
-from skyseed_v2.backend.bpf.compiler import _compile_bpf_observed
+from skyseed_v2.backend.compiler import _compile_bpf_observed
 from skyseed_v2.configuration.emulator import load_static_emulator_config
 from skyseed_v2.configuration.simulator import load_zone_layout_definition
 from skyseed_v2.emulator.entities import EmulatorGroundStation, GroundStationLocation
 from skyseed_v2.emulator.seedemu import get_skyseed_autonomous_systems
 from skyseed_v2.adapters.emulator_to_simulator import create_simulator_static_input
-from skyseed_v2.backend.bpf.execution_materials.sealing import _RunnerArtifactWriter
-from skyseed_v2.backend.bpf.execution_materials.codec import _open_runner_artifact
+from skyseed_v2.backend.execution_materials.sealing import _RunnerArtifactWriter
+from skyseed_v2.backend.execution_materials.codec import _open_runner_artifact
 from skyseed_v2.experiment.output.observation import _ExecutionObserver
 from skyseed_v2.simulator import (
     AccumulatedDeadbandParameterPlanningModel,
@@ -874,7 +874,7 @@ def test_starlink_gen1_precomputed_artifact_is_packed_and_complete(
     artifact = _open_runner_artifact(manifest_path)
 
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    assert manifest["encoding"] == "typed-packed-runtime-tables-v4"
+    assert manifest["encoding"] == "prepared-tc-elf-v7"
     assert manifest["terminal"] is True
     assert manifest["realization_count"] == 1
     assert manifest["lineage"][0]["source_plan_id"] == plan.plan_id

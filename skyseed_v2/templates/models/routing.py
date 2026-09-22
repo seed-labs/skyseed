@@ -4,8 +4,12 @@ Inject route_model=SimpleRouteModel() and supply explicit route_demands.
 No demand factory, cache, worker, inheritance or resource shutdown is required.
 
 Read supplied operational connections, assignments, demands and previous outcomes.
+GS/Satellite targets name nodes; Zone targets resolve through service assignments.
 Use assignment.service_key to preserve Zone scope; world.get_node/get_ground_station
 provide static entity data. Reference: docs/api/planning.md (service and routing).
+For local candidates/data, see templates/dataplane/threshold/scene.py and
+docs/development/dataplane.md. Use tools.development.check_model/check_scene
+from a separate driver; importing this template runs nothing.
 """
 from collections import deque
 from skyseed_v2.simulator import planner
@@ -25,7 +29,9 @@ class SimpleRouteModel:
             if demand.target.network_scope:
                 raise ValueError("SimpleRouteModel implements unscoped routing only")
             ground_target = isinstance(demand.target, planner.GroundStationRouteDemandTarget)
-            terminal = demand.target.ground_station_id if ground_target else assignments[demand.target.service_key]
+            terminal = (demand.target.ground_station_id if ground_target
+                        else demand.target.satellite_id if isinstance(demand.target, planner.SatelliteRouteDemandTarget)
+                        else assignments[demand.target.service_key])
             if terminal is None:
                 outcomes.append(planner.UnreachableRouteOutcome(demand, planner.RouteUnreachableReason.ZONE_UNSERVED))
                 continue

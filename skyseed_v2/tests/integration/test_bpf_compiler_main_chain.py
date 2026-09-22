@@ -8,7 +8,7 @@ from tests._support import drain_simulator as run_complete_static_chain
 from tests.fixtures import small_network
 from tests._support import drain_simulator
 from skyseed_v2.backend.bpf import compile_bpf
-from skyseed_v2.backend.bpf.execution_materials.actions import _ZoneEdgePhase
+from skyseed_v2.backend.execution_materials.actions import _ZoneEdgePhase
 from skyseed_v2.simulator.planner import plan_from_data, plan_to_data
 
 

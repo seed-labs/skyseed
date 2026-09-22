@@ -62,9 +62,12 @@ def _capture_inputs(paths):
     return captured
 
 
-def _write_inputs(output, captured, parameters, descriptors):
+def _write_inputs(output, captured, parameters, descriptors, *, source_root=None):
     inputs = output / "inputs"
-    root = Path(commonpath([str(path.parent) for path in captured]))
+    roots = [str(path.parent) for path in captured]
+    if source_root is not None:
+        roots.append(str(source_root))
+    root = Path(commonpath(roots))
     records = []
     for source, content in sorted(captured.items()):
         relative = Path("sources") / source.relative_to(root)
@@ -75,6 +78,7 @@ def _write_inputs(output, captured, parameters, descriptors):
                         "sha256": sha256(content).hexdigest()})
     _write_json(inputs / "provenance.json", {"sources": records, "scenario_parameters": parameters})
     _write_json(inputs / "effective-simulation.json", descriptors)
+    return records
 
 
 def _model_description(model):

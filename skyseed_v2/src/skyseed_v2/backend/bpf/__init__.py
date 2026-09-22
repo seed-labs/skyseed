@@ -4,18 +4,20 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from . import compiler, runner
-    from skyseed_v2.backend.bpf.compiler import compile_bpf
-    from skyseed_v2.backend.bpf.runner.lifecycle import Runner
-    from skyseed_v2.backend.bpf.compiler.result import BpfCompiledActivationBoundary, BpfCompilationResult
+    from skyseed_v2.backend.compiler import compile_bpf
+    from skyseed_v2.backend.runner.lifecycle import Runner
+    from skyseed_v2.backend.compiler.result import BpfCompiledActivationBoundary, BpfCompilationResult
 
 _OBJECT_MODULES = {
     "compile_bpf": ".compiler",
+    "BpfProgram": ".dataplane.program",
     "Runner": ".runner",
     "BpfCompiledActivationBoundary": ".compiler.result",
     "BpfCompilationResult": ".compiler.result",
 }
 
 __all__ = [
+    "BpfProgram",
     "BpfCompiledActivationBoundary",
     "BpfCompilationResult",
     "Runner",

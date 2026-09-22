@@ -1,9 +1,16 @@
 # S3: replace the Route Model
 
-[s3_ospf.py](s3_ospf.py) explicitly constructs the 720-satellite S3 scene from independently
-loaded Shell and GroundStation inputs, then injects [ospf_model.py](ospf_model.py).
+The Emulator joins all GSs to the ordinary [shared business LAN](../README.md).
+Only ground-interface IPv4 connectivity is added; original Model/input/timing choices
+and BPF default remain. Historical measurements use their original scene.
+
+[s3_ospf.py](s3_ospf.py) selects the 720-satellite S3 scene from independently
+loaded Shell and GroundStation inputs, constructs AS 65040 with `create_static_emulator`,
+adds the GS LAN, then injects [ospf_model.py](ospf_model.py).
 It preserves default physical and other planning Models. This is local route
-computation, not live protocol participation.
+computation, not live protocol participation. The separate [native S4](../Sky06_s4_native_ospf/README.md)
+uses actual FRR/BIRD area 0 and Linux forwarding. Different policies and coverage
+make these contrasting approaches, not equivalent algorithm/performance experiments.
 
 ```bash
 python examples/Sky03_s3_ospf/s3_ospf.py
@@ -92,6 +99,8 @@ not a protocol implementation:
 - A Zone terminates at its current service satellite, with zero additional
   routing cost. At an ABR that terminal is visible in all its attached areas.
   An unserved Zone yields `ZONE_UNSERVED`.
+- An explicitly requested Satellite destination uses that satellite as the terminal
+  in the existing area calculation, without creating default Satellite demands.
 - A GS destination is a terminal stub reached over each actual operational
   access. By default each access is advertised in all attached areas of its satellite
   (including all areas of an ABR), with the satellite→GS interface cost. An

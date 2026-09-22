@@ -21,56 +21,23 @@ def build_emulator() -> seed.Emulator:
     stations = configuration.emulator.load_ground_station_configs(GROUND_STATIONS_FILE)
     s4, = (shell for shell in shells if shell.shell_id == "S4")
 
-    network = seed.Emulator()
-    base = seed.Base()
-    satellite_as = emulator.seedemu.EmulatorAutonomousSystem(65040)
-    satellite_as.setIbgpMode("disabled")
-    base.setAutonomousSystem(satellite_as)
+    # The builder preserves stored orbit epochs/phases, payloads and capacities.
+    network = emulator.create_static_emulator(
+        configuration.emulator.StaticEmulatorConfig(skyseed_autonomous_systems=(
+            configuration.emulator.SkyseedAutonomousSystemConfig(
+                asn=65040, shells=(s4,), ground_stations=stations),
+        )),
+    )
+    satellite_as, = emulator.seedemu.get_skyseed_autonomous_systems(network.getLayer("Base"))
 
-    # The stored orbit epoch and phases define geometry; Timeline start is separate.
-    shell = satellite_as.create_shell(s4.shell_id)
-    for orbit_input in s4.explicit_orbits:
-        orbit = shell.create_orbit(
-            orbit_input.orbit_id,
-            parameters=emulator.entities.OrbitParameters(
-                altitude_km=s4.altitude_km,
-                inclination_deg=s4.inclination_deg,
-                right_ascension_deg=orbit_input.right_ascension_deg,
-                epoch_utc=s4.epoch_utc,
-            ),
-        )
-        for satellite in orbit_input.satellites:
-            orbit.create_satellite(
-                satellite.satellite_id,
-                orbit_index=satellite.index_in_orbit,
-                mean_anomaly_deg=satellite.mean_anomaly_deg,
-                payload=dict(satellite.payload_items),
-                max_simultaneous_ground_station_accesses=(
-                    satellite.max_simultaneous_ground_station_accesses
-                ),
-                maximum_simultaneous_inter_satellite_links=(
-                    satellite.maximum_simultaneous_inter_satellite_links
-                ),
-            )
+    # Ordinary SEED business LAN; synthetic addresses are separate from node /32s,
+    # Zones, management and all native dynamic-link pools. No satellite routes.
+    ground_lan = satellite_as.createNetwork("ground-lan", "203.0.0.0/16")
+    # Leave the first host address for the Docker bridge gateway.
+    for index, station in enumerate(sorted(satellite_as.ground_stations(),
+                                         key=lambda value: value.ground_station_id), start=2):
+        station.joinNetwork(ground_lan.getName(), str(ground_lan.getPrefix()[index]))
 
-    # Satellites are SEED extension nodes; GroundStations use Router node semantics.
-    for station in stations:
-        satellite_as.create_ground_station(
-            station.ground_station_id,
-            location=emulator.entities.GroundStationLocation(
-                latitude_deg=station.latitude_deg,
-                longitude_deg=station.longitude_deg,
-                elevation_m=station.elevation_m,
-            ),
-            station_type=station.station_type,
-            operator=station.operator,
-            display_name=station.display_name,
-            max_simultaneous_satellite_accesses=station.max_simultaneous_satellite_accesses,
-        )
-
-    # This scene has no ordinary AS, IX or peering. Integration supplies management
-    # connectivity and node registration; Base is its only required SEED layer.
-    network.addLayer(base)
     return network
 
 
@@ -106,7 +73,7 @@ def main(argv=None):
         input_files=(SHELLS_FILE, GROUND_STATIONS_FILE,),
         through=args.through, internet_map_enabled=not args.no_internet_map,
         deploy_parallel=args.deploy_parallel, runtime_workers=args.runtime_workers, route_workers=args.route_workers,
-        replace=args.override, traffic_enabled=not args.no_traffic,
+        replace=args.override, traffic_enabled=not args.no_traffic, traffic_telemetry_enabled=not args.no_traffic_telemetry,
     )
     def present(output, publication=None):
         return tools.write_experiment_tools(output, physical_world=simulation.get_physical_world(),

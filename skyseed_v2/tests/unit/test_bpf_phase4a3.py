@@ -14,11 +14,11 @@ import pytest
 
 from examples.Sky00_tiny_network.tiny_network import build_emulator, create_simulator
 from tests._support import drain_simulator
-from skyseed_v2.backend.bpf import compiler
-from skyseed_v2.backend.bpf.execution_materials import codec, sealing
-from skyseed_v2.backend.bpf.execution_materials.actions import _intent_phase
-from skyseed_v2.backend.bpf.execution_materials.boundaries import _resolve_nominal_boundaries
-from skyseed_v2.backend.bpf.runner import command_channel, event_history
+from skyseed_v2.backend import compiler
+from skyseed_v2.backend.execution_materials import codec, sealing
+from skyseed_v2.backend.execution_materials.actions import _intent_phase
+from skyseed_v2.backend.execution_materials.boundaries import _resolve_nominal_boundaries
+from skyseed_v2.backend.runner import command_channel, event_history
 from test_runner_runtime_optimization import _finite_runtime
 from test_runner_batches import _produce, _runner_with_real_maintenance
 
@@ -26,12 +26,12 @@ from test_runner_batches import _produce, _runner_with_real_maintenance
 def test_reading_and_collector_do_not_import_compiler_or_runtime_owner(tmp_path):
     code = '''
 import sys, threading
-from skyseed_v2.backend.bpf.execution_materials import codec, mechanics
-assert not any(n.startswith('skyseed_v2.backend.bpf.compiler') for n in sys.modules)
+from skyseed_v2.backend.execution_materials import codec, mechanics
+assert not any(n.startswith('skyseed_v2.backend.compiler') for n in sys.modules)
 assert not any(n.startswith('skyseed_v2.backend.bpf.runner') for n in sys.modules)
 from skyseed_v2.backend.bpf.runner import traffic_telemetry_collector
-assert 'skyseed_v2.backend.bpf.runner.privileged_runtime_command' not in sys.modules
-assert 'skyseed_v2.backend.bpf.runner.lifecycle' not in sys.modules
+assert 'skyseed_v2.backend.bpf.dataplane.runtime_command' not in sys.modules
+assert 'skyseed_v2.backend.runner.lifecycle' not in sys.modules
 assert len(threading.enumerate()) == 1
 '''
     result = subprocess.run([sys.executable, '-B', '-c', code], cwd=tmp_path,
@@ -79,7 +79,7 @@ def test_route_free_transition_does_not_touch_route_or_world_indexes():
 
 def test_custom_dependency_survives_unless_shared_phase_order_guarantees_it():
     from skyseed_v2.simulator import SemanticEventKind, SemanticEventReference, SemanticEventPrecedence
-    from skyseed_v2.backend.bpf.execution_materials.actions import _IntentReference, _OrderingConstraint
+    from skyseed_v2.backend.execution_materials.actions import _IntentReference, _OrderingConstraint
     _, results, _ = drain_simulator(create_simulator(build_emulator()))
     result = results[0]
     resources = result.resource_realizations[:2]
@@ -153,7 +153,7 @@ def test_loaded_admission_metadata_is_detached_and_needs_no_manifest_reread(tmp_
 @pytest.mark.parametrize('owner', ('BpfRunner', 'Runner'))
 @pytest.mark.parametrize('version', (1, 2))
 def test_tools_read_existing_event_owner_labels_without_python_aliases(tmp_path, owner, version):
-    from tools.runner.reader import read_runner_event_history
+    from tools.observation.runner.reader import read_runner_event_history
     header = {'record_type': 'history_header', 'format_version': version, 'owner': owner}
     if version == 2:
         header['capture'] = 'bounded-nonblocking'
@@ -196,14 +196,15 @@ def test_slow_normal_drain_and_overlapping_close_wait_for_the_worker(tmp_path, m
 
 
 def test_empty_and_parameter_boundaries_reuse_generation_without_node_work(monkeypatch):
-    from skyseed_v2.backend.bpf.runner.runtime_realization import _TcBpfRuntimeRealization
+    from skyseed_v2.backend.bpf.dataplane.runtime import _TcBpfRuntimeRealization
     drafts = []
-    original = _TcBpfRuntimeRealization._derive_boundary_plan
+    from skyseed_v2.backend.bpf.dataplane.translation import _BpfTranslation
+    original = _BpfTranslation._derive_boundary_plan
     def derive(self, *args, **kwargs):
         draft = original(self, *args, **kwargs)
         drafts.append(draft)
         return draft
-    monkeypatch.setattr(_TcBpfRuntimeRealization, '_derive_boundary_plan', derive)
+    monkeypatch.setattr(_BpfTranslation, '_derive_boundary_plan', derive)
     runtime, _, _ = _finite_runtime(monkeypatch)
     assert drafts[2].operation_nodes == ()
     assert drafts[1].generation_nodes is drafts[0].generation_nodes
@@ -217,7 +218,7 @@ def test_empty_and_parameter_boundaries_reuse_generation_without_node_work(monke
 def test_failed_cleanup_retains_projected_ownership_then_success_releases_it(monkeypatch):
     runtime, plans, kernel = _finite_runtime(monkeypatch)
     runtime.activate(plans[0])
-    build, indexes = runtime._previous_build, runtime._state_indexes
+    build, indexes = runtime._previous_build, runtime._material_cursor
     original = kernel.execute
     def fail_cleanup(action, request):
         if action == 'cleanup':
@@ -226,15 +227,15 @@ def test_failed_cleanup_retains_projected_ownership_then_success_releases_it(mon
     monkeypatch.setattr(kernel, 'execute', fail_cleanup)
     with pytest.raises(RuntimeError, match='ownership retained'):
         runtime.cleanup()
-    assert runtime._previous_build is build and runtime._state_indexes is indexes
+    assert runtime._previous_build is build and runtime._material_cursor is indexes
     assert runtime._node_versions and runtime._logical_ports
     monkeypatch.setattr(kernel, 'execute', original)
     runtime.cleanup()
     assert runtime._previous_build is None and runtime._active is None
     for name in ('_node_versions', '_generation_reservations', '_logical_ports',
-                 '_connection_names', '_route_destinations', '_telemetry_interfaces'):
+                 '_connection_names', '_telemetry_interfaces'):
         assert not getattr(runtime, name)
-    assert not runtime._state_indexes.resources
+    assert runtime._material_cursor is None
 
 
 def test_runner_cleanup_releases_current_and_ready_plans_preserving_frontier(tmp_path, monkeypatch):
@@ -260,7 +261,7 @@ def test_runner_cleanup_releases_current_and_ready_plans_preserving_frontier(tmp
 
 
 def test_privileged_and_collector_script_paths_are_executable_without_kernel_work(tmp_path):
-    channel = subprocess.run([sys.executable, '-B', str(command_channel._PRIVILEGED_COMMAND_PATH), 'serve'],
+    channel = subprocess.run([sys.executable, '-B', str(command_channel._PRIVILEGED_COMMAND_PATH), 'serve-bpf'],
         input=json.dumps({'action': 'invalid-offline-test-action', 'request': {}}) + '\n',
         cwd=tmp_path, text=True, capture_output=True)
     assert channel.returncode == 0, channel.stderr

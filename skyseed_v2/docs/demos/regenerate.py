@@ -130,7 +130,7 @@ def main():
                 browser_files(target/'visualizations',args.output/'s5')
                 interval=publication['history']['timeline']
             else:
-                from tools.planner import read_planner_history, write_planner_tool
+                from tools.observation.planner import read_planner_history, write_planner_tool
                 evidence=read_planner_history(target/'results/planner/planning.jsonl.gz')[:1]
                 # Retain the first complete published Plan and matching real frame prefix.
                 plan=evidence[0].plan

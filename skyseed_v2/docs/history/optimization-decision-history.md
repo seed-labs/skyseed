@@ -189,7 +189,7 @@ generation 保证。无后端效果或相同效果单独计数；剩余关系仍
 `plan_to_data` / `plan_transition_to_data`；机械流读写位于
 [`_durable_evidence._open_jsonl`](../../src/skyseed_v2/shared/_durable_evidence.py)。
 Producer 的 `_persist_compiler_lineage` / `_compact_compiler_evidence`（历史源路径：`../../src/skyseed_v2/experiment/_realization_producer.py`）
-生成 compact Compiler 记录；[Compiler Tool reader](../../tools/bpf_compiler/reader.py)
+生成 compact Compiler 记录；[Compiler Tool reader](../../tools/observation/bpf_compiler/reader.py)
 读取其既有 schema。
 
 **机制与路径。** precedence 端点用 transition-derived event list 的索引对
@@ -352,7 +352,7 @@ cleanup 执行 drain，事件溢出、writer failure 或 drain 不完整均保�
 ### D1：从冻结输入运行 detached Tools
 
 **Owner / source。** repository-local
-[`tools/_detached_inspection.py`](../../tools/_detached_inspection.py) 的
+[`tools/observation/_detached_inspection.py`](../../tools/observation/_detached_inspection.py) 的
 `_DetachedInspectionExecutor.submit` / `join`，在 `b00fc77` 已存在，当前
 checkpoint 保留。默认 `max_workers=2`，任务族是 Planner、Compiler、Observation。
 
@@ -660,7 +660,7 @@ Compose image set；外部镜像可以没有 project label，
 <a id="d5"></a>
 ### D5：Traffic 的语义读取、验证复用与紧凑记录写入
 
-**Owner / source。** 既有 repository Tools：`tools/planner/reader.py` 的私有
+**Owner / source。** 既有 repository Tools：`tools/observation/planner/reader.py` 的私有
 `_PlanHistoryRead` 只携带 Plan、transition fingerprints 和 frontiers，为 Traffic
 读取 sealed history 的语义部分；它不是新公共数据合同。完整 Planner inspection
 继续由原 reader/Tool 重建。Traffic direct collection 验证完整 Plan replay 后，

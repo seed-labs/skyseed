@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from skyseed_v2.backend.bpf.runner import deployment as deployment_module
+from skyseed_v2.backend.runner import deployment as deployment_module
 
 import os
 import json
@@ -9,8 +9,8 @@ from uuid import uuid4
 
 import pytest
 
-from skyseed_v2.backend.bpf.runner.command_channel import _PrivilegedHelper
-from skyseed_v2.backend.bpf.runner.kernel_netlink import _RETIREMENT_GROUP_BASE
+from skyseed_v2.backend.runner.command_channel import _PrivilegedHelper
+from skyseed_v2.backend.bpf.dataplane.materials import _RETIREMENT_GROUP_BASE
 
 
 def _run(*command: str, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -85,6 +85,11 @@ def test_main_boundary_owns_live_veth_establish_withdraw_and_recreate(continued)
                 key="b", slot=1, address="100.64.0.2",
             ),
         ]
+        from skyseed_v2.backend.bpf.dataplane.program import _prepare_program
+        from skyseed_v2.backend.bpf.dataplane.materials import _MAP_LAYOUTS, _DATAPLANE_CONTRACT
+        foundation = {"contract": _DATAPLANE_CONTRACT, "byteorder": "little", "maps": _MAP_LAYOUTS,
+            "program": _prepare_program(), "node_address_range": "100.64.0.0/29",
+            "nodes": [{k: n[k] for k in ("key", "node_slot", "pin_component", "node_address")} for n in nodes]}
         helper.start()
         helper.execute(
             "initialize",
@@ -92,6 +97,7 @@ def test_main_boundary_owns_live_veth_establish_withdraw_and_recreate(continued)
                 "pin_root": pin_root,
                 "common_mac": "02:53:4b:59:00:01",
                 "nodes": nodes,
+                "dataplane": foundation,
                 "inactive_generation": 0xFFFFFFFF,
                 "telemetry_enabled": False,
                 "node_address_range": "100.64.0.0/29",
@@ -135,9 +141,12 @@ def test_main_boundary_owns_live_veth_establish_withdraw_and_recreate(continued)
                                              ("b", 2, "100.64.0.2", "100.64.0.1")):
                 if not reused:
                     versions[key] = generation
-                records.append({"key": key, "active_ports": [port] if present and not reused else [],
-                    "routes": [] if reused else [{"destination": local, "logical_port_id": 0}]
-                    + ([{"destination": remote, "logical_port_id": port}] if present else []),
+                import struct
+                from ipaddress import IPv4Address
+                def route(address, out_port):
+                    return (struct.pack("<I", versions[key]) + IPv4Address(address).packed + struct.pack("<I", out_port)).hex()
+                records.append({"key": key, "active_entries": [struct.pack("<III", versions[key], port, 1).hex()] if present and not reused else [],
+                    "route_entries": [] if reused else [route(local, 0)] + ([route(remote, port)] if present else []),
                     "version": versions[key]})
             result = helper.execute("prewrite_generation", {
                 "pin_root": pin_root, "generation": generation, "generation_nodes": records,

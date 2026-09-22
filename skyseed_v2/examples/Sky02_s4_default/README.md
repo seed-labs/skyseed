@@ -1,8 +1,13 @@
 # S4: recommended default assembly
 
+The Emulator joins all GSs to the ordinary [shared business LAN](../README.md).
+Only ground-interface IPv4 connectivity is added; original Model/input/timing choices
+and BPF default remain. Historical measurements use their original scene.
+
 [s4.py](s4.py) independently loads shared Shell and GroundStation files, selects S4,
-then explicitly creates Base, AS, Shell, Orbits, Satellites and stations. It adapts
-pure Simulator input and uses default Models. Physical and planning settings remain
+then passes those records in AS 65040 to `create_static_emulator` and adds the GS LAN.
+The builder expands configured orbits and nodes, preserving epochs, phases and
+capacities. The entry adapts pure Simulator input and uses default Models. Physical and planning settings remain
 those of the shared dataset and default assembly.
 
 ```bash

@@ -29,7 +29,7 @@ from skyseed_v2.simulator.physical import (
     InterSatelliteLinkCandidate,
     PhysicalLinkWorkCounts,
 )
-from tools.planner import (
+from tools.observation.planner import (
     collect_planner_data,
     read_planner_history,
     write_planner_tool,
@@ -37,7 +37,7 @@ from tools.planner import (
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-TOOL_SOURCES = tuple(sorted((PROJECT_ROOT / "tools/planner").glob("*.py")))
+TOOL_SOURCES = tuple(sorted((PROJECT_ROOT / "tools/observation/planner").glob("*.py")))
 _STREAM_KEY = {
     "physical-frames.jsonl": "physical_frames",
     "planning.jsonl.gz": "planning",
@@ -255,12 +255,13 @@ def test_projection_serializes_complete_operational_state_only_once(
             "zones_unserved",
             "reachable_route_count",
             "unreachable_route_count",
+            "local_route_count",
         }
         assert frame["transition"]["schema"] == (
-            "skyseed-v2-plan-transition-evidence-v5"
+            "skyseed-v2-plan-transition-evidence-v7"
         )
     encoded = json.dumps(data, sort_keys=True, separators=(",", ":"))
-    assert encoded.count("skyseed-v2-planned-operational-state-v2") == 1
+    assert encoded.count("skyseed-v2-planned-operational-state-v4") == 1
     assert len(data["_tool_frame_chunks"]) == len(data["frames"])
     assert all("route_outcomes" not in value for value in data["_tool_frame_chunks"])
     final_state_bytes = len(
@@ -467,7 +468,7 @@ def test_tool_sources_only_read_public_evidence() -> None:
     assert "plan_route_outcomes(" not in combined
     assert "compute_observation(" not in combined
     assert "compile_bpf(" not in combined
-    reader = (PROJECT_ROOT / "tools/planner/reader.py").read_text()
+    reader = (PROJECT_ROOT / "tools/observation/planner/reader.py").read_text()
     assert ".read_text(" not in reader
 
 

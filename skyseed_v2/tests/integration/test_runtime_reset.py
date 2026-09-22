@@ -58,7 +58,7 @@ def test_reset_orders_traffic_shutdown_cleanup_and_fresh_invocation(tmp_path, mo
             return {}
 
     monkeypatch.setattr(execution, "Runner", Runner)
-    monkeypatch.setattr("tools.traffic.active.probe_execution.TrafficProbeExecutor", Traffic)
+    monkeypatch.setattr("tools.generation.traffic.probe_execution.TrafficProbeExecutor", Traffic)
     monkeypatch.setattr(execution, "_record_container_checkpoint", lambda *a: None)
     def run():
         try:

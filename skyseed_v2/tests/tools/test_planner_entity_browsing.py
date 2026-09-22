@@ -3,10 +3,10 @@ import json
 import subprocess
 
 from tests.tools.test_presentation_replay import _node
-from tools.planner._route_display import _ROUTE_SCRIPT, _PAIR_SCRIPT
-from tools.planner._ospf_display import _OSPF_SCRIPT
-from tools.planner.projection import _pair_index
-from tools.planner.renderer import _script
+from tools.observation.planner._route_display import _ROUTE_SCRIPT, _PAIR_SCRIPT
+from tools.observation.planner._ospf_display import _OSPF_SCRIPT
+from tools.observation.planner.projection import _pair_index
+from tools.observation.planner.renderer import _script
 
 
 def test_entity_clicks_pair_context_and_time_use_recorded_scoped_associations(tmp_path):

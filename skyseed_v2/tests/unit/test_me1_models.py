@@ -392,9 +392,9 @@ def test_diagnostic_cancellation_and_algorithm_failure_propagate():
 
 
 def test_basic_tools_preserve_missing_measures_and_never_recompute(tmp_path):
-    from tools._inspection_evidence import iter_physical_link_inspection
-    from tools.physical_world import write_physical_world_tool, collect_physical_world_data
-    from tools.planner import write_planner_tool, collect_planner_data
+    from tools.observation._inspection_evidence import iter_physical_link_inspection
+    from tools.observation.physical_world import write_physical_world_tool, collect_physical_world_data
+    from tools.observation.planner import write_planner_tool, collect_planner_data
     sim, models, _, _ = assembly()
     world, owner = sim.get_physical_world(), sim.get_planner()
     writer = _PhysicalLinkInspectionWriter(tmp_path / 'facts', world)

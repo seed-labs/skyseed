@@ -21,8 +21,8 @@ from skyseed_v2.simulator import (
     Simulator,
     apply_plan,
 )
-from tools.bpf_compiler import read_bpf_compiler_history
-from tools.planner import collect_planner_data, read_planner_history
+from tools.observation.bpf_compiler import read_bpf_compiler_history
+from tools.observation.planner import collect_planner_data, read_planner_history
 
 
 def _bounded_complete_simulator(duration: timedelta) -> Simulator:

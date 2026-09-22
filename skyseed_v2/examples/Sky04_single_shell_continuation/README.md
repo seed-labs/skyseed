@@ -1,5 +1,9 @@
 # One Shell: delivery and continuation
 
+The Emulator joins all GSs to the ordinary [shared business LAN](../README.md).
+Only ground-interface IPv4 connectivity is added; original Model/input/timing choices
+and BPF default remain. Historical measurements use their original scene.
+
 [single_shell.py](single_shell.py) explicitly constructs one shared-data Shell and
 uses the same default Simulator assembly. This entry emphasizes delivery boundaries
 and continuation in the original process. `--shell` selects the authored Shell.

@@ -21,7 +21,7 @@ from skyseed_v2.simulator.input import (
     GroundStationSimulationInput,
     SimulatorStaticInput,
 )
-from tools.zone import collect_zone_data, write_zone_tool
+from tools.observation.zone import collect_zone_data, write_zone_tool
 
 
 def definition(

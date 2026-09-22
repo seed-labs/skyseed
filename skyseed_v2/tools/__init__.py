@@ -8,11 +8,11 @@ __all__ = [
 ]
 
 _FUNCTION_MODULES = {
-    "write_experiment_tools": ".experiment",
-    "write_aggregate_index": "._presentation.html",
-    "finalize_runtime_aggregate_index": "._presentation.html",
-    "write_network_export": ".planner.export",
-    "write_traffic_export": ".traffic.export",
+    "write_experiment_tools": ".observation.experiment",
+    "write_aggregate_index": ".observation._presentation.html",
+    "finalize_runtime_aggregate_index": ".observation._presentation.html",
+    "write_network_export": ".observation.planner.export",
+    "write_traffic_export": ".observation.traffic.export",
 }
 
 
@@ -23,6 +23,6 @@ def __getattr__(name):
     if name in _FUNCTION_MODULES:
         value = getattr(import_module(_FUNCTION_MODULES[name], __name__), name)
     else:
-        value = import_module("." + name, __name__)
+        value = import_module(".observation." + name, __name__)
     globals()[name] = value
     return value

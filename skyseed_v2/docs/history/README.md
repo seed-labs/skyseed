@@ -4,6 +4,12 @@ These records preserve reasons, measurements and research under their original
 conditions. Old source/output paths remain historical facts. They are not current
 operation instructions, hardware requirements, or fresh validation.
 
+- [Programmable-runtime capability changes](programmable-runtime-expansion.md): BPF authoring,
+  native forwarding, payload/preparation ownership, build costs, Tools and console corrections.
+- [Historical native S3 experiments](native-s3-experiments.md): no-Zone full runs, later
+  GS↔Zone workload, Map diagnostics and interrupted host-pressure incident.
+- [Native S4 experiments and acceptance](native-s4-experiments.md): distinct fixed-pair and
+  near/far-pair campaigns, compatibility corrections, orphan recovery and accepted manual run.
 - [Phase 4b-2 closing campaign](2026-09-18-closing-campaign.md): sequential live
   examples, retained controls, Traffic classifications, cleanup and source evidence.
 - [Optimization decision history](optimization-decision-history.md): adopted mechanisms,

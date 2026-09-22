@@ -10,7 +10,8 @@ import struct
 
 import pytest
 
-from skyseed_v2.backend.bpf.runner.kernel_netlink import _RETIREMENT_GROUP_BASE, _RouteSocket, _attr, _ifinfo, _text, _u32
+from skyseed_v2.backend.bpf.dataplane.materials import _RETIREMENT_GROUP_BASE
+from skyseed_v2.backend.linux.netlink import _RouteSocket, _attr, _ifinfo, _text, _u32
 
 
 def _attributes(payload):

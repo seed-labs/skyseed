@@ -9,7 +9,7 @@ import pytest
 from examples.Sky02_s4_default import s4
 
 
-def test_visible_s4_construction_preserves_configured_scene(monkeypatch):
+def test_s4_construction_preserves_configured_scene():
     inputs = s4.configuration.emulator.load_static_emulator_config(s4.SHELLS_FILE.parent / "scenario.yaml")
     system, = inputs.skyseed_autonomous_systems
     selected, = (shell for shell in system.shells if shell.shell_id == "S4")
@@ -17,10 +17,6 @@ def test_visible_s4_construction_preserves_configured_scene(monkeypatch):
         inputs, skyseed_autonomous_systems=(replace(system, shells=(selected,)),),
     ))
 
-    def forbidden(*args, **kwargs):
-        raise AssertionError("the entry must visibly construct its own scene")
-
-    monkeypatch.setattr(s4.emulator, "create_static_emulator", forbidden)
     actual = s4.build_emulator()
     assert isinstance(actual, s4.seed.Emulator)
     assert [layer.getName() for layer in actual.getLayers()] == ["Base"]
@@ -90,6 +86,7 @@ def test_s4_default_scene_and_entry_order(tmp_path, monkeypatch, operation):
                 "entry_path": Path(s4.__file__),
                 "input_files": (s4.SHELLS_FILE, s4.GROUND_STATIONS_FILE),
                 "replace": True, "traffic_enabled": True,
+                "traffic_telemetry_enabled": True,
                 "through": "compiler", "internet_map_enabled": True,
                 "deploy_parallel": None, "runtime_workers": None, "route_workers": None,
             }

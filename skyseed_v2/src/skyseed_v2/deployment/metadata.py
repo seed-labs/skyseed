@@ -17,6 +17,11 @@ def _write_compose_build_plan(runtime_directory: Path) -> Path:
     compose_path = runtime / "docker-compose.yml"
     compose = safe_load(compose_path.read_text(encoding="utf-8"))
     services = compose['services']
+    # Containers remain project-owned even when the immutable image is shared.
+    # Dockerfile FROM names still identify these logical prerequisites; Deployer
+    # resolves them to the completed image before building dependent contexts.
+    for name in prerequisites:
+        services[name]['image'] = f'${{COMPOSE_PROJECT_NAME}}-{name}'
     for service in services.values():
         labels = service.get('labels', {})
         if (service.get('network_mode') == 'none' and

@@ -10,10 +10,13 @@ scale reference. The project name is **SkySEED**; existing technical names such 
 |---|---|
 | Install and produce the first result | [Getting started](docs/user-guides/getting-started.md) |
 | Understand the components and their cooperation | [Architecture overview](docs/architecture/overview.md) and [full-size diagram](docs/architecture/system-architecture.svg) |
+| Choose BPF or Linux forwarding | [Shared pipeline and mode differences](docs/architecture/overview.md#choose-a-forwarding-mode) |
 | Learn the default assembly | [S4](examples/Sky02_s4_default/README.md) |
 | Try a smaller scene and edit local algorithms | [S5 custom Models](examples/Sky01_s5_custom_models/README.md) |
 | Find public queries, Model data and control methods | [API reference](docs/api/README.md) |
+| Replace packet processing | [C/eBPF template](templates/dataplane/README.md) |
 | Check an installation | [Tiny](examples/Sky00_tiny_network/README.md) |
+| Run full S4 GS↔Zone traffic with BIRD | [Native S4](examples/Sky06_s4_native_ospf/README.md) |
 | Continue, deploy, run or stop | [Computation and controls](docs/user-guides/computation-and-controls.md) |
 | Inspect retained interactive results | [Local demonstrations](docs/demos/README.md) |
 | Develop or review | [Developer references](docs/development/README.md), [Model interfaces](docs/development/model-interfaces.md) |

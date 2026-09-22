@@ -11,13 +11,13 @@ import sys
 import pytest
 from seedemu.compiler import Docker
 from examples.Sky00_tiny_network import tiny_network as tiny
-from skyseed_v2.backend.bpf.execution_materials.codec import _open_runner_artifact
+from skyseed_v2.backend.execution_materials.codec import _open_runner_artifact
 from skyseed_v2.experiment import ExperimentController
 from skyseed_v2.experiment import controller as workflow
 from skyseed_v2.experiment.output.generation import _guard_existing_output
 from skyseed_v2.experiment.output.provenance import _capture_inputs
 from skyseed_v2.experiment.execution import _read_and_verify_execution_definition, _write_generated_run_script
-from tools._history import read_sealed_physical_frames
+from tools.observation._history import read_sealed_physical_frames
 
 
 def configured(output, **options):
@@ -191,8 +191,9 @@ def test_route_worker_override_restores_environment_after_failure(monkeypatch):
     assert os.environ['SKYSEED_ROUTE_WORKERS'] == '3'
 
 
-def test_compiler_failure_preserves_primary_error_and_closes_packaging(tmp_path, monkeypatch):
-    from skyseed_v2.backend.bpf.execution_materials.sealing import _RunnerArtifactWriter
+@pytest.mark.parametrize('retained', [False, True])
+def test_compiler_failure_preserves_primary_error_and_closes_packaging(tmp_path, monkeypatch, capsys, retained):
+    from skyseed_v2.backend.execution_materials.sealing import _RunnerArtifactWriter
     _, instance = configured(tmp_path / 'backend-failed')
     primary = RuntimeError('backend writer failed')
     def fail(*args, **kwargs):
@@ -205,12 +206,16 @@ def test_compiler_failure_preserves_primary_error_and_closes_packaging(tmp_path,
     monkeypatch.setattr(_RunnerArtifactWriter, 'append', fail)
     monkeypatch.setattr(_RunnerArtifactWriter, 'close', close)
     with pytest.raises(RuntimeError) as caught:
-        instance.generate()
+        instance.serve() if retained else instance.generate()
     assert caught.value is primary
     assert closed
     status = json.loads((tmp_path / 'backend-failed/results/experiment/generation-status.json').read_text())
     assert status['status'] == 'FAILED'
     assert status['stage'] == 'compiler-production'
+    feedback = capsys.readouterr().err
+    if retained:
+        assert 'Calculation session closed with errors: RuntimeError: backend writer failed' in feedback
+    assert 'Calculation session closed: owned work' not in feedback
 
 
 @pytest.mark.parametrize('options', [

@@ -10,15 +10,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from skyseed_v2.backend.bpf.runner import command_channel as runner_module
-from skyseed_v2.backend.bpf.runner import bpf as bpf_module
-from skyseed_v2.backend.bpf.runner import (
-    privileged_runtime_command as command_module,
-)
+from skyseed_v2.backend.runner import command_channel as runner_module
+from skyseed_v2.backend.bpf.dataplane import runtime_command as command_module
 from skyseed_v2.backend.bpf.runner import (
     traffic_telemetry_collector as collector_module,
 )
-from skyseed_v2.backend.bpf.runner import traffic_telemetry_abi as protocol_module
+from skyseed_v2.backend.bpf.dataplane import telemetry_abi as protocol_module
 from skyseed_v2.backend.bpf.runner.traffic_telemetry import _TrafficTelemetryRecorder
 
 
@@ -45,11 +42,14 @@ def test_fixed_packet_event_decodes_explicit_icmp_and_ingress_facts() -> None:
         socket.htons(321),
         socket.htons(9),
         0,
+        7,
+        1,
     )
 
     assert protocol_module._decode_telemetry_event(payload) == {
         "record_type": "packet",
         "observation": "ingress",
+        "local_origin": False,
         "kernel_monotonic_ns": 123456789,
         "node_slot": 7,
         "generation": 12,
@@ -61,6 +61,10 @@ def test_fixed_packet_event_decodes_explicit_icmp_and_ingress_facts() -> None:
         "decision": "redirect",
         "reason": "route-redirect",
         "protocol": 1,
+        "tc_action": 7,
+        "reason_code": 1,
+        "metadata_source": "handler",
+        "ipv4_observed": True,
         "icmp": {
             "valid": True,
             "type": 8,
@@ -74,7 +78,16 @@ def test_fixed_packet_event_decodes_explicit_icmp_and_ingress_facts() -> None:
 def test_long_lived_collector_is_separate_from_one_shot_command() -> None:
     assert not hasattr(command_module, "_collect_telemetry")
     assert callable(collector_module._collect_telemetry)
-    assert protocol_module._TELEMETRY_EVENT.size == 48
+    assert protocol_module._TELEMETRY_EVENT.size == 56
+
+
+def test_local_origin_flag_is_distinct_from_a_network_ingress_observation():
+    payload = protocol_module._TELEMETRY_EVENT.pack(
+        123, 7, 12, 41, 52, _ipv4_word('100.64.0.1'), _ipv4_word('100.64.0.3'),
+        98, 1, 1, 1, 1, 8, 0, socket.htons(321), socket.htons(9), 0, 7, 3)
+    result = protocol_module._decode_telemetry_event(payload)
+    assert result['local_origin'] is True and result['observation'] == 'local-output'
+    assert result['ipv4_observed'] is True and result['selected_egress_ifindex'] == 52
 
 
 def test_worker_starts_the_dedicated_telemetry_collector(
@@ -125,162 +138,44 @@ def test_worker_starts_the_dedicated_telemetry_collector(
     assert kwargs["stderr"] == subprocess.PIPE
 
 
-def test_initialize_binds_one_shared_ring_and_loss_map_to_each_node_program(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    descriptors = iter(range(10, 100))
-    map_calls = []
-    program_calls = []
-    nodes = tuple(
-        {
-            "key": f"65001/satellite/sat-{slot}",
-            "node_slot": slot,
-            "pid": 100 + slot,
-            "netns_inode": 200 + slot,
-            "pin_component": f"n-node-{slot}",
-            "node_address": f"100.64.0.{slot + 1}",
-            "active_links_capacity": 8,
-            "routes_capacity": 8,
-            "bindings_capacity": 4,
-        }
-        for slot in (0, 1)
-    )
-
-    monkeypatch.setattr(command_module, "_pin_root", lambda _value: tmp_path / "pins")
-    monkeypatch.setattr(command_module, "_assert_netns", lambda _node: None)
-    live_nodes = {}
-    monkeypatch.setattr(command_module, "_LIVE_NODES", live_nodes)
-    def retain(nodes):
-        for node in nodes:
-            live_nodes[node["key"]] = {**node, "maps": {},
-                "netlink": SimpleNamespace(initial_links=lambda group_end: 1, set_link=lambda *a, **k: None,
-                                            address=lambda *a, **k: None)}
-    monkeypatch.setattr(command_module, "_retain_namespaces", retain)
-    monkeypatch.setattr(command_module, "_probe_batch_update_support", lambda: True)
-    monkeypatch.setattr(command_module, "_open_pinned", lambda path: next(descriptors))
-    monkeypatch.setattr(command_module, "_GENERATION_FD", -1)
-
-    monkeypatch.setattr(
-        command_module,
-        "_audit_node_addresses",
-        lambda _request: {"result": "passed"},
-    )
-
+def test_initialize_binds_one_shared_ring_and_loss_map_to_each_node_program(monkeypatch, tmp_path):
+    from tests.unit.test_bpf_local_ingress import FoundationKernel
+    from tests.unit.test_dataplane_preparation import _node_foundation
+    foundation, _ = _node_foundation(2)
+    kernel = FoundationKernel(monkeypatch, tmp_path / 'pins')
+    map_calls, program_calls = [], []
+    create, load = command_module._create_map, command_module._load_object
     def create_map(name, **facts):
-        descriptor = next(descriptors)
-        map_calls.append((name, descriptor, facts))
-        return descriptor
-
-    def load_program(*maps, **facts):
-        program_calls.append((maps, facts))
-        return next(descriptors)
-
-    monkeypatch.setattr(command_module, "_create_map", create_map)
-    monkeypatch.setattr(command_module, "_load_program", load_program)
-    monkeypatch.setattr(command_module, "_pin_object", lambda *_args: None)
-    monkeypatch.setattr(command_module, "_update_map", lambda *_args: None)
-    monkeypatch.setattr(command_module.os, "close", lambda _descriptor: None)
-
-    result = command_module._initialize(
-        {
-            "pin_root": "/sys/fs/bpf/skyseed-v2/run-telemetry-test",
-            "nodes": nodes,
-            "inactive_generation": 0xFFFFFFFF,
-            "retirement_group_end": 0x53530002,
-            "resident_generation_capacity": 8,
-            "telemetry_enabled": True,
-            "node_address_range": "100.64.0.0/29",
-            "zone_prefixes": (),
-        }
-    )
-
-    ring = next(value for value in map_calls if value[0] == "traffic_events")
-    losses = next(value for value in map_calls if value[0] == "traffic_losses")
-    assert ring[2]["map_type"] == command_module._BPF_MAP_TYPE_RINGBUF
-    assert losses[2] == {
-        "key_size": 4,
-        "value_size": 8,
-        "max_entries": 2,
-        "map_type": command_module._BPF_MAP_TYPE_ARRAY,
-    }
-    assert [facts["node_slot"] for _maps, facts in program_calls] == [0, 1]
-    assert all(facts["telemetry_ring_map"] == ring[1] for _, facts in program_calls)
-    assert all(facts["telemetry_loss_map"] == losses[1] for _, facts in program_calls)
-    assert result["traffic_telemetry"]["shared_ring_buffer"] is True
-    command_module._RETIREMENT_POOL.shutdown()
-    command_module._RETIREMENT_POOL = None
-    command_module._RETIREMENT_WORKERS = 0
-
-
-def test_ring_output_failure_path_converges_back_to_original_terminal_action(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    real_assembler = bpf_module._Assembler
-    captured = []
-
-    class _InspectingAssembler(real_assembler):
-        def finish(self):
-            captured.append(self)
-            return super().finish()
-
-    monkeypatch.setattr(bpf_module, "_Assembler", _InspectingAssembler)
-    bpf_module._tc_program(
-        10,
-        11,
-        12,
-        15,
-        16,
-        telemetry_ring_map=13,
-        telemetry_loss_map=14,
-        generation_versions_map=15, node_slot=3,
-    )
-    assembler = captured[0]
-    assert assembler.labels["emit_telemetry"] < assembler.labels["telemetry_emitted"]
-    assert assembler.labels["telemetry_emitted"] < assembler.labels["redirect"]
-    assert assembler.labels["redirect"] < assembler.labels["drop"]
-    assert assembler.labels["drop"] < assembler.labels["pass"]
-    jump_targets = [value[1] for value in assembler.jumps]
-    assert jump_targets.count("telemetry_emitted") == 2
-    after_output = jump_targets[
-        jump_targets.index("telemetry_emitted") + 1 :
-    ]
-    assert "redirect" in after_output
-    assert "drop" in after_output
-    assert "pass" in after_output
-
-
-def test_malformed_ipv4_ihl_leaves_icmp_metadata_invalid(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    real_assembler = bpf_module._Assembler
-    captured = []
-
-    class _InspectingAssembler(real_assembler):
-        def finish(self):
-            captured.append(self)
-            return super().finish()
-
-    monkeypatch.setattr(bpf_module, "_Assembler", _InspectingAssembler)
-    bpf_module._tc_program(
-        10,
-        11,
-        12,
-        15,
-        16,
-        telemetry_ring_map=13,
-        telemetry_loss_map=14,
-        generation_versions_map=15, node_slot=3,
-    )
-
-    assert any(
-        label == "after_icmp"
-        and code == bpf_module._BPF_JMP_JLT_IMMEDIATE
-        and destination == 4
-        and immediate == 5
-        for _index, label, code, destination, _source, immediate
-        in captured[0].jumps
-    )
+        fd = create(name, **facts)
+        map_calls.append((name, fd, facts))
+        return fd
+    def load_program(*args, **facts):
+        program_calls.append((args, facts))
+        return load(*args, **facts)
+    monkeypatch.setattr(command_module, '_create_map', create_map)
+    monkeypatch.setattr(command_module, '_load_object', load_program)
+    nodes = [{**n, 'pid':100+i, 'netns_inode':200+i, 'process_start_time_ticks':1,
+              'active_links_capacity':8, 'routes_capacity':8, 'bindings_capacity':4,
+              'table_capacities':[{'program':0, 'active':8, 'routes':8}]} for i,n in enumerate(foundation['nodes'])]
+    request = {'pin_root':'/pins', 'nodes':nodes, 'dataplane':foundation, 'inactive_generation':0xffffffff,
+               'retirement_group_end':0x53530002, 'resident_generation_capacity':8, 'telemetry_enabled':True,
+               'node_address_range':foundation['node_address_range'], 'zone_prefixes':()}
+    try:
+        result = command_module._initialize(request)
+        ring = next(v for v in map_calls if v[0] == 'traffic_events')
+        losses = next(v for v in map_calls if v[0] == 'traffic_losses')
+        assert ring[2]['map_type'] == command_module._BPF_MAP_TYPE_RINGBUF
+        assert losses[2] == {'key_size':4, 'value_size':8, 'max_entries':2, 'map_type':command_module._BPF_MAP_TYPE_ARRAY}
+        assert len(program_calls) == 2
+        for slot, (arguments, facts) in enumerate(program_calls):
+            assert arguments == (foundation['programs'][0],)
+            assert facts['node_slot'] == slot
+            assert facts['bindings']['traffic_events'] == ring[1]
+            assert facts['bindings']['traffic_losses'] == losses[1]
+        assert result['traffic_telemetry']['shared_ring_buffer'] is True
+    finally:
+        command_module._cleanup(request)
+    kernel.assert_clean()
 
 
 class _CollectorHelper:
@@ -320,7 +215,7 @@ def test_recorder_streams_identity_and_preserves_final_drain_prefix(
             "foundation_token": "foundation-test",
             "pin_root": "/sys/fs/bpf/skyseed-v2/run-test",
             "ring_capacity_bytes": 1 << 20,
-            "event_schema": {"name": "skyseed-tc-ingress-v1"},
+            "event_schema": {"name": "skyseed-tc-ingress-v3"},
             "nodes": (
                 {
                     "node_slot": 0,
@@ -359,9 +254,10 @@ def test_recorder_streams_identity_and_preserves_final_drain_prefix(
 
     assert records[0]["record_type"] == "telemetry_header"
     assert records[0]["source_observation"] == {
-        "hook": "ingress-only",
-        "source_outbound_observed": False,
-        "first_link": "inferred-from-first-observed-ingress",
+        "hook": "network-and-local-ingress",
+        "source_outbound_observed": True,
+        "scope": "covered-nodes",
+        "first_link": "source-selection-recorded-arrival-requires-peer-ingress",
     }
     assert records[1]["record_type"] == "node_identity"
     assert any(value["record_type"] == "interface_update" for value in records)

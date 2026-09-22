@@ -1,5 +1,9 @@
 # Five Shells: independent planning scopes
 
+The Emulator joins all GSs to the ordinary [shared business LAN](../README.md).
+Only ground-interface IPv4 connectivity is added; original Model/input/timing choices
+and BPF default remain. Historical measurements use their original scene.
+
 [five_shells.py](five_shells.py) visibly constructs all five shared-data Shells and
 the GroundStation inventory, then uses default assembly. Satellite routing remains
 inside each Shell’s network scope; shared stations do not become transit bridges.

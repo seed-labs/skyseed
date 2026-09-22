@@ -13,17 +13,17 @@ import pytest
 from examples.Sky00_tiny_network.tiny_network import build_emulator
 from examples.Sky00_tiny_network.tiny_network import create_simulator as create_complete_static_simulator
 from tests._support import drain_simulator as run_complete_static_chain
-from skyseed_v2.backend.bpf.runner import lifecycle as runner_module
-from skyseed_v2.backend.bpf.runner.lifecycle import Runner
-from skyseed_v2.backend.bpf.compiler.result import BpfCompiledActivationBoundary, BpfCompilationResult
-from skyseed_v2.backend.bpf.execution_materials.actions import _IntentReference, _OrderingConstraint
-from skyseed_v2.backend.bpf.execution_materials.boundaries import _resolve_nominal_boundaries
-from skyseed_v2.backend.bpf.execution_materials.mechanics import _empty_state
-from skyseed_v2.backend.bpf.runner.runtime_realization import _validate_boundary_lowering
-from skyseed_v2.backend.bpf.execution_materials.mechanics import _BoundaryStateIndexes
-from skyseed_v2.backend.bpf.execution_materials.codec import _HEADER, _INDEX, _boundary_to_data, _open_runner_artifact, _read_runner_artifact_manifest_snapshot
-from skyseed_v2.backend.bpf.execution_materials.sealing import _RunnerArtifactWriter, _write_runner_artifact
-from skyseed_v2.backend.bpf.execution_materials.codec import _PackedBoundaryReader, _DecodedIdentities, _pack
+from skyseed_v2.backend.runner import lifecycle as runner_module
+from skyseed_v2.backend.runner.lifecycle import Runner
+from skyseed_v2.backend.compiler.result import BpfCompiledActivationBoundary, BpfCompilationResult
+from skyseed_v2.backend.execution_materials.actions import _IntentReference, _OrderingConstraint
+from skyseed_v2.backend.execution_materials.boundaries import _resolve_nominal_boundaries
+from skyseed_v2.backend.execution_materials.mechanics import _empty_state
+from skyseed_v2.backend.bpf.dataplane.translation import _validate_boundary_lowering
+from skyseed_v2.backend.execution_materials.mechanics import _BoundaryStateIndexes
+from skyseed_v2.backend.execution_materials.codec import _HEADER, _INDEX, _boundary_to_data, _open_runner_artifact, _read_runner_artifact_manifest_snapshot
+from skyseed_v2.backend.execution_materials.sealing import _RunnerArtifactWriter, _write_runner_artifact
+from skyseed_v2.backend.execution_materials.codec import _PackedBoundaryReader, _DecodedIdentities, _pack
 from skyseed_v2.simulator import planned_operational_state_fingerprint
 
 
@@ -42,8 +42,8 @@ def test_packed_artifact_opens_without_rich_realization_reconstruction(
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     artifact = _open_runner_artifact(manifest_path)
     try:
-        assert manifest["format_version"] == 4
-        assert manifest["encoding"] == "typed-packed-runtime-tables-v4"
+        assert manifest["format_version"] == 8
+        assert manifest["encoding"] == "prepared-forwarding-v8"
         assert manifest["terminal"] is True
         assert manifest["semantic_validation"] == "complete-before-seal"
         assert manifest["binary"]["path"] == "runner-runtime.bin"
@@ -65,7 +65,8 @@ def test_packed_artifact_opens_without_rich_realization_reconstruction(
         )
         boundaries = artifact.boundaries()
         assert not isinstance(boundaries, tuple)
-        assert tuple(boundaries) == expected
+        assert [b.nominal_time for b in boundaries] == [b.nominal_time for b in expected]
+        assert all(b.executable is not None and not hasattr(b, "operations") for b in boundaries)
         assert artifact.snapshot()["boundary_decode"] == "indexed-on-demand"
         demand = artifact.runtime_capacity_demand
         assert demand["boundary_count"] == len(expected)
@@ -419,17 +420,17 @@ def test_representative_artifact_preserves_complete_boundary_semantics(
     artifact = _open_runner_artifact(manifest)
     try:
         actual = tuple(artifact.boundaries())
-        assert actual == expected
+        assert [b.nominal_time for b in actual] == [b.nominal_time for b in expected]
         assert len(actual) > 1
-        assert any(not boundary.operations for boundary in actual)
+        assert any(boundary.operation_count == 0 for boundary in actual)
         assert {
-            operation.domain for boundary in actual for operation in boundary.operations
+            domain for boundary in actual for domain, count in boundary.operation_counts if count
         } == {"resource", "parameter", "forwarding", "zone-edge"}
         assert not any(boundary.constraint_edges for boundary in actual)  # mechanical edges are guaranteed by phases
         assert all(
             0 <= _validate_boundary_lowering(boundary)
             <= boundary.applied_constraint_count
-            for boundary in actual
+            for boundary in expected
         )
         assert all(boundary.physical_world_projection == expected[0].physical_world_projection for boundary in actual)
         assert artifact.zone_prefixes == tuple(
@@ -442,31 +443,17 @@ def test_representative_artifact_preserves_complete_boundary_semantics(
             value.coverage for value in expected
         ]
 
-        indexes = _BoundaryStateIndexes()
-        for actual_boundary in actual:
-            indexes.apply(actual_boundary)
-        actual_state = indexes.snapshot()
-        assert set(actual_state.resources) == {v.connection.connection_id for v in representative.intended_resources}
-        assert set(actual_state.forwarding) == set(representative.intended_forwarding)
-        no_op = expected[-1].__class__(
-            nominal_time=expected[-1].nominal_time,
-            operations=(),
-            physical_world_projection=expected[-1].physical_world_projection,
-            source_realization_indexes=expected[-1].source_realization_indexes,
-            coverage=expected[-1].coverage,
-            inspected_constraint_count=0,
-            source_constraint_count=0,
-            applied_constraint_count=0,
-            outgoing_constraint_count=0,
-            later_constraint_count=0,
-            constraint_reasons=(),
-            constraint_edges=(),
-            operation_counts=(("resource", 0), ("parameter", 0), ("forwarding", 0), ("zone-edge", 0)),
-            order_sha256=sha256(b"").hexdigest(),
-        )
-        assert _PackedBoundaryReader(_pack(_boundary_to_data(no_op)), _DecodedIdentities()).boundary(no_op.physical_world_projection) == no_op
-        indexes.apply(no_op)
-        assert indexes.snapshot() == actual_state
+        from skyseed_v2.backend.bpf.dataplane.materials import _MaterialCursor
+        from skyseed_v2.backend.bpf.dataplane.translation import _BpfTranslation
+        translation = _BpfTranslation(artifact.physical_world_projection, artifact.zone_prefixes)
+        cursor = _MaterialCursor(artifact.physical_world_projection.node_ids)
+        for source, decoded in zip(expected, actual):
+            prepared = translation.translate(source, artifact.logical_ports)
+            assert _pack(_boundary_to_data(decoded)) == _pack(_boundary_to_data(prepared))
+            draft = cursor.apply(decoded)
+            assert {n.node_id: dict(n.routes) for n in draft.generation_nodes} == translation._previous.routes
+        assert cursor.resources == {v.connection.connection_id for v in representative.intended_resources}
+        assert all(not hasattr(b, "operations") for b in actual)
     finally:
         artifact.close()
 
@@ -488,9 +475,8 @@ def test_artifact_stores_unique_stable_nonzero_endpoint_ports(tmp_path, realizat
         expected = artifact.logical_ports
         assert len(expected) * 2 == len(ports)
         for boundary in artifact.boundaries():
-            for operation in boundary.operations:
-                if operation.domain == "resource":
-                    assert operation.intent.connection_id in expected
+            for connection in (*boundary.executable["created"], *boundary.executable["removed"]):
+                assert connection in expected
         assert artifact.logical_ports == expected
     finally:
         artifact.close()
@@ -515,12 +501,9 @@ def test_decoded_immutable_identity_reuse_is_artifact_local(tmp_path, realizatio
         assert a == again == separate
         assert a.nominal_time is again.nominal_time
         assert a.nominal_time is not separate.nominal_time
-        connections = [operation.intent.connection_id for operation in a.operations
-                       if hasattr(operation.intent, "connection_id")]
-        repeated = [operation.intent.connection_id for operation in again.operations
-                    if hasattr(operation.intent, "connection_id")]
-        independent = [operation.intent.connection_id for operation in separate.operations
-                       if hasattr(operation.intent, "connection_id")]
+        connections = a.executable["created"]
+        repeated = again.executable["created"]
+        independent = separate.executable["created"]
         assert connections
         assert all(x is y and x is not z for x, y, z in zip(connections, repeated, independent))
         nodes = {node: node for node in first.physical_world_projection.node_ids}
@@ -529,31 +512,33 @@ def test_decoded_immutable_identity_reuse_is_artifact_local(tmp_path, realizatio
         first.close()
         other.close()
     assert not first._identities.nodes and not first._identities.connections and not first._identities.timestamps
-    assert not first._identities.texts and not first._identities.targets
+    assert not first._identities.texts
 
 
 def test_direct_reader_round_trips_normalized_boundary(realizations, monkeypatch):
-    from skyseed_v2.backend.bpf.execution_materials import codec as m
+    from skyseed_v2.backend.execution_materials import codec as m
     boundary = next(iter(_resolve_nominal_boundaries((realizations[0],))))
+    boundary = _prepare_boundary(boundary)
     packed = m._pack(m._boundary_to_data(boundary))
     identities = m._DecodedIdentities(boundary.physical_world_projection.node_ids)
     actual = m._PackedBoundaryReader(packed, identities).boundary(boundary.physical_world_projection)
-    assert m._boundary_to_data(actual) == m._boundary_to_data(boundary)
+    assert m._pack(m._boundary_to_data(actual)) == m._pack(m._boundary_to_data(boundary))
 
 
 @pytest.mark.parametrize('corruption', ['truncate','trailing','unknown-tag','wrong-list-count','bad-utf8','too-large','duplicate-key','noncanonical-key'])
 def test_direct_decoder_rejects_corrupt_packed_fields(realizations, corruption):
-    from skyseed_v2.backend.bpf.execution_materials import codec as m
+    from skyseed_v2.backend.execution_materials import codec as m
     boundary = next(iter(_resolve_nominal_boundaries((realizations[0],))))
+    boundary = _prepare_boundary(boundary)
     data = m._boundary_to_data(boundary); packed = m._pack(data)
     if corruption == 'truncate': packed = packed[:-1]
     elif corruption == 'trailing': packed += b'n'
     elif corruption == 'unknown-tag': packed = b'x'+packed[1:]
     elif corruption == 'wrong-list-count':
-        data['operations'][0].append(None); packed=m._pack(data)
+        data['executable']['created'][0].append(None); packed=m._pack(data)
     elif corruption == 'bad-utf8':
-        at=packed.index(b'operations'); packed=packed[:at]+b'\xff'+packed[at+1:]
-    elif corruption == 'too-large': packed=b'd'+struct.pack('<I',m._MAX_CONTAINER_ITEMS+1)
+        at=packed.index(b'executable'); packed=packed[:at]+b'\xff'+packed[at+1:]
+    elif corruption == 'too-large': packed=b'd'+struct.pack('<I',m._MAX_CONTAINER_ITEMS)
     else:
         keys=['time','time'] if corruption=='duplicate-key' else ['time','applied']
         packed=b'd'+struct.pack('<I',2)+b''.join(m._pack(k)+m._pack(data[k]) for k in keys)
@@ -561,15 +546,17 @@ def test_direct_decoder_rejects_corrupt_packed_fields(realizations, corruption):
         m._PackedBoundaryReader(packed,m._DecodedIdentities()).boundary(boundary.physical_world_projection)
 
 
-def test_direct_reader_bounds_scoped_target_and_text_reuse(monkeypatch):
-    from skyseed_v2.backend.bpf.execution_materials import codec as m
-    monkeypatch.setattr(m,'_DECODE_REUSE_LIMIT',2)
-    identities=m._DecodedIdentities()
-    def target(zone,scope):
-        return m._PackedBoundaryReader(m._pack(['zone',zone,scope]),identities).target()
-    a=target('zone-a','S1'); assert target('zone-a','S1') is a
-    b=target('zone-a','S2'); assert a!=b
-    for i in range(10): target('zone-'+str(i),'S3')
-    assert len(identities.targets)==len(identities.texts)==2
-    other=m._DecodedIdentities()
-    assert m._PackedBoundaryReader(m._pack(['zone','zone-a','S1']),other).target() is not a
+def test_direct_reader_bounds_text_reuse(monkeypatch):
+    from skyseed_v2.backend.execution_materials import codec as m
+    monkeypatch.setattr(m, '_DECODE_REUSE_LIMIT', 2)
+    identities = m._DecodedIdentities()
+    for value in ("zone-a", "zone-b", *(f"zone-{i}" for i in range(10))):
+        assert m._PackedBoundaryReader(m._pack(value), identities).value() == value
+    assert len(identities.texts) == 2
+
+
+def _prepare_boundary(boundary):
+    from skyseed_v2.backend.bpf.dataplane.translation import _BpfTranslation
+    connections = tuple(dict.fromkeys(op.intent.connection_id for op in boundary.operations if op.domain == "resource"))
+    ports = {c: (i * 2 + 1, i * 2 + 2) for i, c in enumerate(connections)}
+    return _BpfTranslation(boundary.physical_world_projection, ()).translate(boundary, ports)

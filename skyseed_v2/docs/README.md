@@ -4,6 +4,7 @@
 |---|---|
 | What does SkySEED own, and how does it work? | [Architecture](architecture/overview.md) |
 | What does live execution need, and how large are the scenes? | [Linux host](user-guides/linux-host.md), [scale and resources](user-guides/scale-and-resources.md) |
+| Which forwarding mode fits, and what differs? | [Shared pipeline and BPF/Linux navigation](architecture/overview.md#choose-a-forwarding-mode) |
 | How do I run an example? | [Getting started](user-guides/getting-started.md) |
 | How do I build entities, choose Zones or replace a Model? | [Inputs and scenes](user-guides/inputs-and-scenes.md), [Model authoring](user-guides/model-extension.md) |
 | Which methods and data can my code use? | [Public API reference](api/README.md) |
@@ -21,3 +22,6 @@ The API reference explains useful public calls and values, with source links for
 
 The [complete system diagram](architecture/system-architecture.svg) is a zoomable vector;
 [overview](architecture/overview.md) explains its ownership, control and data notation.
+
+Packet processing: [C/eBPF DataPlane contract](development/dataplane.md) and
+[copyable template](../templates/dataplane/README.md).

@@ -13,8 +13,8 @@ from skyseed_v2.backend.bpf import (
     BpfCompilationResult,
     compile_bpf,
 )
-from skyseed_v2.backend.bpf.execution_materials.actions import _ZoneEdgePhase
-from skyseed_v2.backend.bpf.compiler import _compile_bpf_observed
+from skyseed_v2.backend.execution_materials.actions import _ZoneEdgePhase
+from skyseed_v2.backend.compiler import _compile_bpf_observed
 from skyseed_v2.experiment.output.observation import _ExecutionObserver
 from skyseed_v2.shared import NodeId
 from skyseed_v2.simulator import (
@@ -91,7 +91,7 @@ def test_observed_compile_records_real_stage_and_total_durations(
         "transition-lowering",
         "constraint-folding-and-materialization",
         "backend-state-freeze",
-        "semantic-to-bpf-lowering",
+        "semantic-to-backend-lowering",
         "compile-total",
     )
     assert all(value["duration_seconds"] > 0 for value in records)
@@ -314,8 +314,8 @@ def test_zone_readiness_precedes_forwarding(
         if value.phase is _ZoneEdgePhase.READINESS
     }
     assert readiness_indexes
-    from skyseed_v2.backend.bpf.execution_materials.boundaries import _resolve_nominal_boundaries
-    from skyseed_v2.backend.bpf.execution_materials.actions import _intent_phase
+    from skyseed_v2.backend.execution_materials.boundaries import _resolve_nominal_boundaries
+    from skyseed_v2.backend.execution_materials.actions import _intent_phase
     for boundary in _resolve_nominal_boundaries((first,)):
         phases = [_intent_phase(op.intent) for op in boundary.operations]
         assert phases == sorted(phases)

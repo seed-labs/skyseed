@@ -47,12 +47,65 @@ Publication reuses validated state; it does not reconstruct another authoritativ
 
 ## Routes
 
-Demands name a source and GroundStation or Zone target. Reachable outcomes carry the next
-hop and ordered path over operational edges. GSs are terminals, not incidental backbone
-transit. Zone targets resolve through the current serving satellite. Unreachable outcomes
-are explicit: `ZONE_UNSERVED` when service is absent, otherwise `NO_ELIGIBLE_PATH` under the
-chosen Model's rules. No optimality proof is required. Duplicate/foreign identities,
-invalid paths/next hops and incomplete outcomes fail before publication.
+These logical results are common to both execution modes. At assembly only, omitted
+RouteModel selection is the BPF gateway default or empty Linux default. Explicit Models
+retain empty, partial or complete arrangements unchanged. Planner does not infer coverage,
+complete missing routes or choose daemon policy. Backend representability is checked by
+[Compiler](compiler-and-runner.md#supported-route-expressions), not imposed as a universal
+Model result restriction.
+
+`RoutePlanningResult.outcomes` is a **replacement snapshot**. Omission removes a
+previous outcome, including when the requested demand remains. An empty tuple is
+an explicit empty arrangement. Reuse occurs only through the existing optional
+Model capability; omission never means “keep the old route”. Duplicate identities
+are invalid. `get_route_demands()` exposes the latest evaluated demand inputs.
+
+Demands name a source and `GroundStationRouteDemandTarget`,
+`SatelliteRouteDemandTarget(satellite_id, network_scope="")`, or `ZoneRouteDemandTarget`.
+The Satellite target validates a satellite-kind `NodeId`; Planner validates actual World
+membership even when the requested outcome is omitted, and Compiler independently
+validates membership when consuming a detached Plan. `network_scope` participates in
+demand identity and deterministic ordering, as for the existing targets. Scope-aware
+Models own scope eligibility. A Satellite target names the existing stable node /32;
+a Zone target still names its separately allocated service address and current server.
+No new addresses, default Satellite demands or all-pairs calculation are introduced.
+The supplied hop-count, simple template and computed S3 Models accept explicitly
+requested Satellite targets using their existing path algorithms. Other Models remain
+responsible for the demands they support.
+
+Supported outcomes are:
+
+- `ReachableRouteOutcome`: next hop and complete ordered, loop-free path over
+  operational edges, terminating at the target/current Zone server. GS transit
+  restrictions remain. Shared source/target entries must agree: constrained paths
+  cannot silently become combinations of arbitrary local alternatives.
+- `UnreachableRouteOutcome`: explicit `ZONE_UNSERVED` or `NO_ELIGIBLE_PATH` under
+  the selected algorithm's rules. This is a calculation fact, not explicit DROP.
+- `LocalRouteOutcome`: one source/target `RouteDisposition` (`FORWARD`, `DROP`,
+  `PASS`), ordered `RouteCandidate` values and per-rule `PolicyRecord` data. A
+  candidate holds `LogicalExit(connection, source)` and its own `PolicyRecord`.
+  FORWARD may have no candidates; DROP/PASS have none. PASS requests Linux
+  processing; it is neither confirmed delivery nor protocol installation.
+
+Local arrangements may cover any known node/target and need no complete path or
+full demand coverage. Their operational exit references must belong to the source;
+foreign nodes, unavailable connections and duplicate candidate exits fail. Empty
+or partial arrangements are not repaired. No optimality, connectivity or algorithm
+quality proof is required. A record contains integer/boolean leaves, logical
+node/exit references and nested records; arbitrary Python objects are excluded.
+Plan/evidence codecs use evidence v7, semantic state v4 and Plan/transition v6.
+The closed target union change advances these strict schemas and fingerprints.
+Regenerate older planning evidence for reading with this contract; retained files
+are not rewritten in place.
+
+Layout/range validation belongs to the selected
+[DataPlane declaration](dataplane.md#supported-representation), not the RouteModel.
+
+All values participate in state/transition identity and detached Plan serialization.
+A policy-only edit produces a change even when candidate next hops stay the same.
+Required event edges include referenced exit readiness and withdrawal. Models see
+logical planning inputs/results only, never map layouts, live interface IDs,
+publication keys, Compiler internals or runtime installation.
 
 `route_demands=None` permits the Model's optional demand factory; an explicit empty sequence
 stays empty. Demand creation precedes optional reuse. Custom routing runs every formal step

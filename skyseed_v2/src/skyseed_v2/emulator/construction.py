@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from seedemu.core import AutonomousSystem, Emulator
+from skyseed_v2.backend.selection import _backend, _emulator_backend
 from seedemu.layers import Base, Ebgp, Ibgp, Ospf, PeerRelationship, Routing
 
 from skyseed_v2.configuration.emulator import (
@@ -35,13 +36,15 @@ _SatelliteInput = tuple[
 _OrbitInput = tuple[str, OrbitParameters, tuple[_SatelliteInput, ...]]
 
 
-def create_static_emulator(config: StaticEmulatorConfig) -> Emulator:
+def create_static_emulator(config: StaticEmulatorConfig, *, forwarding_backend="bpf") -> Emulator:
     """Create and return one upstream Emulator through existing owner APIs."""
 
     if not isinstance(config, StaticEmulatorConfig):
         raise TypeError("config must be a StaticEmulatorConfig")
 
+    backend = _backend(forwarding_backend)
     emulator = Emulator()
+    emulator._skyseed_forwarding_backend = backend
     base = Base()
 
     for exchange in config.internet_exchanges:
@@ -58,6 +61,7 @@ def create_static_emulator(config: StaticEmulatorConfig) -> Emulator:
         _create_skyseed_autonomous_system(base, autonomous_system_config)
 
     _add_routing_layers(emulator, base, config)
+    _prepare_forwarding(emulator)
     return emulator
 
 
@@ -254,3 +258,20 @@ def _expand_orbit_inputs(config: ShellConfig) -> tuple[_OrbitInput, ...]:
             )
         )
     return tuple(inputs)
+
+
+def _prepare_forwarding(emulator):
+    """Prepare Linux deployment defaults through SEED's existing node options."""
+    if _emulator_backend(emulator) != "linux":
+        return
+    base = emulator.getLayer("Base")
+    for autonomous_system in get_skyseed_autonomous_systems(base):
+        for node in (*autonomous_system.satellites(), *autonomous_system.ground_stations()):
+            for name in ("sysctl_netipv4_ip_forward", "sysctl_netipv4_conf_rp_filter"):
+                option = node.getOption(name)
+                if option is None:
+                    option = autonomous_system._new_base_option(base, name)
+                    node.setOption(option)
+                if ((name.endswith("ip_forward") and option.value is not True)
+                        or (name.endswith("rp_filter") and option.value.get("all", False))):
+                    raise ValueError(f"Linux forwarding conflicts with SEED option {name} on {node.getName()}")

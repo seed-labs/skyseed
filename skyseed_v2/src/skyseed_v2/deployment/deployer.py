@@ -6,6 +6,8 @@ from hashlib import sha256
 from json import dumps, loads
 from pathlib import Path
 from re import fullmatch, sub
+from copy import deepcopy
+from platform import machine
 from shlex import quote, split
 import os
 import sys
@@ -14,6 +16,10 @@ from functools import wraps
 import fcntl
 from time import monotonic, sleep, time
 from typing import Sequence
+from uuid import uuid4
+
+from ._dockerfile import external_images as _external_images
+from skyseed_v2.shared._console import _console
 
 from yaml import safe_dump, safe_load
 
@@ -191,21 +197,26 @@ class _ClientLost(DeploymentError):
     """The client disappeared; daemon completion has not been established."""
 
 
-def _mutation(command):
+def _mutation(command, *, display_output=False):
     """Join the admitted local client even after executor cancellation."""
-    process = Popen(command, start_new_session=True, stdout=PIPE, stderr=PIPE, text=True)
+    # Inherited descriptors let Docker own native output and TTY progress. Only
+    # commands whose output is consumed internally need captured streams.
+    stream = None if display_output else PIPE
+    process = Popen(command, start_new_session=True, stdout=stream, stderr=stream, text=True)
     interrupted = None
     while True:
         try:
             stdout, stderr = process.communicate()
             break
         except KeyboardInterrupt as error:
+            if interrupted is None:
+                _console("Deployment cancellation requested: waiting for the admitted Docker client to drain; completion is not yet confirmed.")
             interrupted = error
     if process.returncode < 0:
         raise _ClientLost(f"Docker client exited by signal {-process.returncode}; daemon work is unresolved")
-    result = CompletedProcess(command, process.returncode, stdout, stderr)
+    result = CompletedProcess(command, process.returncode, stdout or '', stderr or '')
     if result.returncode:
-        error = DeploymentError(result.stderr or result.stdout or f"Docker operation failed: {result.returncode}")
+        error = DeploymentError(result.stderr or result.stdout or f"Docker operation failed: exit {result.returncode}; see Docker output above")
         if interrupted is not None:
             error.add_note("cancellation requested while the accepted client was draining")
         raise error
@@ -258,6 +269,9 @@ def _reconcile_build(output, project):
     if not path.exists():
         return
     pending = loads(path.read_text())
+    if pending.get('version') == 2:
+        _reconcile_image_batch(path, pending)
+        return
     reference = pending['image']
     while True:
         result = run(['docker', 'image', 'inspect', reference], capture_output=True, text=True)
@@ -278,7 +292,7 @@ def _reconcile_build(output, project):
 def _startup_command(command: Sequence[str], guard: _StartupMeasurements) -> None:
     started = monotonic()
     try:
-        result = _mutation(command)
+        result = _mutation(command, display_output=True)
         guard.record('command', command=list(command), exit_code=result.returncode,
                      elapsed_seconds=monotonic() - started)
     except BaseException as error:
@@ -519,6 +533,7 @@ def _controlled_startup(output: Path, project: str) -> None:
             guard.record('group-start', group=group, count=len(names), pending=list(pending),
                          reused=[name for name in names if name not in pending], parallel=parallel,
                          input_sha256=sha256(group_path.read_bytes()).hexdigest())
+            _console(f"Container startup {group}: {len(pending)} to start, {len(names)-len(pending)} confirmed reusable.")
             if pending:
                 command = ['docker', 'compose', '--parallel', str(parallel), '-p', project,
                            '--project-directory', str(path.parent), '-f', str(group_path),
@@ -565,6 +580,7 @@ def _controlled_startup(output: Path, project: str) -> None:
                          containers=[{'id': identities[name]['Id'], 'service': name, 'state': identities[name]['State']}
                                      for name in names])
             guard.checkpoint()
+            _console(f"Container startup {group} confirmed: {len(names)} services after {monotonic()-begin:.1f}s.")
         guard.record('deployment-complete', services=len(services), completed_groups=completed)
     except BaseException as error:
         partial = None
@@ -680,6 +696,7 @@ def _controlled_teardown(output: Path, project: str) -> None:
     if orphans:
         groups.insert(0, ('orphaned-project-services', tuple(orphans)))
     remaining_count = len(containers)
+    _console(f"Deployment cleanup inventory: {remaining_count} owned containers; configured graceful stops and hooks are preserved.")
     for group, names in groups:
         started = monotonic()
         pending = set(names) & by_service.keys()
@@ -693,6 +710,9 @@ def _controlled_teardown(output: Path, project: str) -> None:
             batch = [(identity, name) for name in wave for identity in by_service[name]]
             graceful = [(identity, name) for identity, name in batch
                         if not _disposable_network_service(services.get(name, {}))]
+            stopping = monotonic()
+            if graceful:
+                _console(f"Deployment cleanup {group}: stopping {len(graceful)} containers gracefully, including configured hooks.")
             for identity, name in graceful:
                 hooks = _pre_stop_commands(services.get(name, {}), identity)
                 if hooks:
@@ -703,10 +723,14 @@ def _controlled_teardown(output: Path, project: str) -> None:
             if graceful:
                 # Docker retains each container's configured signal and grace period.
                 command(['docker', 'stop', *(identity for identity, _ in graceful)])
+                _console(f"Deployment cleanup {group}: graceful stop succeeded for {len(graceful)} containers after {monotonic()-stopping:.1f}s.")
             ids = [identity for identity, _ in batch]
             # CLI 29.6.2 parallelOperation supplies the native limit of 50.
             # All graceful services have stopped successfully before force removal.
+            removing = monotonic()
+            _console(f"Deployment cleanup {group}: removing {len(ids)} containers.")
             command(['docker', 'rm', '--force', *ids])
+            _console(f"Deployment cleanup {group}: removal succeeded for {len(ids)} containers after {monotonic()-removing:.1f}s.")
             remaining_count -= len(ids)
             pending.difference_update(wave)
             guard.record('teardown-group-removal', group=group, container_ids=ids,
@@ -718,11 +742,14 @@ def _controlled_teardown(output: Path, project: str) -> None:
     external = {name for name, network in compose.get('networks', {}).items()
                 if network.get('external')}
     networks = [row['id'] for row in inventory('network') if row['key'] not in external]
+    removing = monotonic()
+    _console(f"Deployment cleanup: removing {len(networks)} owned networks.")
     for offset in range(0, len(networks), 8):
         command(['docker', 'network', 'rm', *networks[offset:offset + 8]])
     if any(row['key'] not in external for row in inventory('network')):
         raise DeploymentError('project networks remain after teardown')
     guard.record('teardown-complete', project=project, containers=len(containers), networks=len(networks))
+    _console(f"Deployment cleanup verified: no owned containers or non-external networks remain; network stage {monotonic()-removing:.1f}s.")
 
 
 def _validate_generated_compose(compose_file: Path, project_name: str) -> None:
@@ -781,6 +808,282 @@ def _deployment_operation(method):
     return operation
 
 
+_BUILD_KEY = 'org.skyseed.build.key'
+
+
+def _inspect_build_images(references):
+    references = tuple(dict.fromkeys(references))
+    if not references:
+        return {}
+    result = run(['docker', 'image', 'inspect', *references], capture_output=True, text=True)
+    errors = result.stderr.splitlines()
+    if result.returncode and (not errors or any('no such' not in e.lower() for e in errors if e.strip())):
+        raise DeploymentError(result.stderr)
+    # Docker returns only existing objects when some references are missing.
+    images = loads(result.stdout or '[]')
+    result = {}
+    for image in images:
+        for ref in (*(image.get('RepoTags') or ()), *(image.get('RepoDigests') or ()), image['Id']):
+            result[ref] = image
+    # Single-reference callers also support untagged images and canonicalized tags.
+    if len(references) == 1 and len(images) == 1:
+        result[references[0]] = images[0]
+    return result
+
+
+def _matches_build_image(image, key):
+    return image is not None and (image.get('Config', {}).get('Labels') or {}).get(_BUILD_KEY) == key
+
+
+def _context_digest(context):
+    digest = sha256()
+    for path in sorted(context.rglob('*'), key=lambda p: p.relative_to(context).as_posix()):
+        if path.is_symlink():
+            raise DeploymentError('generated build context must not contain symlinks')
+        name = path.relative_to(context).as_posix().encode()
+        data = path.read_bytes() if path.is_file() else b''
+        digest.update(path.stat().st_mode.to_bytes(4, 'big'))
+        digest.update(len(name).to_bytes(4, 'big')); digest.update(name)
+        digest.update(len(data).to_bytes(8, 'big')); digest.update(data)
+    return digest.hexdigest()
+
+
+def _reconcile_image_batch(path, pending):
+    if pending.get('command_failed'):
+        path.unlink()
+        return
+    while True:
+        images = _inspect_build_images(row['image'] for row in pending['images'])
+        complete = True
+        for row in pending['images']:
+            image = images.get(row['image']) or images.get(row['image'] + ':latest')
+            if image is None:
+                complete = False
+                continue
+            if image['Id'] == row.get('previous_image_id') or (
+                    row.get('key') is not None and not _matches_build_image(image, row['key'])):
+                raise DeploymentError('build client was lost; the existing image does not establish completion; batch remains unresolved')
+        if complete:
+            path.unlink()
+            return
+        sleep(1.0)
+
+
+def _accepted_build(command, rows, output, guard):
+    path = output / 'deployment/deployment-build-pending.json'
+    path.write_text(dumps({'version': 2, 'images': rows, 'command': command}) + '\n')
+    try:
+        _startup_command(command, guard)
+    except _ClientLost:
+        raise
+    except BaseException as error:
+        try:
+            path.write_text(dumps({'version': 2, 'images': rows, 'command': command,
+                                   'command_failed': True}) + '\n')
+            path.unlink(missing_ok=True)
+        except OSError as cleanup:
+            error.add_note(f'build journal cleanup failed: {cleanup}')
+        raise
+    path.unlink()
+
+
+def _build_images(owner):
+    output, project = owner.output, owner.project_name
+    started = monotonic()
+    _console(f"Image preparation starting for deployment {project}; checking reusable image identities.")
+    runtime = output / 'deployment'
+    services = safe_load((runtime / 'docker-compose.yml').read_text())['services']
+    _reconcile_pending(output, project, services)
+    path = _prepare_controlled_image_compose(output, project)
+    configuration = safe_load(path.read_text())
+    selected = configuration['services']
+    parallel = _startup_parallel()
+    guard = _StartupMeasurements(runtime / 'deployment-measurements.jsonl')
+    compose = ['docker', 'compose', '--parallel', str(parallel), '-p', project, '-f', str(path)]
+    prerequisites, groups = [], []
+    for line in (runtime / 'skyseed-build-plan.txt').read_text().splitlines():
+        if not line or line.startswith('#'):
+            continue
+        fields = line.split()
+        if len(fields) == 2 and fields[0] == 'prerequisite':
+            prerequisites.append(fields[1])
+        elif len(fields) == 3 and fields[0] == 'build':
+            groups.append(fields[1])
+        else:
+            raise DeploymentError('invalid generated build plan')
+    names = prerequisites + groups
+    if len(names) != len(set(names)) or set(names) != {n for n, s in selected.items() if 'build' in s}:
+        raise DeploymentError('generated build plan coverage differs')
+    references = {n: s['image'].replace('${COMPOSE_PROJECT_NAME}', project) for n, s in selected.items()}
+    # Resolve Compose interpolation in build options once, before fingerprinting.
+    if names:
+        resolved = run([*compose, 'config', '--format', 'json'], capture_output=True, text=True)
+        if resolved.returncode:
+            raise DeploymentError(resolved.stderr)
+        resolved = loads(resolved.stdout)['services']
+    else:
+        resolved = {}
+    recipes, bases = {}, {}
+    for name in names:
+        service = resolved[name]
+        build = deepcopy(service['build'])
+        context = Path(build.pop('context')).resolve()
+        dockerfile = build.pop('dockerfile', 'Dockerfile')
+        source = context / dockerfile
+        text = source.read_text()
+        mutable_context = False
+        if name in prerequisites:
+            # SEED's base aliases contain only FROM and need no surrounding node
+            # contexts. Stage just that Dockerfile so Map changes cannot invalidate
+            # every router's prerequisite or upload the whole generated output.
+            instructions = [line for line in text.splitlines() if line.strip() and not line.lstrip().startswith('#')]
+            if len(instructions) == 1 and instructions[0].strip().upper().startswith('FROM '):
+                context = runtime / 'skyseed-prerequisites' / name
+                context.mkdir(parents=True, exist_ok=True)
+                (context / 'Dockerfile').write_text(text)
+                dockerfile = 'Dockerfile'
+            else:
+                # The ordinary SEED root context also contains deployment
+                # bookkeeping. Do not fingerprint it while builds write there.
+                mutable_context = True
+        discovered = _external_images(text)
+        cacheable = not mutable_context and discovered is not None and not any(build.get(k) for k in ('additional_contexts', 'secrets', 'ssh'))
+        try:
+            digest = _context_digest(context) if cacheable else None
+        except DeploymentError:
+            cacheable, digest = False, None
+        bases[name] = discovered or ()
+        recipes[name] = {'context': str(context), 'dockerfile': str(dockerfile),
+                         'options': build, 'digest': digest, 'cacheable': cacheable,
+                         'dockerfile_digest': sha256(text.encode()).hexdigest(),
+                         'platform': service.get('platform', machine())}
+    # FROM prerequisites form the build DAG, independent of runtime depends_on.
+    aliases = {name: name for name in prerequisites}
+    aliases.update({references[name]: name for name in prerequisites})
+    dependencies = {n: {aliases[ref] for ref in bases[n] if ref in aliases} for n in names}
+    # Opaque node instructions can still use any generated SEED base alias.
+    # Build those first and expose their immutable images to Docker itself.
+    for name in names:
+        if not recipes[name]['cacheable']:
+            bases[name] = tuple(ref for ref in bases[name] if ref in aliases)
+            if name in groups:
+                bases[name] = tuple(dict.fromkeys((*bases[name], *prerequisites)))
+                dependencies[name].update(prerequisites)
+    refresh, visited = set(), set()
+    pending_refresh = [n for n in names if recipes[n]['options'].get('pull')]
+    while pending_refresh:
+        name = pending_refresh.pop()
+        if name in visited:
+            continue
+        visited.add(name)
+        pending_refresh.extend(dependencies[name])
+        refresh.update(ref for ref in bases[name] if ref not in aliases)
+    completed, base_images, protected = set(), {}, False
+
+    def mutation_allowed():
+        nonlocal protected
+        if not protected:
+            existing = run(['docker', 'ps', '-aq', '--filter', f'label=com.docker.compose.project={project}'], capture_output=True, text=True)
+            if existing.returncode or existing.stdout.strip():
+                raise DeploymentError('required images are missing or stale while project containers exist or cannot be inspected')
+            protected = True
+
+    while len(completed) < len(names):
+        # Finish all prerequisites before independent node/Map groups.
+        pending = [n for n in (prerequisites if set(prerequisites) - completed else groups) if n not in completed]
+        ready = [n for n in pending if dependencies[n] <= completed]
+        if not ready:
+            raise DeploymentError('cyclic generated build prerequisites')
+        external = {ref for n in ready for ref in bases[n] if ref not in aliases}
+        for ref in sorted(external - base_images.keys()):
+            images = _inspect_build_images((ref,))
+            if ref not in images or ref in refresh:
+                mutation_allowed()
+                _console(f"Image preparation: pulling {ref}.")
+                _accepted_build(['docker', 'pull', ref], [{'image': ref,
+                    'previous_image_id': (images.get(ref) or {}).get('Id')}], output, guard)
+                images = _inspect_build_images((ref,))
+            base_images[ref] = images[ref]
+        keys, pinned = {}, {}
+        for name in ready:
+            inputs = {ref: (base_images[aliases[ref]] if ref in aliases else base_images[ref]) for ref in bases[name]}
+            recipe = recipes[name]
+            material = {'version': 1, 'context': recipe['digest'], 'dockerfile': recipe['dockerfile'],
+                        'dockerfile_content': recipe['dockerfile_digest'],
+                        'options': recipe['options'], 'platform': recipe['platform'],
+                        'bases': {ref: image['Id'] for ref, image in inputs.items()}}
+            keys[name] = (sha256(dumps(material, sort_keys=True).encode()).hexdigest()
+                          if recipe['cacheable'] else uuid4().hex)
+            pinned[name] = inputs
+        cache = {n: 'skyseed-build:' + keys[n] for n in ready}
+        inventory = _inspect_build_images([*(references[n] for n in ready), *cache.values()])
+        todo = []
+        for name in ready:
+            current = inventory.get(references[name]) or inventory.get(references[name] + ':latest')
+            shared = inventory.get(cache[name])
+            force = not recipes[name]['cacheable'] or recipes[name]['options'].get('no_cache', False)
+            if not force and _matches_build_image(current, keys[name]):
+                state = 'project-image'
+            elif not force and _matches_build_image(shared, keys[name]):
+                mutation_allowed()
+                _startup_command(['docker', 'image', 'tag', shared['Id'], references[name]], guard)
+                current, state = shared, 'shared-image'
+            else:
+                mutation_allowed()
+                todo.append(name)
+                state = 'build'
+            guard.record('image-decision', service=name, key=keys[name], source=state,
+                         image=references[name], cacheable=recipes[name]['cacheable'],
+                         bases={r: i['Id'] for r, i in pinned[name].items()})
+            if state != 'build':
+                base_images[name] = current
+        _console(f"Image preparation: {len(ready)-len(todo)} reusable groups, {len(todo)} groups to build.")
+        for offset in range(0, len(todo), parallel):
+            batch = todo[offset:offset + parallel]
+            # Named contexts pin FROM/COPY inputs to the identities in the key.
+            # Docker tags are content-addressed; projects never share containers.
+            for name in batch:
+                contexts = {}
+                for ref, image in pinned[name].items():
+                    immutable = 'skyseed-base:' + image['Id'].removeprefix('sha256:')
+                    if immutable not in base_images:
+                        _startup_command(['docker', 'image', 'tag', image['Id'], immutable], guard)
+                        base_images[immutable] = image
+                    contexts[ref] = 'docker-image://' + immutable
+                recipe = recipes[name]
+                options = deepcopy(recipe['options'])
+                # External bases were refreshed above; pinned local aliases must
+                # not be pulled from a registry by Compose.
+                if recipe['cacheable']:
+                    options.pop('pull', None)
+                options.update(context=recipe['context'], dockerfile=recipe['dockerfile'])
+                options['labels'] = {**options.get('labels', {}), _BUILD_KEY: keys[name]}
+                options['tags'] = [*options.get('tags', ()), *([cache[name]] if recipe['cacheable'] else [])]
+                if contexts:
+                    original = options.get('additional_contexts', {})
+                    if isinstance(original, list):
+                        original = dict(item.split('=', 1) for item in original)
+                    options['additional_contexts'] = {**contexts, **original}
+                selected[name]['build'] = options
+            path.write_text(safe_dump({**configuration, 'services': {n: selected[n] for n in batch}}, sort_keys=False))
+            rows = [{'image': references[n], 'key': keys[n],
+                     'previous_image_id': (inventory.get(references[n]) or inventory.get(references[n] + ':latest') or {}).get('Id')} for n in batch]
+            _accepted_build([*compose, 'build', *batch], rows, output, guard)
+            built = _inspect_build_images(references[n] for n in batch)
+            for name in batch:
+                image = built.get(references[name]) or built.get(references[name] + ':latest')
+                if not _matches_build_image(image, keys[name]):
+                    raise DeploymentError('generated build did not produce its declared image key')
+                base_images[name] = image
+        completed.update(ready)
+    # Non-built services (for example a published optional Tool) still need images.
+    for ref in set(references.values()) - {references[n] for n in names}:
+        if not _inspect_build_images((ref,)):
+            raise DeploymentError(f'required deployment image is missing: {ref}')
+    guard.record('image-build-complete', groups=len(names), parallel=parallel)
+    _console(f"Image preparation succeeded: {len(references)} image groups checked after {monotonic()-started:.1f}s.")
+
+
 class Deployer:
     """Prepare or operate a generated deployment, independent of computation.
 
@@ -802,6 +1105,9 @@ class Deployer:
         emulator.render()
         emulator.compile(compiler, str(self.output / 'deployment'))
         (self.output / 'deployment/compose-project-name').write_text(project + '\n')
+        if internet_map_enabled:
+            from .seed import _prepare_internet_map
+            _prepare_internet_map(self.output)
         _write_compose_build_plan(self.output / 'deployment')
         _write_deployment_scripts(self.output, python_executable or sys.executable, deploy_parallel)
         return project
@@ -811,63 +1117,7 @@ class Deployer:
         return (self.output / 'deployment/compose-project-name').read_text().strip()
 
     def _build(self):
-        """Build each content group once, preserving SEED image prerequisites."""
-        project = self.project_name
-        services = safe_load((self.output / 'deployment/docker-compose.yml').read_text())['services']
-        _reconcile_pending(self.output, project, services)
-        path = _prepare_controlled_image_compose(self.output, project)
-        compose = ['docker', 'compose', '-p', project, '-f', str(path)]
-        guard = _StartupMeasurements(self.output / 'deployment/deployment-measurements.jsonl')
-        configuration = safe_load(path.read_text())
-        refs = tuple(dict.fromkeys(s['image'].replace('${COMPOSE_PROJECT_NAME}', project)
-                                  for s in configuration['services'].values()))
-        generated = set()
-        plan = []
-        for line in (self.output / 'deployment/skyseed-build-plan.txt').read_text().splitlines():
-            if not line or line.startswith('#'):
-                continue
-            fields = line.split()
-            if len(fields) == 2 and fields[0] == 'prerequisite':
-                generated.add(fields[1])
-            elif len(fields) == 3 and fields[0] == 'build':
-                generated.add(project + '-' + fields[2])
-            else:
-                raise DeploymentError('invalid generated build plan')
-            plan.append(fields[1])
-        def images_match():
-            result = run(['docker', 'image', 'inspect', *refs], capture_output=True, text=True)
-            if result.returncode:
-                return False
-            images = loads(result.stdout)
-            return len(images) == len(refs) and all(
-                ref not in generated or image.get('Config', {}).get('Labels', {}).get('com.docker.compose.project') == project
-                for ref, image in zip(refs, images))
-        if images_match():
-            return
-        existing = run(['docker', 'ps', '-aq', '--filter', f'label=com.docker.compose.project={project}'], capture_output=True, text=True)
-        if existing.returncode or existing.stdout.strip():
-            raise DeploymentError('required images are missing or stale while project containers exist or cannot be inspected')
-        for service in plan:
-            pending = self.output / 'deployment/deployment-build-pending.json'
-            reference = configuration['services'][service]['image'].replace('${COMPOSE_PROJECT_NAME}', project)
-            previous = run(['docker', 'image', 'inspect', reference], capture_output=True, text=True)
-            if previous.returncode and 'no such' not in previous.stderr.lower():
-                raise DeploymentError(previous.stderr)
-            images = [] if previous.returncode else loads(previous.stdout)
-            if images and images[0].get('Config', {}).get('Labels', {}).get('com.docker.compose.project') == project:
-                continue  # A previously completed content group needs no second build.
-            pending.write_text(dumps({'service': service, 'image': reference,
-                                      'previous_image_id': images[0]['Id'] if images else None}) + '\n')
-            try:
-                _startup_command([*compose, 'build', service], guard)
-            except _ClientLost:
-                raise
-            except BaseException:
-                pending.unlink(missing_ok=True)
-                raise
-            pending.unlink()
-        if not images_match():
-            raise DeploymentError('generated image build did not produce the required images')
+        _build_images(self)
 
     @_deployment_operation
     def build(self):
@@ -876,6 +1126,7 @@ class Deployer:
     @_deployment_operation
     def start(self):
         started = monotonic()
+        _console(f"Deployment starting: {self.output}")
         summary = self.output / 'deployment/deployment-startup.json'
         error = None
         try:
@@ -887,8 +1138,10 @@ class Deployer:
                 _startup_recording_error(recording_error)
             self._build()
             _controlled_startup(self.output, self.project_name)
+            _console(f"Deployment startup succeeded: all service groups confirmed after {monotonic()-started:.1f}s. Start runtime with run.sh.")
         except BaseException as failure:
             error = failure
+            _console(f"Deployment startup failed: {type(failure).__name__}: {failure}. Inspect retained deployment evidence before retrying.")
             raise
         finally:
             record = {'artifact_type': 'compose-startup-evidence', 'format_version': 1,

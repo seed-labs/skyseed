@@ -11,6 +11,17 @@ This was a shared desktop, with image caches and other work, not a hardware-capa
 benchmark. The [host guide](linux-host.md) separates required capabilities, optional
 tuning and a later dated inspection of the workstation.
 
+The maintained [native S4 example](../../examples/Sky06_s4_native_ospf/README.md)
+uses 348 satellites, 355 GSs and 732 default Zones, with a 600-second initial range
+and five-second observations. Its Linux forwarding, real per-satellite daemons and
+explicit GS↔Zone Traffic have separate
+[current validation notes](../../examples/Sky06_s4_native_ospf/README.md#validation)
+and [prior fixed-pair evidence](../history/native-s4-experiments.md).
+Per-satellite protocol files produce distinct build groups. Host neighbor capacity,
+daemon convergence and kernel-operation delays affect execution. The interrupted
+native S3 campaign is retained as historical evidence; it does not qualify S4.
+The BPF measurements below retain their original routing and workload conditions.
+
 ## Scenes and concurrency
 
 Each row used its full unchanged 600-second scene, five-second cadence and 121

@@ -26,10 +26,10 @@ from skyseed_v2.simulator import (
 from skyseed_v2.simulator.input import SimulatorStaticInput
 from skyseed_v2.simulator.planner.evidence import plan_to_data, plan_from_data
 from skyseed_v2.backend.bpf import compile_bpf
-from skyseed_v2.backend.bpf.execution_materials.sealing import _write_runner_artifact
-from skyseed_v2.backend.bpf.execution_materials.codec import _open_runner_artifact
-from skyseed_v2.backend.bpf.execution_materials.mechanics import _empty_state
-from skyseed_v2.backend.bpf.execution_materials.mechanics import _BoundaryStateIndexes
+from skyseed_v2.backend.execution_materials.sealing import _write_runner_artifact
+from skyseed_v2.backend.execution_materials.codec import _open_runner_artifact
+from skyseed_v2.backend.execution_materials.mechanics import _empty_state
+from skyseed_v2.backend.execution_materials.mechanics import _BoundaryStateIndexes
 
 
 @pytest.fixture
@@ -117,7 +117,7 @@ def test_scoped_service_and_routes_compile_and_replay_without_shared_gs_overwrit
 
 
 def test_traffic_builder_keeps_scoped_endpoint_identity_in_both_directions(scoped_world):
-    from tools.traffic.active.probe_plan import TrafficProbePlanBuilder, TrafficProbePlan
+    from tools.generation.traffic.probe_plan import TrafficProbePlanBuilder, TrafficProbePlan
     world, ground, sats, scopes = scoped_world
     assignments = (ZoneServiceAssignment('z',sats[0],'S1'),ZoneServiceAssignment('z',sats[3],'S2'))
     connections=tuple(_operational_connection(OperationalConnectionKind.GROUND_STATION_ACCESS,ground,s) for s in (sats[0],sats[3]))

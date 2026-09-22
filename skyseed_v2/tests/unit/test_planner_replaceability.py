@@ -224,7 +224,7 @@ def test_current_evidence_rejects_retired_envelope_missing_diagnostics_and_embed
     change['current']['demand'] = change['demand']
     with pytest.raises(ValueError, match='missing or unknown'):
         plan_from_data(bad)
-    for schema in ('skyseed-v2-plan-evidence-v4', 'skyseed-v2-plan-evidence-v3', 'skyseed-v2-plan-evidence-v2'):
+    for schema in ('skyseed-v2-plan-evidence-v6', 'skyseed-v2-plan-evidence-v4', 'skyseed-v2-plan-evidence-v3', 'skyseed-v2-plan-evidence-v2'):
         with pytest.raises(ValueError, match='schema'):
             plan_from_data({**plan_to_data(plan), 'schema': schema})
     planner.shutdown()

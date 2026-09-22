@@ -10,15 +10,15 @@ import pytest
 from examples.Sky00_tiny_network.tiny_network import build_emulator
 from examples.Sky00_tiny_network.tiny_network import create_simulator as create_complete_static_simulator
 from tests._support import drain_simulator as run_complete_static_chain
-from skyseed_v2.backend.bpf.compiler import _compile_bpf_observed
+from skyseed_v2.backend.compiler import _compile_bpf_observed
 from skyseed_v2.experiment import execution
-from skyseed_v2.backend.bpf.execution_materials.sealing import _write_runner_artifact
-from tools.traffic.active.probe_plan import (
+from skyseed_v2.backend.execution_materials.sealing import _write_runner_artifact
+from tools.generation.traffic.probe_plan import (
     TrafficProbePlanBuilder,
     write_traffic_probe_plan,
 )
 from skyseed_v2.experiment.output.observation import _ExecutionObserver
-from tools.performance import (
+from tools.observation.performance import (
     collect_performance_data,
     read_execution_observations,
     write_performance_tool,
@@ -26,13 +26,13 @@ from tools.performance import (
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-TOOL_SOURCES = tuple(sorted((PROJECT_ROOT / "tools/performance").glob("*.py")))
+TOOL_SOURCES = tuple(sorted((PROJECT_ROOT / "tools/observation/performance").glob("*.py")))
 
 
 @pytest.mark.parametrize("with_planner", [False, True])
 def test_prediction_queries_do_not_become_prehistory_or_formal_transitions(with_planner):
     from datetime import datetime, timedelta, timezone
-    from tools.performance.projection import _timeline_summary
+    from tools.observation.performance.projection import _timeline_summary
 
     start = datetime(2026, 1, 1, tzinfo=timezone.utc)
     records = [dict(component="physical-world", stage="physical-projection",
@@ -517,12 +517,13 @@ def test_real_pipeline_and_runtime_wrapper_emit_owned_observation_evidence(
             pass
 
     monkeypatch.setattr(execution, "Runner", _Runner)
-    monkeypatch.setattr("tools.traffic.active.probe_execution.TrafficProbeExecutor", _Traffic)
+    monkeypatch.setattr("tools.generation.traffic.probe_execution.TrafficProbeExecutor", _Traffic)
     monkeypatch.setattr(
         execution,
         "_read_and_verify_execution",
         lambda _output: ({
             "format_version": 3,
+            "backend": "bpf",
             "runner": {"execution_contract": "sealed-precomputed-only"},
             "runner_artifact": {
                 "manifest": str(manifest.relative_to(output)),
@@ -582,7 +583,7 @@ def test_real_pipeline_and_runtime_wrapper_emit_owned_observation_evidence(
         "transition-lowering",
         "constraint-folding-and-materialization",
         "backend-state-freeze",
-        "semantic-to-bpf-lowering",
+        "semantic-to-backend-lowering",
         "compile-total",
     }
     assert {value["stage"] for value in by_component["realization-producer"]} == {
@@ -645,7 +646,7 @@ def test_compiler_observation_is_one_shot_and_semantically_inert() -> None:
         "transition-lowering",
         "constraint-folding-and-materialization",
         "backend-state-freeze",
-        "semantic-to-bpf-lowering",
+        "semantic-to-backend-lowering",
         "compile-total",
     }
     totals = tuple(
@@ -701,7 +702,7 @@ def _bind_observer(simulator, metadata=None):
 
 
 def test_generation_runtime_and_reset_keep_independent_time_bases(tmp_path):
-    from tools.performance import project_performance
+    from tools.observation.performance import project_performance
     generation = tmp_path/'generation.jsonl'
     runtime = tmp_path/'runtime.jsonl'
     reset = tmp_path/'reset.jsonl'

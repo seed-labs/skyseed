@@ -15,14 +15,16 @@ from types import SimpleNamespace
 
 import pytest
 
-from skyseed_v2.backend.bpf.runner import privileged_runtime_command as command
-from skyseed_v2.backend.bpf.runner import bpf as bpf_syscalls
-from skyseed_v2.backend.bpf.execution_materials import mechanics
-from skyseed_v2.backend.bpf.runner import runtime_realization as runtime_module
-from skyseed_v2.backend.bpf.runner.runtime_realization import _IncompleteActivationError, _TcBpfRuntimeRealization
-from skyseed_v2.backend.bpf.execution_materials.mechanics import _MaterializedDataplaneState, _RuntimeCapacityDemandAccumulator, _empty_state
-from skyseed_v2.backend.bpf.execution_materials.boundaries import _BoundaryOperation, _NominalBoundary
-from skyseed_v2.backend.bpf.execution_materials.actions import _AttachmentDemand, _ForwardingBinding, _ForwardingIntent, _ForwardingKey, _MutationOperation, _PhysicalWorldProjection, _QdiscIntent, _ResourceIntent, _ResourceOperation, _ZoneEdgeIntent, _ZoneEdgePhase
+from skyseed_v2.backend.bpf.dataplane import runtime_command as command
+from skyseed_v2.backend.linux import bpf as bpf_syscalls
+from skyseed_v2.backend.execution_materials import mechanics
+from skyseed_v2.backend.bpf.dataplane import runtime as runtime_module
+from skyseed_v2.backend.bpf.dataplane.runtime import _IncompleteActivationError, _TcBpfRuntimeRealization
+from skyseed_v2.backend.bpf.dataplane.translation import _BpfTranslation
+from skyseed_v2.backend.execution_materials.mechanics import _MaterializedDataplaneState, _empty_state
+from skyseed_v2.backend.bpf.dataplane.materials import _RuntimeCapacityDemandAccumulator
+from skyseed_v2.backend.execution_materials.boundaries import _BoundaryOperation, _NominalBoundary
+from skyseed_v2.backend.execution_materials.actions import _AttachmentDemand, _ForwardingBinding, _ForwardingIntent, _ForwardingKey, _MutationOperation, _PhysicalWorldProjection, _QdiscIntent, _ResourceIntent, _ResourceOperation, _ZoneEdgeIntent, _ZoneEdgePhase
 from skyseed_v2.shared import NodeId
 from skyseed_v2.simulator import (
     OperationalConnectionId,
@@ -31,7 +33,16 @@ from skyseed_v2.simulator import (
 )
 
 
+def _translated_capacity_boundaries(projection, boundaries):
+    connections = tuple(dict.fromkeys(op.intent.connection_id for b in boundaries for op in b.operations if op.domain == 'resource'))
+    ports = {c: (2*i+1, 2*i+2) for i, c in enumerate(connections)}
+    translation = _BpfTranslation(projection, ())
+    return tuple(translation.translate(b, ports) for b in boundaries)
+
+
 def _capacity_demand(projection, boundaries):
+    if any(b.executable is None for b in boundaries):
+        boundaries = _translated_capacity_boundaries(projection, boundaries)
     accumulator = _RuntimeCapacityDemandAccumulator(projection, ())
     for boundary in boundaries:
         accumulator.add(boundary)
@@ -192,6 +203,22 @@ def test_incremental_capacity_has_exact_add_before_withdraw_and_shared_generatio
     assert actual["terminal"]["active_connection_count"] == 0
 
 
+def test_capacity_snapshots_are_detached_across_deliveries():
+    from copy import deepcopy
+    projection, boundaries = _capacity_transition_sequence()
+    prepared = _translated_capacity_boundaries(projection, boundaries)
+    accumulator = _RuntimeCapacityDemandAccumulator(projection, ())
+    for boundary in prepared[:3]:
+        accumulator.add(boundary)
+    first = accumulator.snapshot()
+    saved = deepcopy(first)
+    accumulator.begin_batch()
+    for boundary in prepared[3:]:
+        accumulator.add(boundary)
+    assert accumulator.snapshot() != first
+    assert first == saved
+
+
 def test_continued_admission_allows_peer_work_migration_but_keeps_fixed_limits(monkeypatch):
     from copy import deepcopy
     projection, boundaries = _capacity_transition_sequence()
@@ -203,7 +230,7 @@ def test_continued_admission_allows_peer_work_migration_but_keeps_fixed_limits(m
     runtime = _TcBpfRuntimeRealization(executor=kernel, pin_root="/pins", bindings=bindings,
                                        continuation_enabled=True, batch_capacity_factor=2)
     try:
-        runtime.initialize(projection, zone_prefixes=(), runtime_capacity_demand=first)
+        runtime.initialize(projection, dataplane=_BpfTranslation(projection, ()).foundation(), zone_prefixes=(), runtime_capacity_demand=first)
         caps = dict(runtime._map_capacities)
         future = deepcopy(first)
         idle = min(future["per_node"], key=lambda node: node["cumulative_route_entries"])
@@ -211,9 +238,11 @@ def test_continued_admission_allows_peer_work_migration_but_keeps_fixed_limits(m
         idle["cumulative_route_entries"] = 3
         idle["maximum_generation_route_entries"] = 3
         idle["terminal_route_entries"] = 3
+        idle["tables"][0]["routes"] = idle["tables"][0]["terminal_routes"] = 3
         runtime.admit_batch(future)
         assert runtime._capacity_demand["per_node"] == future["per_node"]
         idle["cumulative_route_entries"] = runtime._batch_admission_limits[idle["key"]]["cumulative_route_entries"] + 1
+        idle["tables"][0]["routes"] = idle["cumulative_route_entries"]
         with pytest.raises(runtime_module._CapacityAuditError, match="fixed per-node admission"):
             runtime.admit_batch(future)
         assert runtime._map_capacities == caps
@@ -240,6 +269,7 @@ def test_incremental_capacity_collision_audit_covers_transition_union(
     monkeypatch,
 ) -> None:
     projection, boundaries = _capacity_transition_sequence()
+    boundaries = _translated_capacity_boundaries(projection, boundaries)
     accumulator = _RuntimeCapacityDemandAccumulator(projection, ())
     monkeypatch.setattr(
         mechanics,
@@ -307,7 +337,7 @@ def test_runtime_initialization_reports_disjoint_truthful_preparation_timings(
     monkeypatch.setattr(runtime_module, "monotonic_ns", lambda: next(clock))
 
     result = runtime.initialize(
-        projection, zone_prefixes=(), runtime_capacity_demand=demand
+        projection, dataplane=_BpfTranslation(projection, ()).foundation(), zone_prefixes=(), runtime_capacity_demand=demand
     )
 
     phases = result["preparation_phases"]
@@ -326,7 +356,7 @@ def test_runtime_initialization_timing_defects_are_nullable_not_semantic(
     monkeypatch.setattr(runtime_module, "monotonic_ns", lambda: next(clock))
 
     result = runtime.initialize(
-        projection, zone_prefixes=(), runtime_capacity_demand=demand
+        projection, dataplane=_BpfTranslation(projection, ()).foundation(), zone_prefixes=(), runtime_capacity_demand=demand
     )
 
     phases = result["preparation_phases"]
@@ -359,14 +389,11 @@ def test_parallel_map_preserves_input_order_and_worker_bound() -> None:
     assert high_water == 2
 
 def test_bpf_pin_scope_and_exact_batch_key_encoding(monkeypatch) -> None:
-    program = bpf_syscalls._tc_program(10, 11, 12, 13, 14, generation_versions_map=15)
-    assert len(program) % 8 == 0
-    assert len(program) >= 40 * 8
-    assert bpf_syscalls._pin_root(
+    assert command._pin_root(
         "/sys/fs/bpf/skyseed-v2/run-0123456789ab"
     ).name == "run-0123456789ab"
     with pytest.raises(ValueError, match="outside"):
-        bpf_syscalls._pin_root("/sys/fs/bpf/not-owned")
+        command._pin_root("/sys/fs/bpf/not-owned")
 
     observed = []
 
@@ -463,11 +490,14 @@ class _Kernel:
         self.operations.append(("map-update", fd, key, value))
 
     def delete(self, fd, key):
+        if isinstance(key, bytes): key = struct.unpack("<II", key)
         self.operations.append(("map-delete", fd, key))
         return self.maps[fd].pop(key, None) is not None
 
     def update_entries(self, fd, entries, **kwargs):
         for key, value in entries:
+            if isinstance(key, bytes): key = struct.unpack("<II", key)
+            if isinstance(value, bytes) and len(value) == 4: value = struct.unpack("<I", value)[0]
             self.update(fd, key, value)
         return len(entries)
 
@@ -481,11 +511,21 @@ class _Kernel:
                 self.maps[1000000] = {}
             for number, value in enumerate(request["nodes"]):
                 key = value["key"]
-                maps = {name: (key, name) for name in ("active_links", "routes", "ingress_bindings", "egress_bindings", "tc_ingress", "generation_versions")}
+                names = ['ingress_bindings', 'egress_bindings']
+                layouts = {}
+                if value['program'] is not None:
+                    i = value['program']
+                    names.append(f'tc_ingress@{i}')
+                    declaration = request['dataplane']['programs'][i]['declaration']
+                    if declaration['managed_tables']:
+                        names.extend(f'{n}@{i}' for n in ('active_links', 'routes', 'generation_versions'))
+                        layouts[f'active_links@{i}'] = (8, 4)
+                        layouts[f'routes@{i}'] = (8, declaration['maps']['routes'][2])
+                maps = {name: (key, name) for name in names}
                 for fd in maps.values():
                     self.maps[fd] = {}
                 self.nodes[key] = {**value, "namespace_fd": number,
-                                   "maps": maps, "indexes": {}, "loopback": 1,
+                                   "maps": maps, "table_layouts": layouts, "indexes": {}, "loopback": 1, "identity": 2,
                                    "netlink": self.Channel(self, key)}
             return {"collision_audit": {"result": "passed", "selected_node_address_range": request["node_address_range"],
                                         "audited_node_namespaces": len(request["nodes"])},
@@ -555,12 +595,14 @@ def _finite_runtime(monkeypatch, sequence=None, *, telemetry_enabled=False):
     bindings = {node: SimpleNamespace(pid=i + 100, process_start_time_ticks=i + 200, netns_inode=i + 300)
                 for i, node in enumerate(projection.node_ids)}
     runtime = _TcBpfRuntimeRealization(executor=kernel, pin_root="/pins", bindings=bindings, telemetry_enabled=telemetry_enabled)
-    runtime.initialize(projection, zone_prefixes=("198.18.0.1/32",),
+    runtime.initialize(projection, dataplane=_BpfTranslation(projection, ()).foundation(), zone_prefixes=("198.18.0.1/32",),
                        runtime_capacity_demand=_capacity_demand(projection, boundaries))
     connections = tuple(dict.fromkeys(op.intent.connection_id for boundary in boundaries for op in boundary.operations
                                      if isinstance(op.intent, _ResourceIntent)))
     ports = {connection: (2 * index + 1, 2 * index + 2) for index, connection in enumerate(connections)}
-    plans = runtime.prepare_all(boundaries, logical_ports=ports)
+    translation = _BpfTranslation(projection, ("198.18.0.1/32",))
+    boundaries = tuple(translation.translate(b, ports) for b in boundaries)
+    plans = runtime.prepare_all(boundaries, logical_ports=ports, retirements=translation.retirements())
     return runtime, plans, kernel
 
 
@@ -580,7 +622,7 @@ def test_all_finite_semantics_are_prepared_without_future_veth(monkeypatch):
     assert "preflight_nodes" not in plans[0].request
     assert "generation_nodes" not in plans[0].request
     with pytest.raises(RuntimeError, match="only once"):
-        runtime.prepare_all((), logical_ports={})
+        runtime.prepare_all((), logical_ports={}, retirements={})
 
 
 def test_incremental_preparation_consumes_and_completes_one_boundary_at_a_time(monkeypatch):
@@ -610,9 +652,9 @@ def test_formal_main_never_derives_audits_preflights_or_reclaims(monkeypatch):
     from copy import deepcopy
     runtime, plans, kernel = _finite_runtime(monkeypatch)
     semantic = {fd: deepcopy(values) for fd, values in kernel.maps.items()
-                if isinstance(fd, tuple) and fd[1] in ("active_links", "routes")}
+                if isinstance(fd, tuple) and fd[1].split("@")[0] in ("active_links", "routes")}
     def forbidden(*args, **kwargs): raise AssertionError("full-state work entered formal runtime")
-    for name in ("_derive_boundary_plan", "_audit_boundary_capacity", "_validate_collision_audit"):
+    for name in ("_audit_boundary_capacity", "_validate_collision_audit"):
         monkeypatch.setattr(runtime, name, forbidden)
     for plan in plans:
         runtime.activate(plan)
@@ -640,7 +682,7 @@ def test_withdrawn_bindings_and_veth_survive_until_publication(monkeypatch):
     assert all(i > commit for i, event in enumerate(kernel.operations) if event[0] in ("map-delete", "delete"))
 
 
-@pytest.mark.parametrize("failure", ["create", "attach", "route"])
+@pytest.mark.parametrize("failure", ["create", "attach", "qdisc"])
 def test_prepublication_failure_uses_same_channel_for_candidate_rollback(monkeypatch, failure):
     runtime, plans, kernel = _finite_runtime(monkeypatch)
     kernel.fail = failure
@@ -707,12 +749,15 @@ def test_incomplete_semantic_prewrite_count_fails_in_preparation(monkeypatch):
     bindings = {node: SimpleNamespace(pid=100 + i, process_start_time_ticks=200 + i, netns_inode=300 + i)
                 for i, node in enumerate(projection.node_ids)}
     runtime = _TcBpfRuntimeRealization(executor=kernel, pin_root="/pins", bindings=bindings)
-    runtime.initialize(projection, zone_prefixes=(), runtime_capacity_demand=_capacity_demand(projection, boundaries))
+    runtime.initialize(projection, dataplane=_BpfTranslation(projection, ()).foundation(), zone_prefixes=(), runtime_capacity_demand=_capacity_demand(projection, boundaries))
     monkeypatch.setattr(command, "_update_map_entries", lambda *args, **kwargs: 0)
     connections = tuple(dict.fromkeys(op.intent.connection_id for boundary in boundaries for op in boundary.operations
                                      if isinstance(op.intent, _ResourceIntent)))
     with pytest.raises(RuntimeError, match="incomplete entry count"):
-        runtime.prepare_all(boundaries, logical_ports={connection: (2*i+1, 2*i+2) for i, connection in enumerate(connections)})
+        ports = {connection: (2*i+1, 2*i+2) for i, connection in enumerate(connections)}
+        translation = _BpfTranslation(projection, ())
+        prepared = tuple(translation.translate(b, ports) for b in boundaries)
+        runtime.prepare_all(prepared, logical_ports=ports, retirements=translation.retirements())
     assert kernel.links == {}
     assert kernel.maps["generation"][0] == 0xFFFFFFFF
 
@@ -732,7 +777,7 @@ def test_failed_preparation_retains_partial_initialization_for_final_cleanup():
             return {"pin_root_removed": True, "errors": []}
     runtime._executor = Executor()
     with pytest.raises(runtime_module._CapacityAuditError, match="startup failed and cleanup was incomplete"):
-        runtime.initialize(projection, zone_prefixes=(), runtime_capacity_demand=demand)
+        runtime.initialize(projection, dataplane=_BpfTranslation(projection, ()).foundation(), zone_prefixes=(), runtime_capacity_demand=demand)
     assert runtime._cleanup_required
     runtime.cleanup()
     assert calls[-1][0] == "cleanup"
@@ -745,11 +790,11 @@ def test_actual_runner_records_preserve_boundaries_generations_and_traffic_ident
     import io
     import json
     from time import monotonic_ns
-    from skyseed_v2.backend.bpf.runner import lifecycle as runner_module
+    from skyseed_v2.backend.runner import lifecycle as runner_module
     from skyseed_v2.backend.bpf.runner.traffic_telemetry import _TrafficTelemetryRecorder
-    from tools.traffic.reader import _read_telemetry, _validate_interface_generation_boundaries
-    from tools.traffic.projection import _project_probe_qualification
-    from tools.runner.projection import project_runner_inspection
+    from tools.observation.traffic.reader import _read_telemetry, _validate_interface_generation_boundaries
+    from tools.observation.traffic.projection import _project_probe_qualification
+    from tools.observation.runner.projection import project_runner_inspection
 
     projection, boundaries = _capacity_transition_sequence()
     when = boundaries[-1].nominal_time.replace(second=5)
@@ -884,7 +929,7 @@ def test_initialization_response_loss_retains_cleanup_until_confirmed(error_type
             return {"pin_root_removed": True, "cleanup_confirmed": True, "errors": []}
     runtime._executor = Executor()
     with pytest.raises(runtime_module._CapacityAuditError, match="response lost after potentially completed mutations"):
-        runtime.initialize(projection, zone_prefixes=(), runtime_capacity_demand=demand)
+        runtime.initialize(projection, dataplane=_BpfTranslation(projection, ()).foundation(), zone_prefixes=(), runtime_capacity_demand=demand)
     assert runtime._initialization_outcome == "uncertain"
     assert runtime._cleanup_required
     with pytest.raises(EOFError):
@@ -920,9 +965,12 @@ def test_real_initialization_ledger_survives_response_loss(monkeypatch, tmp_path
     addresses = set()
     next_fd = iter(range(10000, 20000))
     class Channel:
-        def initial_links(self, group_end): return 1
+        def initial_links(self, **kwargs): return 1
         def set_link(self, *args, **kwargs): pass
-        def address(self, index, address, *, delete=False):
+        def create_dummy(self, name): pass
+        def link_index(self, name): return 2
+        def delete_link(self, index): addresses.clear()
+        def address(self, index, address, *, delete=False, exclusive=False):
             if delete:
                 addresses.discard(address)
             else:
@@ -939,11 +987,13 @@ def test_real_initialization_ledger_survives_response_loss(monkeypatch, tmp_path
     monkeypatch.setattr(command, "_GENERATION_FD", -1)
     monkeypatch.setattr(command, "_pin_root", lambda value: root)
     monkeypatch.setattr(command, "_retain_namespaces", retain)
+    monkeypatch.setattr(command, '_audit_local_ingress', lambda *a: None)
+    monkeypatch.setattr(command, '_create_local_ingress', lambda *a: None)
     monkeypatch.setattr(command, "_probe_batch_update_support", lambda: True)
     monkeypatch.setattr(command, "_audit_node_addresses", lambda request: {})
     monkeypatch.setattr(command, "_create_map", lambda *args, **kwargs: next(next_fd))
     monkeypatch.setattr(command, "_pin_object", lambda fd, path: path.touch())
-    monkeypatch.setattr(command, "_load_program", lambda *args, **kwargs: next(next_fd))
+    monkeypatch.setattr(command, "_load_object", lambda *args, **kwargs: (SimpleNamespace(close=lambda: None), next(next_fd)))
     monkeypatch.setattr(command, "_open_pinned", lambda path: next(next_fd))
     monkeypatch.setattr(command, "_update_map", lambda *args: None)
     original_close = os.close
@@ -956,7 +1006,7 @@ def test_real_initialization_ledger_survives_response_loss(monkeypatch, tmp_path
             return result
     runtime._executor = Executor()
     with pytest.raises(runtime_module._CapacityAuditError):
-        runtime.initialize(projection, zone_prefixes=(), runtime_capacity_demand=demand)
+        runtime.initialize(projection, dataplane=_BpfTranslation(projection, ()).foundation(), zone_prefixes=(), runtime_capacity_demand=demand)
     assert root.exists() and addresses
     assert runtime._cleanup_required and command._OWNED_PIN_ROOT == root
     if lose_cleanup_response:
@@ -972,7 +1022,7 @@ def test_real_initialization_ledger_survives_response_loss(monkeypatch, tmp_path
     assert not root.exists() and not addresses
 
 
-@pytest.mark.parametrize("soft", [1024, 16384])
+@pytest.mark.parametrize("soft", [1024, 32768])
 def test_foundation_reserves_retained_descriptors_without_changing_hard_limit(monkeypatch, soft):
     changes = []
     monkeypatch.setattr(command.resource, "getrlimit", lambda kind: (soft, 524288))
@@ -993,14 +1043,16 @@ def test_insufficient_descriptor_limit_fails_before_namespace_or_kernel_mutation
     monkeypatch.setattr(command, "_close_foundation", lambda: None)
     monkeypatch.setattr(command.resource, "getrlimit", lambda kind: (1024, 1024))
     monkeypatch.setattr(command, "_retain_namespaces", lambda nodes: pytest.fail("must reject before retaining namespaces"))
-    result = command._respond("initialize", {"pin_root": str(root), "nodes": [{}] * 1075})
+    from test_dataplane_preparation import _node_foundation
+    foundation, _ = _node_foundation(1075)
+    result = command._respond("initialize", {"pin_root": str(root), "nodes": foundation["nodes"], "dataplane": foundation})
     assert result["status"] == "error"
     assert "hard limit is 1024" in result["error"]
     assert result["evidence"]["initialization_outcome"] == "no-mutation"
     assert not root.exists()
 
 
-@pytest.mark.parametrize("failure", [None, "route", "delete"])
+@pytest.mark.parametrize("failure", [None, "qdisc", "delete"])
 def test_timing_preserves_kernel_operation_order_results_and_failure_ownership(failure):
     from copy import deepcopy
     def execute(observed):
@@ -1031,8 +1083,8 @@ def test_timing_preserves_kernel_operation_order_results_and_failure_ownership(f
         assert timings["post_veth_deletion"]["operation_count"] == 0
         assert evidence["retirement"]["deletion_requests"] == 1
         assert evidence["generation_publication_occurred"]
-    elif failure == "route":
-        assert timings["pre_route_replacement"]["operation_count"] == 1
+    elif failure == "qdisc":
+        assert timings["pre_qdisc_creation"]["operation_count"] == 1
         assert "active_generation_update" not in timings
 
 
@@ -1143,19 +1195,13 @@ def test_retirement_workers_overlap_namespaces_serialize_same_socket_and_join(mo
         pool.shutdown()
 
 
-def test_prepared_route_replacement_preserves_new_route_during_old_neighbour_withdrawal(monkeypatch):
+def test_route_changes_emit_no_linux_business_helpers(monkeypatch):
     runtime, plans, kernel = _finite_runtime(monkeypatch)
-    request = json.loads(plans[3].request)["request"]
-    destination = "198.18.0.1"
-    operation = next(node for node in request["operation_nodes"] if node["route_replace"])
-    replacement = next(value for value in operation["route_replace"] if value[0] == destination)
-    withdrawal = next(value for value in operation["route_withdraw"] if value[0] == destination)
-    assert replacement[1] != withdrawal[1]
-    assert withdrawal[2] is False
-    for plan in plans[:3]: runtime.activate(plan)
-    kernel.operations.clear()
-    runtime.activate(plans[3])
-    routes = [event for event in kernel.operations if event[0] == "route" and event[2][1] == destination]
-    neighbours = [event for event in kernel.operations if event[0] == "neighbour" and event[2][1] == destination]
-    assert len(routes) == 1 and routes[0][3]["delete"] is False
-    assert [event[3]["delete"] for event in neighbours] == [False, True]
+    try:
+        for plan in plans:
+            request = json.loads(plan.request)['request']
+            assert all('route_replace' not in n and 'route_withdraw' not in n for n in request['operation_nodes'])
+            runtime.activate(plan)
+        assert not any(event[0] in ('route', 'neighbour') for event in kernel.operations)
+    finally:
+        runtime.cleanup()

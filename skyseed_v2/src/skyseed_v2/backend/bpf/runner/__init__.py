@@ -5,7 +5,7 @@ __all__ = ["Runner"]
 
 def __getattr__(name):
     if name == "Runner":
-        value = import_module(".lifecycle", __name__).Runner
+        value = import_module("skyseed_v2.backend.runner.lifecycle").Runner
         globals()[name] = value
         return value
     raise AttributeError(name)

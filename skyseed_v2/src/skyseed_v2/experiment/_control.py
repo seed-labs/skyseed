@@ -7,6 +7,7 @@ from pathlib import Path
 import socket
 import socketserver
 from threading import Thread
+from skyseed_v2.shared._console import _console
 
 
 class _ControlUnavailable(RuntimeError):
@@ -90,6 +91,48 @@ if __name__ == "__main__":
     path.chmod(0o755)
 
 
+def _status_summary(computation, runtime):
+    """Describe existing owner snapshots; an absent endpoint proves no completion."""
+    calculation_available = computation.get('available') is not False and bool(computation)
+    if calculation_available:
+        _console(f"Calculation: {computation.get('state', 'unknown')}; requested through "
+                 f"{computation.get('requested_end', 'unknown')}; range ready through "
+                 f"{computation.get('completed_end') or 'none yet'}. IDLE means calculation is waiting, not runtime completion.")
+    else:
+        _console("Calculation endpoint unavailable; closure is not confirmed by status.")
+    if runtime.get('available') is False or not runtime:
+        _console("Runtime endpoint unavailable; cleanup is not confirmed by status. "
+                 "Check the original execution terminal; use run.sh after deployment to start execution.")
+    else:
+        runner = runtime.get('runner') or {}
+        readiness = runtime.get('initial_readiness') or {}
+        _console(f"Runtime: {runner.get('lifecycle_state', 'awaiting preparation')}; active through "
+                 f"{runner.get('active_frontier') or 'none yet'}; requested through "
+                 f"{computation.get('requested_end') or 'unknown (calculation endpoint unavailable)'}; "
+                 f"available through {runner.get('available_end') or 'not loaded'}. "
+                 f"User preparation: {readiness.get('status', 'not active')}.")
+        if runtime.get('cancel_requested') or runner.get('cancel_requested'):
+            _console("Runtime stop requested; owned work is draining. Watch the execution terminal for runtime cleanup, then Tool results.")
+        elif runner.get('paused') or runner.get('pause_requested'):
+            _console("Runtime pause is active or requested; use resume to release it. Missing materials may still hold progression.")
+        elif runner.get('waiting_for_material') or 'material' in runner.get('wait_reasons', ()):
+            _console("Runtime is waiting for execution materials; the network remains active. "
+                     + ("Use continue to request another range, or cancel-runtime to stop."
+                        if computation.get('state') == 'IDLE' else "Watch calculation progress, or use cancel-runtime to stop."))
+        else:
+            _console("Watch the execution terminal for preparation/progression; use pause or cancel-runtime as needed.")
+        for key in ('delivery_error', 'error'):
+            if runtime.get(key):
+                _console(f"Runtime error: {runtime[key]}")
+        if runner.get('maintenance_error'):
+            _console(f"Runtime maintenance error: {runner['maintenance_error']}")
+        if readiness.get('error'):
+            _console(f"User preparation error: {readiness['error']}")
+    for key in ('error', 'execution_error', 'recording_failure'):
+        if computation.get(key):
+            _console(f"Calculation {key}: {computation[key]}")
+
+
 def control_main(output, *, additional_seconds=300.0, target_end=None, batch_seconds=None, argv=None):
     parser = argparse.ArgumentParser(description="Control retained computation and Runner execution separately")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -138,7 +181,26 @@ def control_main(output, *, additional_seconds=300.0, target_end=None, batch_sec
             result = _request(output, "computation", args.command)
         else:
             result = _request(output, "runtime", args.command)
-        print(json.dumps(result, indent=2, default=str))
+        if args.command == "status":
+            _status_summary(result['computation'], result['runtime'])
+        elif args.command == "cancel-runtime":
+            _console("Runtime stop request accepted; cleanup is not yet confirmed. "
+                     "Watch the original run.sh execution terminal for 'Runtime resource cleanup succeeded', "
+                     "a cleanup failure, or confirmation that no runtime resources were acquired.")
+        elif args.command == "cancel-computation":
+            _console("Calculation stop request accepted; closure is not yet confirmed. "
+                     "Watch the original calculation terminal for 'Calculation session closed' after owned work has drained.")
+        elif args.command == "continue":
+            _console("Calculation continuation accepted; watch the calculation terminal for range readiness.")
+            _status_summary(result, result.get('runtime', {}))
+        elif args.command == "shutdown":
+            _console("Shutdown request accepted; watch the original calculation and execution terminals for closure and cleanup."
+                     if result['shutdown_requested'] else
+                     "No live owner acknowledged shutdown; endpoint absence does not confirm cleanup.")
+        else:
+            _console(f"Runtime {args.command} request accepted; see current owner facts below. "
+                     "Watch the execution terminal for the resulting transition.")
+        print(json.dumps(result, indent=2, default=str), flush=True)
         return 0
     except RuntimeError as error:
         parser.exit(1, f"{error}\n")

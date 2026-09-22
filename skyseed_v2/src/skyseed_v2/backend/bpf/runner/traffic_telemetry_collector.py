@@ -13,8 +13,9 @@ import os
 import select
 import sys
 from typing import Any
-from skyseed_v2.backend.bpf.runner.bpf import _lookup_u64_map, _open_pinned, _pin_root
-from skyseed_v2.backend.bpf.runner.traffic_telemetry_abi import (
+from skyseed_v2.backend.linux.bpf import _lookup_u64_map, _open_pinned
+from skyseed_v2.backend.bpf.dataplane.materials import _pin_root
+from skyseed_v2.backend.bpf.dataplane.telemetry_abi import (
     _TELEMETRY_EVENT,
     _decode_telemetry_event,
 )

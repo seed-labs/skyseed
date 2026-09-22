@@ -13,7 +13,7 @@ import pytest
 from examples.Sky00_tiny_network.tiny_network import build_emulator
 from examples.Sky00_tiny_network.tiny_network import create_simulator as create_complete_static_simulator
 from tests._support import drain_simulator as run_complete_static_chain
-from tools.bpf_compiler import (
+from tools.observation.bpf_compiler import (
     collect_bpf_compiler_data,
     read_bpf_compiler_history,
     write_bpf_compiler_tool,
@@ -22,7 +22,7 @@ from tools.bpf_compiler import (
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 TOOL_SOURCES = tuple(
-    sorted((PROJECT_ROOT / "tools/bpf_compiler").glob("*.py"))
+    sorted((PROJECT_ROOT / "tools/observation/bpf_compiler").glob("*.py"))
 )
 
 

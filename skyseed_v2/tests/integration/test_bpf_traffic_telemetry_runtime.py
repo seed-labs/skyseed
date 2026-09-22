@@ -17,14 +17,15 @@ def test_privileged_kernel_accepts_instrumented_sched_cls_program(continued) -> 
     image = os.environ.get("SKYSEED_BPF_HELPER_IMAGE")
     if not image:
         pytest.skip("set SKYSEED_BPF_HELPER_IMAGE to run the privileged verifier test")
-    script = r"""
+    from skyseed_v2.backend.bpf.dataplane.program import _prepare_program
+    prepared = _prepare_program()
+    script = "PREPARED = " + repr(prepared) + "\n" + r"""
 import json
 import os
-from skyseed_v2.backend.bpf.runner.bpf import (
+from skyseed_v2.backend.linux.bpf import (
     _BPF_MAP_TYPE_ARRAY,
     _BPF_MAP_TYPE_RINGBUF,
     _create_map,
-    _load_program,
 )
 descriptors = []
 try:
@@ -50,19 +51,17 @@ try:
     versions = _create_map("t_versions", key_size=4, max_entries=8)
     readers = _create_map("t_readers", key_size=4, value_size=8, max_entries=8)
     descriptors.extend((active_generation, active_links, routes, ingress, egress, events, losses, versions, readers))
-    program = _load_program(
-        active_generation,
-        active_links,
-        routes,
-        ingress,
-        egress,
-        telemetry_ring_map=events,
-        telemetry_loss_map=losses,
-        node_slot=0,
-        generation_versions_map=versions,
-        generation_readers_map=readers if CONTINUED else None,
-    )
-    descriptors.append(program)
+    from skyseed_v2.backend.bpf.dataplane.object_contract import _load_object
+    obj, program = _load_object(PREPARED, bindings={
+        "active_generation": active_generation, "active_links": active_links,
+        "routes": routes, "ingress_bindings": ingress, "egress_bindings": egress,
+        "traffic_events": events, "traffic_losses": losses,
+        "generation_versions": versions, "generation_readers": readers,
+    }, capacities={"active_generation": 1, "active_links": 8, "routes": 8,
+        "ingress_bindings": 8, "egress_bindings": 8, "traffic_events": 4096,
+        "traffic_losses": 1, "generation_versions": 8, "generation_readers": 8},
+        node_slot=0, telemetry=True, continuation=CONTINUED)
+    obj.close()
     print(json.dumps({"status": "ok", "program_fd": program}))
 finally:
     for descriptor in reversed(descriptors):

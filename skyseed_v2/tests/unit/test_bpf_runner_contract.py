@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from skyseed_v2.backend.bpf.runner import deployment as deployment_module
+from skyseed_v2.backend.runner import deployment as deployment_module
 
 from datetime import datetime, timedelta, timezone
 import inspect
@@ -14,16 +14,16 @@ from types import SimpleNamespace
 import pytest
 
 from skyseed_v2.backend import bpf
-from skyseed_v2.backend.bpf.runner import lifecycle as runner_module
-from skyseed_v2.backend.bpf.runner import command_channel as channel_module
-from skyseed_v2.backend.bpf.runner.event_history import _NonBlockingEventHistory
-from skyseed_v2.backend.bpf.runner import process_incarnation
-from skyseed_v2.backend.bpf.runner.runtime_realization import _IncompleteActivationError
-from skyseed_v2.backend.bpf.execution_materials.actions import _PhysicalWorldProjection
+from skyseed_v2.backend.runner import lifecycle as runner_module
+from skyseed_v2.backend.runner import command_channel as channel_module
+from skyseed_v2.backend.runner.event_history import _NonBlockingEventHistory
+from skyseed_v2.backend.runner import process_incarnation
+from skyseed_v2.backend.bpf.dataplane.runtime import _IncompleteActivationError
+from skyseed_v2.backend.execution_materials.actions import _PhysicalWorldProjection
 from skyseed_v2.backend.bpf.runner import Runner
-from skyseed_v2.backend.bpf.runner.deployment import _RunnerRuntimeBinding
-from skyseed_v2.backend.bpf.execution_materials.boundaries import _NominalBoundary
-from skyseed_v2.backend.bpf.runner.command_channel import _PrivilegedRuntimeCommandError
+from skyseed_v2.backend.runner.deployment import _RunnerRuntimeBinding
+from skyseed_v2.backend.execution_materials.boundaries import _NominalBoundary
+from skyseed_v2.backend.runner.command_channel import _PrivilegedRuntimeCommandError
 from skyseed_v2.shared import NodeId
 
 
@@ -55,6 +55,8 @@ def _boundary(offset: int = 0) -> _NominalBoundary:
     )
 
 class _Artifact:
+    forwarding_backend = "bpf"
+
     def __init__(self, boundaries=(_boundary(),)):
         self._boundaries = tuple(boundaries)
         self.physical_world_projection = PROJECTION
@@ -136,6 +138,7 @@ def test_public_runner_surface_and_constructor_validation_remain_closed(
     monkeypatch,
 ) -> None:
     assert bpf.__all__ == [
+        "BpfProgram",
         "BpfCompiledActivationBoundary",
         "BpfCompilationResult",
         "Runner",
@@ -456,13 +459,18 @@ def _finite_runner(monkeypatch, *, one_boundary=False):
             return _capacity_demand(projection, boundaries)
         @property
         def logical_ports(self):
-            from skyseed_v2.backend.bpf.execution_materials.actions import _ResourceIntent
+            from skyseed_v2.backend.execution_materials.actions import _ResourceIntent
             connections = tuple(dict.fromkeys(op.intent.connection_id for boundary in boundaries for op in boundary.operations
                                              if isinstance(op.intent, _ResourceIntent)))
             return {connection: (2 * index + 1, 2 * index + 2) for index, connection in enumerate(connections)}
     artifact = Artifact(boundaries)
     artifact.physical_world_projection = projection
     artifact.zone_prefixes = ("198.18.0.1/32",)
+    from skyseed_v2.backend.bpf.dataplane.translation import _BpfTranslation
+    translation = _BpfTranslation(projection, artifact.zone_prefixes)
+    artifact.dataplane = translation.foundation()
+    artifact._boundaries = tuple(translation.translate(b, artifact.logical_ports) for b in boundaries)
+    artifact.retirements = translation.retirements()
     opens = []
     monkeypatch.setattr(runner_module, "_open_runner_artifact", lambda path: opens.append(path) or artifact)
     bindings = {node: _RunnerRuntimeBinding(node, "service", "container", "name", "image", i + 100, i + 200, i + 300, "now")
@@ -626,7 +634,8 @@ def test_main_enqueues_prebuilt_telemetry_templates_without_build_or_flush(monke
         def enqueue_generation_identity(self, templates, installed, withdrawn, boundary):
             queued.append((templates, installed, withdrawn))
         def record_failure(self, error): raise AssertionError(str(error))
-    monkeypatch.setattr(runner_module, "_TrafficTelemetryRecorder", Recorder)
+    from skyseed_v2.backend.bpf.runner import traffic_telemetry
+    monkeypatch.setattr(traffic_telemetry, "_TrafficTelemetryRecorder", Recorder)
     runner, _, _, _ = _finite_runner(monkeypatch)
     runner._enable_traffic_telemetry(tmp_path)
     runner.prepare()

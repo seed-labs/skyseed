@@ -70,6 +70,7 @@ def test_identity_and_generation_exports_stay_with_their_owner_modules() -> None
 
     assert node_id.__all__ == ["NodeId"]
     assert bpf.__all__ == [
+        "BpfProgram",
         "BpfCompiledActivationBoundary",
         "BpfCompilationResult",
         "Runner",
@@ -97,6 +98,7 @@ def test_identity_and_generation_exports_stay_with_their_owner_modules() -> None
         "GroundStationCandidateSearch",
         "GroundStationCandidateSearchModel",
         "GroundStationRouteDemandTarget",
+        "SatelliteRouteDemandTarget",
         "HighestElevationZoneServicePlanningModel",
         "InterSatelliteConnectionPlanningModel",
         "InterSatelliteCandidateSearchModel",
@@ -141,6 +143,11 @@ def test_identity_and_generation_exports_stay_with_their_owner_modules() -> None
         "RouteDemand",
         "RouteDemandTarget",
         "RouteOutcome",
+        "RouteCandidate",
+        "RouteDisposition",
+        "PolicyRecord",
+        "LogicalExit",
+        "LocalRouteOutcome",
         "RouteOutcomeTransition",
         "RoutePlanningModel",
         "RoutePlanningResult",
@@ -194,6 +201,7 @@ def test_identity_and_generation_exports_stay_with_their_owner_modules() -> None
         "create_simulator_static_input",
     }
     assert set(emulator.__all__) == {
+        "configure_native_software",
         "create_static_emulator",
         "entities",
         "seedemu",

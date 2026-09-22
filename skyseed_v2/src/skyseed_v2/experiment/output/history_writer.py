@@ -6,7 +6,7 @@ from pathlib import Path
 from time import perf_counter
 from skyseed_v2.shared._durable_evidence import _OrderedEvidenceWriter
 from skyseed_v2.shared.recording import record_performance
-from skyseed_v2.simulator import Plan, ReachableRouteOutcome
+from skyseed_v2.simulator import Plan, ReachableRouteOutcome, UnreachableRouteOutcome, LocalRouteOutcome
 from skyseed_v2.backend.bpf import BpfCompilationResult
 from skyseed_v2.simulator.planner.evidence import published_planning_evidence_to_data
 from .history import (
@@ -463,7 +463,7 @@ def _compact_compiler_evidence(
             "intended_zone_edges": len(realization.intended_zone_edges),
             "intended_zones": len(state.zone_service_assignments),
             "planned_routes_reachable": reachable,
-            "planned_routes_unreachable": len(state.route_outcomes) - reachable,
+            "planned_routes_unreachable": sum(isinstance(o, UnreachableRouteOutcome) for o in state.route_outcomes),
         },
         "operation_counts": operation_counts,
         "boundary_workloads": boundaries,

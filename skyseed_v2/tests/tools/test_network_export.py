@@ -1,9 +1,9 @@
-from tools.planner.export import _zone_feature
+from tools.observation.planner.export import _zone_feature
 
 
 def test_network_metrics_include_pending_lifecycle_capacity():
     from types import SimpleNamespace
-    from tools.planner.export import _reserved_ground_accesses
+    from tools.observation.planner.export import _reserved_ground_accesses
     operational, pending = object(), object()
     evidence = SimpleNamespace(
         selected_ground_station_accesses=(operational,),
@@ -31,11 +31,11 @@ def test_offline_export_matches_sealed_formal_frames_and_has_no_runtime_timing(t
     from examples.Sky00_tiny_network.tiny_network import build_emulator
     from examples.Sky00_tiny_network.tiny_network import create_simulator as create_complete_static_simulator
     from skyseed_v2.experiment import ExperimentController
-    from tools.planner import read_planner_history
+    from tools.observation.planner import read_planner_history
     from examples.Sky00_tiny_network import tiny_network as tiny
     from pathlib import Path
-    from tools.physical_world import write_physical_world_tool
-    from tools.planner.export import write_network_export
+    from tools.observation.physical_world import write_physical_world_tool
+    from tools.observation.planner.export import write_network_export
     generated=tmp_path/'generated'
     network=build_emulator()
     simulator=create_complete_static_simulator(network)
@@ -43,7 +43,7 @@ def test_offline_export_matches_sealed_formal_frames_and_has_no_runtime_timing(t
         through='planner',traffic_enabled=False).generate()
     plans=tuple(record.plan for record in read_planner_history(generated/'results/planner/planning.jsonl.gz'))
     write_physical_world_tool(simulator.get_physical_world(),generated/'visualizations/physical-world',physical_frames_path=generated/'results/physical-world/physical-frames.jsonl')
-    from tools.planner import export, reader
+    from tools.observation.planner import export, reader
     calls = []
     original = export.apply_plan_transition
     def counted(*args, **kwargs):
@@ -70,7 +70,7 @@ def test_offline_export_matches_sealed_formal_frames_and_has_no_runtime_timing(t
 def test_traffic_export_keeps_executor_cases_without_fabricating_request_time(tmp_path):
     from datetime import datetime, timezone
     import json
-    from tools.traffic.export import write_traffic_export
+    from tools.observation.traffic.export import write_traffic_export
     generated=tmp_path/'generated';source=generated/'visualizations/traffic';source.mkdir(parents=True)
     (source/'traffic-replay.json').write_text(json.dumps({'transactions':[], 'inventory':{'packet_observations':0},
         'qualification':{'summary':{'sent':1,'received':0,'loss':1,'status':'WARN','runner_lag_seconds':99},

@@ -1,105 +1,78 @@
-"""Execute actual emitted instructions without loading BPF into the kernel."""
-from __future__ import annotations
-
-import struct
-from skyseed_v2.backend.bpf.runner.privileged_runtime_command import _ip_key
+"""Execute default and custom C with native helper substitutes, without BPF load."""
+import json
+from pathlib import Path
+import shutil
+import subprocess
+import sys
 
 import pytest
 
-from skyseed_v2.backend.bpf.runner import bpf as command
+from skyseed_v2.backend.bpf.dataplane.program import _INCLUDE, _DEFAULT, _compiler
+
+_FIXTURES = Path(__file__).parents[1] / 'fixtures/dataplane'
 
 
-def _execute_program(maps, *, ingress=11, destination="198.18.0.1"):
-    code = command._tc_program(10, 11, 12, 13, 14, generation_versions_map=15)
-    memory = {}
-    def write(address, value, size):
-        for i, byte in enumerate(int(value).to_bytes(size, "little", signed=False)):
-            memory[address + i] = byte
-    def read(address, size):
-        return int.from_bytes(bytes(memory[address + i] for i in range(size)), "little")
-    registers = [0] * 11
-    registers[1], registers[10] = 1000, 10000
-    write(1076, 2000, 4); write(1080, 2034, 4); write(1040, ingress, 4)
-    write(2012, 0x0008, 2)
-    write(2030, _ip_key(destination), 4)
-    pc = 0
-    lookups = []
-    while pc < len(code) // 8:
-        opcode, regs, offset, immediate = struct.unpack_from("<BBhi", code, pc * 8)
-        destination_register, source = regs & 15, regs >> 4
-        pc += 1
-        if opcode == 0x18:  # LDDW map descriptor
-            high = struct.unpack_from("<i", code, pc * 8 + 4)[0]
-            registers[destination_register] = (high << 32) | (immediate & 0xFFFFFFFF)
-            pc += 1
-        elif opcode in (0x61, 0x69):
-            registers[destination_register] = read(registers[source] + offset, 4 if opcode == 0x61 else 2)
-        elif opcode == 0x63:
-            write(registers[destination_register] + offset, registers[source] & 0xFFFFFFFF, 4)
-        elif opcode == 0xBF:
-            registers[destination_register] = registers[source]
-        elif opcode == 0xB7:
-            registers[destination_register] = immediate & 0xFFFFFFFFFFFFFFFF
-        elif opcode == 0x07:
-            registers[destination_register] += immediate
-        elif opcode == 0x85:
-            if immediate == command._BPF_FUNC_MAP_LOOKUP_ELEM:
-                fd, address = registers[1:3]
-                key = ((read(address, 4), read(address + 4, 4)) if fd in (11, 12) else read(address, 4))
-                lookups.append((fd, key))
-                value = maps[fd].get(key)
-                registers[0] = 0 if value is None else 30000 + len(lookups) * 8
-                if value is not None:
-                    write(registers[0], value, 4)
-                for index in range(1, 6): registers[index] = 0
-            elif immediate == command._BPF_FUNC_REDIRECT:
-                return ("redirect", registers[1]), lookups
-            else:
-                raise AssertionError(f"unhandled helper {immediate}")
-        elif opcode == 0x95:
-            return ("action", registers[0]), lookups
-        elif opcode in (0x05, 0x15, 0x55, 0x2D):
-            jump = (opcode == 0x05 or opcode == 0x15 and registers[destination_register] == immediate
-                    or opcode == 0x55 and registers[destination_register] != immediate
-                    or opcode == 0x2D and registers[destination_register] > registers[source])
-            if jump: pc += offset
-        else:
-            raise AssertionError(f"unhandled emitted instruction {opcode:#x}")
-    raise AssertionError("program did not terminate")
+@pytest.fixture(scope='module', params=['default', 'custom'])
+def native_program(request, tmp_path_factory):
+    root = tmp_path_factory.mktemp('native-c-' + request.param)
+    (root / 'bpf').mkdir()
+    shutil.copy(_FIXTURES / 'bpf_helpers.h', root / 'bpf/bpf_helpers.h')
+    # Only change storage qualifiers so the host harness can bind configuration.
+    # The BPF loader binds this same configuration through libbpf's initial value.
+    (root / 'skyseed.h').write_text((_INCLUDE / 'skyseed.h').read_text().replace(
+        'const volatile struct sky_configuration sky_config', 'volatile struct sky_configuration sky_config'))
+    if request.param == 'default':
+        shutil.copy(_DEFAULT, root / 'selected.c')
+    else:
+        (root / 'selected.c').write_text('''
+#include "skyseed.h"
+SKY_MAP(private_packets, BPF_MAP_TYPE_ARRAY, __u32, __u64);
+static int handle(struct sky_context *ctx) {
+    __u32 zero = 0;
+    __u64 *count = bpf_map_lookup_elem(&private_packets, &zero);
+    if (count) __sync_fetch_and_add(count, 1);
+    /* Mutation cannot change the ingress packet facts already captured. */
+    unsigned char *data = (void *)(long)ctx->skb->data;
+    data[26] = 99;
+    return TC_ACT_OK;
+}
+SKYSEED_PROGRAM(handle);
+''')
+    output = root / 'execute'
+    subprocess.run([_compiler(), '-O2', '-no-pie',
+                    *([] if shutil.which('ld') else [
+                        '--ld-path=' + str(Path(sys.prefix) / 'bin/x86_64-conda-linux-gnu-ld'),
+                        '-nostdlib', '/usr/lib/x86_64-linux-gnu/crt1.o', '/usr/lib/x86_64-linux-gnu/crti.o',
+                        '/lib/x86_64-linux-gnu/libc.so.6', '/usr/lib/x86_64-linux-gnu/crtn.o',
+                        '-Wl,--dynamic-linker=/lib64/ld-linux-x86-64.so.2']), '-I', str(root), '-I', str(Path(sys.prefix) / 'include'),
+                    *(['-DDEFAULT_TEST'] if request.param == 'default' else []),
+                    str(_FIXTURES / 'native.c'), '-o', str(output)], check=True)
+    def run(mode=0, telemetry=True, continuation=True, *, local=False, route=None):
+        return json.loads(subprocess.check_output([str(output), str(mode), str(int(telemetry)), str(int(continuation)), str(int(local)), *([] if route is None else [str(route)])]))
+    return request.param, run
 
 
-def _maps():
-    destination = _ip_key("198.18.0.1")
-    return {10: {0: 0}, 11: {(0, 3): 1, (1, 3): 1},
-            12: {(0, destination): 1, (1, destination): 2},
-            13: {11: 3}, 14: {1: 21, 2: 22}, 15: {0: 0, 1: 1}}
-
-
-def test_future_entries_have_no_visibility_until_active_generation_commit():
-    maps = _maps()
-    assert _execute_program(maps)[0] == ("redirect", 21)
-    maps[10][0] = 1
-    assert _execute_program(maps)[0] == ("redirect", 22)
-
-
-@pytest.mark.parametrize("missing", [10, 11, 12, 13, 14, 15])
-def test_required_generation_link_route_or_live_binding_absence_drops(missing):
-    maps = _maps()
-    maps[missing].clear()
-    assert _execute_program(maps)[0] == ("action", command._TC_ACT_SHOT)
-
-
-def test_logical_local_route_zero_preserves_pass_without_egress_binding():
-    maps = _maps()
-    maps[12][(0, _ip_key("198.18.0.1"))] = 0
-    maps[14].clear()
-    result, lookups = _execute_program(maps)
-    assert result == ("action", command._TC_ACT_OK)
-    assert all(fd != 14 for fd, key in lookups)
-
-
-@pytest.mark.parametrize("binding_map,key", [(13, 11), (14, 1)])
-def test_zero_live_binding_fails_closed(binding_map, key):
-    maps = _maps()
-    maps[binding_map][key] = 0
-    assert _execute_program(maps)[0] == ("action", command._TC_ACT_SHOT)
+@pytest.mark.parametrize('telemetry', [False, True])
+@pytest.mark.parametrize('continuation', [False, True])
+@pytest.mark.parametrize('mode', [0, 1, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 30, 31, 32, 33, 40])
+def test_handler_returns_complete_observation_and_release(native_program, mode, telemetry, continuation):
+    kind, run = native_program
+    result = run(mode, telemetry, continuation)
+    assert result['readers'] == 0
+    assert result['events'] == int(telemetry)
+    assert result['losses'] == int(telemetry and mode == 40)
+    if kind == 'custom':
+        assert result['action'] == 0 and result['private'] == 1
+        assert result['reason'] == 0
+    else:
+        expected = 0 if mode in (16, 30) else 2 if mode in (10, 11, 12, 13, 14, 15, 17, 18, 31, 32) or continuation and mode in (20, 21) else 7
+        assert result['action'] == expected
+        if expected == 7:
+            assert result['output'] == (22 if mode == 1 else 21)
+    if telemetry:
+        assert result['icmp'] == int(mode not in (30, 31, 32, 33))
+        assert result['facts'] == int(mode not in (30, 31, 32))
+        if result['facts']:
+            assert result['source'] == 0x01000064
+        if continuation and mode in (20, 21) or mode == 10:
+            assert result['generation'] == 0xffffffff

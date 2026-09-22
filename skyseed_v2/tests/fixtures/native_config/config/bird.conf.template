@@ -1,0 +1,22 @@
+# Example policy: Area 0 transit; GS edges enter only from SkySEED routes.
+log stderr all;
+router id ${identity};
+protocol device {}
+protocol kernel skyseed_kernel {
+    include "/etc/skyseed/bird-kernel-options.conf";
+    learn;
+    metric 100;
+    ipv4 {
+        import filter { if krt_source = ${route_protocol} && net ~ [ ${gs_prefix_set} ] then accept; reject; };
+        export filter { if source = RTS_OSPF || source = RTS_OSPF_IA || source = RTS_OSPF_EXT1 || source = RTS_OSPF_EXT2 then accept; reject; };
+    };
+}
+protocol ospf v2 satellite_ospf {
+    ipv4 { import all; export filter { if proto = "skyseed_kernel" then accept; reject; }; };
+    area 0 {
+        # All current stable node/Zone /32s, with no neighbors on this interface.
+        interface "${identity_interface}" { stub yes; };
+        # Exclude GS accesses; the remaining native interfaces are satellite ISLs.
+        interface ${gs_interface_exclusions}"sv2*" { type ptp; };
+    };
+}

@@ -269,7 +269,7 @@ def test_removed_and_undesignated_future_boundary_apis_are_not_exported() -> Non
         )
     )
     assert {path for path in project_package.rglob("runner") if path.is_dir()} == {
-        project_package / "backend/bpf/runner"
+        project_package / "backend/bpf/runner", project_package / "backend/runner"
     }
     assert not any(
         isinstance(node, ast.ClassDef)
@@ -735,7 +735,7 @@ def test_production_dependency_direction_has_one_cross_layer_bridge() -> None:
         tool_imports = {name for name in imports if name == "tools" or name.startswith("tools.")}
         if tool_imports:
             assert path.relative_to(package_root).as_posix() in {"experiment/controller.py", "experiment/execution.py"}
-            assert tool_imports <= {"tools.traffic.active.probe_plan", "tools.traffic.active.probe_execution"}
+            assert tool_imports <= {"tools.generation.traffic.probe_plan", "tools.generation.traffic.probe_execution"}
         imports_emulator = any(
             imported == "skyseed_v2.emulator"
             or imported.startswith("skyseed_v2.emulator.")
@@ -748,7 +748,7 @@ def test_production_dependency_direction_has_one_cross_layer_bridge() -> None:
         )
         if imports_emulator and imports_simulator:
             cross_layer_modules.append(path.relative_to(package_root).as_posix())
-    assert cross_layer_modules == ["adapters/emulator_to_simulator.py"]
+    assert cross_layer_modules == ["adapters/emulator_to_simulator.py", "experiment/controller.py"]
 
 
 def test_geometry_module_cycle_is_eliminated() -> None:

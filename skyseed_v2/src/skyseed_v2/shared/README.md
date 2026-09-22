@@ -2,6 +2,7 @@
 
 Shared provides immutable `NodeId`, identifier/time validation, optional performance
 recording and private mechanical I/O, ordered evidence and shutdown helpers.
+`_console` provides best-effort, flushed stderr feedback without changing operation results.
 These facilities carry no Simulator, backend, deployment or experiment authority.
 They do not choose Models, paths, resource lifecycles or policy.
 

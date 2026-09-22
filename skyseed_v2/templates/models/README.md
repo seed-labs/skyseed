@@ -15,3 +15,5 @@ explains which inputs a Model receives; the [API reference](../../docs/api/READM
 covers public fields, lookups, geometry and control. The contract table above links
 directly to each default implementation for algorithm examples. Private default helpers
 are not required when writing your own Model.
+
+For independent checks, copy the [development driver](../dataplane/threshold/develop.py) and use the [development helpers](../../tools/development/README.md). Structured routing and generated C authoring follow the [DataPlane contract](../../docs/development/dataplane.md).
