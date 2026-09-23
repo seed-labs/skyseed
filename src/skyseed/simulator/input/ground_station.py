@@ -1,0 +1,61 @@
+"""Define immutable GroundStation input for Simulator construction."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from math import isfinite
+
+from skyseed.shared import NodeId
+
+
+_GROUND_STATION_ENTITY_KIND = "ground-station"
+
+
+@dataclass(frozen=True, slots=True)
+class GroundStationSimulationInput:
+    """Contain only static GroundStation values needed beyond the Emulator.
+
+    Layer: immutable Simulator static-input contract. The external input
+    generation adapter creates it and Simulator construction reads it. It is not
+    an Emulator entity, SEED Router or execution target. It is public from the
+    Simulator static-input package because it is the explicit GroundStation
+    input contract.
+    """
+
+    node_id: NodeId
+    ground_station_id: str
+    latitude_deg: float
+    longitude_deg: float
+    elevation_m: float
+    station_type: str
+    operator: str | None
+    max_simultaneous_satellite_accesses: int | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.node_id, NodeId):
+            raise TypeError("node_id must be a NodeId")
+        if self.node_id.entity_kind != _GROUND_STATION_ENTITY_KIND:
+            raise ValueError(
+                "GroundStationSimulationInput node_id kind must be ground-station"
+            )
+        if self.node_id.entity_id != self.ground_station_id:
+            raise ValueError("ground_station_id must match node_id.entity_id")
+        elevation = float(self.elevation_m)
+        if not isfinite(elevation):
+            raise ValueError("elevation_m must be finite")
+        operator = self.operator
+        if operator is not None:
+            if not isinstance(operator, str) or not operator.strip():
+                raise ValueError("operator must be None or a non-empty string")
+            operator = operator.strip()
+        object.__setattr__(self, "elevation_m", elevation)
+        object.__setattr__(self, "operator", operator)
+        capability = self.max_simultaneous_satellite_accesses
+        if capability is not None and (
+            not isinstance(capability, int)
+            or isinstance(capability, bool)
+            or capability <= 0
+        ):
+            raise ValueError(
+                "max_simultaneous_satellite_accesses must be a positive integer"
+            )

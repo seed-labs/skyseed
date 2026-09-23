@@ -6,3 +6,13 @@
 **/__pycache__/
 *.py[cod]
 .venv/
+
+# Application build products and local experiment outputs
+build/
+dist/
+src/*.egg-info/
+examples/*/output/
+
+# Preserved pre-migration output trees stay at their original locations.
+/skyseed_v2/examples/*/output/
+/skyseed_v2/src/*.egg-info/

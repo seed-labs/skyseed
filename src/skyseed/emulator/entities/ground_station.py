@@ -1,0 +1,158 @@
+"""Define a static EmulatorGroundStation with SEED Router capability."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from math import isfinite
+from types import MappingProxyType
+from typing import Mapping
+
+from seedemu.core import Router
+from seedemu.core.enums import NodeRole
+
+from skyseed.shared.identifier import validate_identifier
+
+
+@dataclass(frozen=True, slots=True)
+class GroundStationLocation:
+    """Hold one EmulatorGroundStation's geodetic values for a static Emulator run.
+
+    Layer: entity-bound value object. Handwritten callers or static Emulator
+    creation build it; EmulatorGroundStation and input generation read it. It is not a
+    dynamic position or visibility model. It is root public because direct
+    EmulatorGroundStation creation requires this validated value.
+    """
+
+    latitude_deg: float
+    longitude_deg: float
+    elevation_m: float = 0.0
+
+    def __post_init__(self) -> None:
+        latitude = float(self.latitude_deg)
+        longitude = float(self.longitude_deg)
+        elevation = float(self.elevation_m)
+        if not isfinite(latitude) or not -90.0 <= latitude <= 90.0:
+            raise ValueError("latitude_deg must be between -90 and 90")
+        if not isfinite(longitude) or not -180.0 <= longitude <= 180.0:
+            raise ValueError("longitude_deg must be between -180 and 180")
+        if not isfinite(elevation):
+            raise ValueError("elevation_m must be finite")
+        object.__setattr__(self, "latitude_deg", latitude)
+        object.__setattr__(self, "longitude_deg", longitude)
+        object.__setattr__(self, "elevation_m", elevation)
+
+
+class EmulatorGroundStation(Router):
+    """Represent one EmulatorGroundStation and the same instance's SEED Router capability.
+
+    Layer: approved Emulator entity plus SEED capability.
+    `EmulatorAutonomousSystem.create_ground_station` creates it; its AS, routing
+    layers and the standard SEED compiler use it. Input generation copies its static
+    values. It is not a Config, ordinary Router or dynamic link state. It is
+    root public because it is an approved user-visible entity.
+    """
+
+    def __init__(
+        self,
+        *,
+        ground_station_id: str,
+        asn: int,
+        location: GroundStationLocation,
+        station_type: str,
+        operator: str | None,
+        display_name: str | None = None,
+        service_config: Mapping[str, str] | None = None,
+        routing_backend: str = "bird",
+        max_simultaneous_satellite_accesses: int | None = None,
+    ) -> None:
+        self._ground_station_id = validate_identifier(
+            ground_station_id, "ground_station_id"
+        )
+        if not isinstance(location, GroundStationLocation):
+            raise TypeError("location must be a GroundStationLocation")
+        self._location = location
+        self._station_type = self._validate_text(station_type, "station_type")
+        self._operator = self._validate_optional_text(operator, "operator")
+        self._max_simultaneous_satellite_accesses = (
+            self._validate_optional_positive_integer(
+                max_simultaneous_satellite_accesses,
+                "max_simultaneous_satellite_accesses",
+            )
+        )
+        copied_config = dict(service_config or {})
+        if any(
+            not isinstance(key, str) or not isinstance(value, str)
+            for key, value in copied_config.items()
+        ):
+            raise TypeError("service_config keys and values must be strings")
+        self._service_config = MappingProxyType(copied_config)
+
+        if not isinstance(asn, int) or asn <= 0:
+            raise ValueError("asn must be a positive integer")
+        super().__init__(
+            name=self.ground_station_id,
+            role=NodeRole.Router,
+            asn=asn,
+            routingBackend=routing_backend,
+        )
+        self.setDisplayName(display_name or self.ground_station_id)
+        self.setGeo(location.latitude_deg, location.longitude_deg)
+        # Keep standard Router/BorderRouter identity; SkySEED identity is
+        # projected only through public labels.
+        self.setLabel("skyseed.entity_type", "GroundStation")
+        self.setLabel("skyseed.ground_station_id", self.ground_station_id)
+        self.setLabel("skyseed.station_type", self.station_type)
+        if self.operator is not None:
+            self.setLabel("skyseed.operator", self.operator)
+        self.setLabel("skyseed.latitude_deg", str(location.latitude_deg))
+        self.setLabel("skyseed.longitude_deg", str(location.longitude_deg))
+        if location.elevation_m is not None:
+            self.setLabel("skyseed.elevation_m", str(location.elevation_m))
+
+    @staticmethod
+    def _validate_text(value: str, field_name: str) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{field_name} must be a non-empty string")
+        return value.strip()
+
+    @classmethod
+    def _validate_optional_text(
+        cls, value: str | None, field_name: str
+    ) -> str | None:
+        if value is None:
+            return None
+        return cls._validate_text(value, field_name)
+
+    @staticmethod
+    def _validate_optional_positive_integer(
+        value: int | None, field_name: str
+    ) -> int | None:
+        if value is None:
+            return None
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            raise ValueError(f"{field_name} must be a positive integer")
+        return value
+
+    @property
+    def ground_station_id(self) -> str:
+        return self._ground_station_id
+
+    @property
+    def location(self) -> GroundStationLocation:
+        return self._location
+
+    @property
+    def station_type(self) -> str:
+        return self._station_type
+
+    @property
+    def operator(self) -> str | None:
+        return self._operator
+
+    @property
+    def max_simultaneous_satellite_accesses(self) -> int | None:
+        return self._max_simultaneous_satellite_accesses
+
+    @property
+    def service_config(self) -> Mapping[str, str]:
+        return self._service_config

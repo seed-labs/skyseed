@@ -1,0 +1,198 @@
+from dataclasses import FrozenInstanceError, fields
+
+import pytest
+from seedemu.core import Router
+
+import skyseed
+from skyseed.adapters.emulator_to_simulator import create_ground_station_simulation_input
+from skyseed.emulator.entities import EmulatorGroundStation, GroundStationLocation
+from skyseed.shared import NodeId
+from skyseed.emulator.seedemu import EmulatorAutonomousSystem
+from skyseed.simulator.input import (
+    GroundStationSimulationInput,
+)
+
+
+def create_station() -> EmulatorGroundStation:
+    return EmulatorGroundStation(
+        ground_station_id="gs-1",
+        asn=151,
+        location=GroundStationLocation(40.0, -74.0, 12.5),
+        station_type="gateway",
+        operator="Skyseed",
+        display_name="Ground Station One",
+        service_config={"profile": "minimal"},
+        max_simultaneous_satellite_accesses=3,
+    )
+
+
+def test_ground_station_is_the_unique_router_object_with_static_fields() -> None:
+    station = create_station()
+
+    assert isinstance(station, Router)
+    assert station.ground_station_id == "gs-1"
+    assert station.location == GroundStationLocation(40.0, -74.0, 12.5)
+    assert station.station_type == "gateway"
+    assert station.operator == "Skyseed"
+    assert station.max_simultaneous_satellite_accesses == 3
+    assert station.getDisplayName() == "Ground Station One"
+    assert dict(station.service_config) == {"profile": "minimal"}
+    with pytest.raises(TypeError):
+        station.service_config["profile"] = "changed"
+    assert not hasattr(skyseed, "GroundStationNode")
+
+
+def test_ground_station_as_rejects_duplicate_stable_ids() -> None:
+    station_as = EmulatorAutonomousSystem(151)
+    location = GroundStationLocation(40.0, -74.0)
+    created = station_as.create_ground_station(
+        "gs-1",
+        location=location,
+        station_type="gateway",
+        operator="Skyseed",
+    )
+
+    assert station_as.get_ground_station("gs-1") is created
+    assert station_as.getRouter("gs-1") is created
+    assert created.max_simultaneous_satellite_accesses is None
+    with pytest.raises(ValueError, match="already exists"):
+        station_as.create_ground_station(
+            "gs-1",
+            location=location,
+            station_type="gateway",
+            operator="Skyseed",
+        )
+    with pytest.raises(AssertionError, match="already exists"):
+        station_as.createRouter("gs-1")
+
+
+def test_ground_station_height_defaults_to_zero_and_rejects_none() -> None:
+    assert GroundStationLocation(40.0, -74.0).elevation_m == 0.0
+    with pytest.raises(TypeError):
+        GroundStationLocation(40.0, -74.0, None)
+
+
+def test_ground_station_omits_missing_elevation_label() -> None:
+    location = GroundStationLocation(40.0, -74.0)
+    # Isolate label projection without changing the accepted location-value
+    # validation contract, which still defaults to 0.0 and rejects None.
+    object.__setattr__(location, "elevation_m", None)
+    station = EmulatorGroundStation(
+        ground_station_id="gs-no-elevation",
+        asn=151,
+        location=location,
+        station_type="gateway",
+        operator="Skyseed",
+    )
+
+    assert "skyseed.elevation_m" not in station.getLabel()
+
+
+def test_ground_station_nullable_operator_omits_only_operator_metadata() -> None:
+    station = EmulatorGroundStation(
+        ground_station_id="gs-no-known-operator",
+        asn=151,
+        location=GroundStationLocation(40.0, -74.0),
+        station_type="gateway",
+        operator=None,
+    )
+
+    assert station.operator is None
+    assert "skyseed.operator" not in station.getLabel()
+    assert station.getLabel()["skyseed.station_type"] == "gateway"
+    assert create_ground_station_simulation_input(station).operator is None
+
+    known = EmulatorGroundStation(
+        ground_station_id="gs-known-operator",
+        asn=151,
+        location=GroundStationLocation(41.0, -73.0),
+        station_type="gateway",
+        operator="  Skyseed  ",
+    )
+    assert known.operator == "Skyseed"
+    assert known.getLabel()["skyseed.operator"] == "Skyseed"
+
+    with pytest.raises(ValueError, match="operator"):
+        EmulatorGroundStation(
+            ground_station_id="gs-invalid-operator",
+            asn=151,
+            location=GroundStationLocation(42.0, -72.0),
+            station_type="gateway",
+            operator="   ",
+        )
+
+
+@pytest.mark.parametrize("capability", (0, -1, True))
+def test_ground_station_rejects_invalid_optional_access_capability(
+    capability: int,
+) -> None:
+    with pytest.raises(
+        ValueError, match="max_simultaneous_satellite_accesses"
+    ):
+        EmulatorGroundStation(
+            ground_station_id="gs-invalid-capability",
+            asn=151,
+            location=GroundStationLocation(42.0, -72.0),
+            station_type="gateway",
+            operator=None,
+            max_simultaneous_satellite_accesses=capability,
+        )
+
+
+def test_ground_station_simulation_input_is_immutable_and_restricted() -> None:
+    station = create_station()
+    simulation_input = create_ground_station_simulation_input(station)
+
+    assert simulation_input == GroundStationSimulationInput(
+        node_id=NodeId(151, "ground-station", "gs-1"),
+        ground_station_id="gs-1",
+        latitude_deg=40.0,
+        longitude_deg=-74.0,
+        elevation_m=12.5,
+        station_type="gateway",
+        operator="Skyseed",
+        max_simultaneous_satellite_accesses=3,
+    )
+    with pytest.raises(FrozenInstanceError):
+        simulation_input.operator = "changed"
+    assert not isinstance(simulation_input.node_id, Router)
+    assert (
+        simulation_input.node_id.entity_id
+        == simulation_input.ground_station_id
+    )
+    for forbidden_attribute in (
+        "runtime_node",
+        "registry",
+        "node",
+        "router",
+        "compiler",
+        "docker",
+        "deployment",
+        "container_config",
+        "namespace",
+    ):
+        assert not hasattr(simulation_input, forbidden_attribute)
+    assert {field.name for field in fields(simulation_input)} == {
+        "node_id",
+        "ground_station_id",
+        "latitude_deg",
+        "longitude_deg",
+        "elevation_m",
+        "station_type",
+        "operator",
+        "max_simultaneous_satellite_accesses",
+    }
+
+
+def test_ground_station_has_no_simulator_dynamic_responsibilities() -> None:
+    station = create_station()
+    for responsibility in (
+        "compute_visibility",
+        "select_service_satellite",
+        "assign_zone",
+        "build_topology_slice",
+        "plan_routes",
+        "plan_bpf_updates",
+        "run_backend_plan",
+    ):
+        assert not hasattr(station, responsibility)
