@@ -11,6 +11,8 @@
 build/
 dist/
 src/*.egg-info/
+new_src/*.egg-info/
+new_examples/*/output*/
 examples/*/output/
 
 # Preserved pre-migration output trees stay at their original locations.

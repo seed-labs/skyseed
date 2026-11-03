@@ -1,91 +1,38 @@
 # SkySEED
 
-SkySEED builds satellite-network experiments on [SEED](https://seedsecuritylabs.org/emulator/).
-An Emulator constructs the network scene; replaceable Models compute physical
-conditions, connections, Zone service and routes. Computation publishes Plans and
-sealed execution materials. A separate Deployer and Runner deploy the SEED containers
-and apply network changes through Linux/BPF. Optional interactive views explain the
-physical world, planned network and observed execution without becoming their owners.
+SkySEED extends [SEED](https://seedsecuritylabs.org/emulator/) with a reusable
+satellite-network **Scene** and an **Emulator** that turns it into SEED nodes.
+You can combine them with ground networks and services, generate deployment files,
+and start the network with Docker Compose.
 
-The official repository is
-[seed-labs/skyseed](https://github.com/seed-labs/skyseed), branch `main`; access is required.
+This development stage supports Scene authoring and static deployment.
+PlanningControl, PlanCompiler, Runner and dynamic satellite links are future work.
 
 ## Start here
 
-| I want to… | Start with |
-|---|---|
-| Understand the system | [Architecture and system diagram](docs/architecture/overview.md) |
-| Explore without running an experiment | [Download/local interactive demos](docs/demos/README.md) |
-| Run the default assembly example | [S4](examples/Sky02_s4_default/README.md) |
-| Run full S4 GS↔Zone traffic with BIRD OSPF | [Native S4 workflow](examples/Sky06_s4_native_ospf/README.md) |
-| Try a smaller scene and customize Models | [S5 and its local algorithms](examples/Sky01_s5_custom_models/README.md) |
-| Choose Linux or BPF forwarding | [Shared pipeline and mode differences](docs/architecture/overview.md#choose-a-forwarding-mode) |
-| Replace packet processing | [C/eBPF template](templates/dataplane/README.md) |
-| Look up public methods and Model input data | [API reference](docs/api/README.md) |
-| Read state, exchange user data or revise future work | [Feedback from host and container programs](docs/user-guides/computation-and-controls.md#interaction-setup-and-independent-programs) |
-| Develop or review changes | [Developer references and workflow](docs/development/README.md) |
-| Explore satellite-network research and collected evidence | [Research archive](research/README.md) |
+- [Architecture](new_docs/architecture.md): components and how they fit together.
+- [Tiny network](new_examples/tiny_network/README.md): build, start and inspect a working example.
+- [Scene](new_docs/scene.md) and [Emulator](new_docs/emulator.md): usage and key interface rules.
+- [Development](new_docs/development.md): source layout, focused checks and migration.
 
-## Install, calculate and run
+## Installation
 
-Follow [getting started](docs/user-guides/getting-started.md) to obtain the
-required SEED fork and install Conda/Python dependencies. A browser can open the
-retained demos locally; they are not an already hosted website. Actual network
-execution additionally needs the [Linux/Docker/BPF host](docs/user-guides/linux-host.md).
+Use an ExtensionNode-capable SEED checkout, such as
+[the proposal in SEED PR #611](https://github.com/seed-labs/seed-emulator/pull/611).
+The package version `seedemu==0.0.7` alone does not establish that capability.
+Place the checkout beside this repository, or set `SEED_EMULATOR_CHECKOUT`, then:
 
 ```bash
-# Terminal 1, from this repository; SEED checkout prepared by the installation guide.
 bash scripts/setup_dev_environment.sh
 conda activate skyseed_dev
 python scripts/check_dev_environment.py
-python scripts/setup_interaction.py  # Install the user-local etcd binary; starts no service.
-python examples/Sky02_s4_default/s4.py
 ```
 
-The example constructs the scene, computes 0–600 seconds, publishes results and
-optional views, then keeps the computation process waiting for continuation. Open
-`examples/Sky02_s4_default/output/index.html` after publication. This does
-not automatically deploy or run a network. Add `--operation generate` for finite
-generation and exit. [Tiny](examples/Sky00_tiny_network/README.md) is the
-installation smoke test.
+If `skyseed_dev` is already configured, reuse it; reinstall this checkout only
+when needed with `python -m pip install --no-deps --no-build-isolation --editable .`.
+Continue with the [example's build and deployment commands](new_examples/tiny_network/README.md#build-and-start).
 
-```bash
-# Terminal 2, from this repository, after results are published and host setup is complete.
-conda activate skyseed_dev
-cd examples/Sky02_s4_default/output
-./deploy.sh
-./run.sh
-```
-
-```bash
-# Terminal 3, from this repository; run.sh retains the last ACTIVE network at range end.
-conda activate skyseed_dev
-cd examples/Sky02_s4_default/output
-python experiment_control.py status
-# After the intended ACTIVE coverage has completed:
-python experiment_control.py shutdown
-# Wait for Terminal 1's computation and Terminal 2's run.sh to return, then:
-./cleanup.sh
-# Retain the service for result queries, or explicitly stop it after owners close:
-python -m skyseed.experiment.interaction_service stop .
-```
-
-Cancellation acceptance is distinct from completed drainage. The
-[control guide](docs/user-guides/computation-and-controls.md) explains
-continuation, pause/resume, reset and separate cancellation. Generated controls and
-`output/index.html` are the normal entry points.
-
-## Choose a starting scale
-
-| Example | Satellites / GSs / Zones | Initial range | Reference first material / deployment |
-|---|---:|---:|---:|
-| S5: smaller customization example | 172 / 10 / 184 | 600 s | 16.4 s / 21.0 s |
-| S4: default assembly example | 348 / 355 / 732 | 600 s | 62.2 s / 70.9 s |
-
-These measurements used a shared 32-logical-CPU, approximately 60.5 GiB Ubuntu host;
-they are not minimum requirements. S5 is the smaller starting point, with no verified
-8 GiB support guarantee. [Scale and resources](docs/user-guides/scale-and-resources.md)
-gives S3/five-shell comparisons, concurrency, memory caveats and Traffic WARN outcomes.
-
-[Documentation](docs/README.md) · [Current capability and validation](docs/CURRENT.md).
-The retired v1 implementation remains in Git history at `375501cfba5ee385486105f382324729914dc3b1`.
+The active directories are temporarily named `new_src`, `new_tests`, `new_examples`
+and `new_docs`; the Python package is still `skyseed`.
+[Retired documentation](docs/README.md) and [research](research/README.md) remain
+available separately.

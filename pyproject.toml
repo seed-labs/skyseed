@@ -8,17 +8,17 @@ version = "0.1.0"
 description = "SkySEED satellite Internet simulation system"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = ["astropy>=8,<9", "PyYAML>=6", "seedemu==0.0.7", "etcd3gw>=2.7,<3", "requests-unixsocket>=0.4,<0.5"]
+dependencies = ["seedemu==0.0.7"]
 
 [project.optional-dependencies]
-test = ["pytest>=7"]
+test = ["pytest>=7", "PyYAML>=6"]
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["new_src"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
-pythonpath = ["src"]
+testpaths = ["new_tests"]
+addopts = "--import-mode=importlib"
 
 [tool.setuptools.package-data]
-"skyseed.backend.bpf.dataplane" = ["*.c", "include/*.h"]
+skyseed = ["**/*.md"]

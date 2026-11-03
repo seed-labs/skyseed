@@ -30,8 +30,8 @@ fi
 
 if [[ ! -f "$SEED_EMULATOR_ROOT/setup.py" ]]; then
     echo "Required SEED ExtensionNode checkout not found: $SEED_EMULATOR_ROOT" >&2
-    echo "Clone https://github.com/EMLionHeart/seed-emulator (development)." >&2
-    echo "Set SEED_EMULATOR_CHECKOUT to that checkout; see docs/user-guides/getting-started.md." >&2
+    echo "Clone https://github.com/EMLionHeart/seed-emulator (pr/extension-node)." >&2
+    echo "Set SEED_EMULATOR_CHECKOUT to that checkout; see README.md." >&2
     exit 1
 fi
 export SEED_EMULATOR_CHECKOUT="$SEED_EMULATOR_ROOT"

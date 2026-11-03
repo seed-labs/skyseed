@@ -9,13 +9,12 @@ import argparse
 from html.parser import HTMLParser
 from pathlib import Path
 import re
+import tomllib
 from urllib.parse import unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
-PROJECT_ROOT = ROOT
-PRODUCTION_ROOT = ROOT / 'src/skyseed'
-MERMAID_BLOCK = re.compile(r'```mermaid\s*\n(.*?)```', re.DOTALL)
-OWNER_READMES = tuple(sorted(PRODUCTION_ROOT.rglob('README.md')))
+METADATA = tomllib.loads((ROOT / 'pyproject.toml').read_text())
+SOURCE_ROOT = METADATA['tool']['setuptools']['packages']['find']['where'][0]
 FENCED = re.compile(r'^(`{3,}|~{3,})[^\n]*\n.*?^\1\s*$', re.MULTILINE | re.DOTALL)
 LINK = re.compile(r'!?\[[^\]\n]*\]\(\s*(<[^>]+>|[^\s)]+)(?:\s+[\'"][^\n]*[\'"])?\s*\)')
 REFERENCE = re.compile(r'^\s{0,3}\[[^\]]+\]:\s*(<[^>]+>|\S+)', re.MULTILINE)
@@ -23,7 +22,8 @@ REFERENCE = re.compile(r'^\s{0,3}\[[^\]]+\]:\s*(<[^>]+>|\S+)', re.MULTILINE)
 
 def _full_repository_documents():
     documents = []
-    for directory in ('docs', 'src', 'tools', 'examples', 'templates', 'data', 'research'):
+    for directory in (SOURCE_ROOT, 'new_docs', 'new_tests', 'new_examples',
+                      'docs', 'src', 'tools', 'examples', 'templates', 'data', 'research'):
         for path in (ROOT/directory).rglob('*'):
             if (path.suffix in {'.md', '.html'}
                     and not {'output','build','__pycache__'}.intersection(path.relative_to(ROOT).parts)
@@ -42,7 +42,11 @@ def _is_source_archive(path):
 
 
 def _current_documents():
-    return tuple(p for p in _full_repository_documents() if not p.is_relative_to(ROOT/'docs/history'))
+    roots = [ROOT / name for name in (SOURCE_ROOT, 'new_docs', 'new_tests', 'new_examples')]
+    documents = [path for root in roots for path in root.rglob('*.md')
+                 if not {'output', 'build', '__pycache__'}.intersection(path.relative_to(root).parts)]
+    documents.extend(ROOT / name for name in ('README.md', 'AGENTS.md', 'docs/README.md', 'docs/CURRENT.md'))
+    return tuple(sorted(set(documents)))
 
 
 class _HTMLReferences(HTMLParser):
@@ -93,7 +97,8 @@ def _validate_links(documents):
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--scope',choices=('focused','full'),default='focused')
+    parser.add_argument('--scope', choices=('focused', 'full'), default='focused',
+                        help='focused checks active materials and migration navigation; full also checks historical and research documents')
     args=parser.parse_args()
     documents=_current_documents() if args.scope=='focused' else _full_repository_documents()
     for path in documents:

@@ -1,5 +1,11 @@
 # Find an answer
 
+> **Historical implementation reference.** This tree describes the retired
+> implementation. Current code, examples and checks are documented in
+> [Scene and Emulator development](../new_docs/README.md). The old commands below
+> are not active migration entry points, and their validation does not apply to
+> the new implementation.
+
 | Question | Start here |
 |---|---|
 | What does SkySEED own, and how does it work? | [Architecture](architecture/overview.md) |

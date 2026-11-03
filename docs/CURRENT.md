@@ -1,5 +1,9 @@
 # Current capabilities and validation limits
 
+> **Historical status, retained with its evidence.** These capabilities belong
+> to the retired implementation. For the active Scene/Emulator stage and its
+> limits, read [the current documentation](../new_docs/README.md).
+
 SkySEED uses one authored scene → physical computation → logical Plans → selected
 Compiler translation → sealed materials → Runner pipeline. [BPF/Linux navigation](architecture/overview.md#choose-a-forwarding-mode)
 locates each mode's assembly, planning, execution and observation responsibilities.

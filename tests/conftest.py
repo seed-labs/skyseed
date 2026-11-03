@@ -1,20 +1,6 @@
-"""Drain only etcd services created by this test process's generated outputs."""
+"""Prevent accidental collection of the retired implementation's test suite."""
 import pytest
-
-
-@pytest.fixture(autouse=True)
-def _scoped_interaction_services(monkeypatch):
-    from skyseed.experiment import interaction_service as service
-    created = []
-    original = service.start_interaction
-    def start(output, **kwargs):
-        client = original(output, **kwargs)
-        created.append(output)
-        return client
-    monkeypatch.setattr(service, 'start_interaction', start)
-    yield
-    for output in reversed(created):
-        try:
-            service.stop_interaction(output)
-        except FileNotFoundError:
-            pass
+raise pytest.UsageError(
+    "Legacy tests/ is inactive during the paper-aligned redesign; use new_tests/. "
+    "Historical execution requires a separate, explicit checkout."
+)
