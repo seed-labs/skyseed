@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SkySEED · GZ 路由检查</title>
+<style>/*INSPECTION_STYLE*/
+header a{color:#8edfd7}header nav{text-align:right}header nav small{display:block;margin-top:8px}
+.metrics{display:flex;gap:20px;margin:15px 0}.metrics strong{font-size:24px;color:#6edbd2}.route{padding:12px;background:#112334;border-radius:8px;margin:8px 0;overflow-wrap:anywhere}.event{display:block;width:100%;text-align:left;margin:3px 0;font-size:11px}#events{max-height:220px}#rules td{font-size:11px}#pathDetail{white-space:pre-wrap}.tag{color:#f1a0b6}.layers{flex-wrap:wrap}.hops{display:flex;gap:5px;flex-wrap:wrap}.hops button{padding:5px 8px;font-size:11px}.facts{font-size:12px;line-height:1.7;white-space:pre-line}.table-wrap{max-height:300px}aside h2{margin-top:24px}
+</style>
+<header><div><div class="brand">SKYSEED / NETWORK · GZ</div><h1>Zone、服务卫星与通信路径</h1><small>Zones · Service assignment · Tracked routes</small></div><nav><a id="planDetails" hidden>计划详情 / Plan details ↗</a><small>默认 GZ 检查示例 / GZ inspector</small></nav></header>
+<main><section class="stage">
+<div class="controls layers"><button id="overview">全部同图 / Overview</button><label><input type="checkbox" id="focus">聚焦路径 / Focus</label><button id="reset">重置视角</button></div>
+<div class="controls layers"><label><input type="checkbox" id="zones" checked>Zone 边界</label><label><input type="checkbox" id="services" checked>服务关系</label><label><input type="checkbox" id="links" checked>基础链路</label><label><input type="checkbox" id="baseRoutes" checked>基础路径</label><label><input type="checkbox" id="deliveryRoutes" checked>Delivery 路径</label></div>
+<div class="metrics"><span>节点 <strong id="nodeCount"></strong></span><span>Zone <strong id="zoneCount"></strong></span><span>当前有服务 <strong id="servedCount"></strong></span></div>
+<canvas id="globe" aria-label="GZ Zone、服务与路径地球视图"></canvas>
+<div class="controls"><button id="play">播放 / Play</button><input id="timeline" type="range" min="0" value="0" aria-label="路由计划时刻"><time id="timestamp"></time></div>
+<p class="status" id="sampleNote"></p>
+<div class="route" id="basePath"></div><div class="route tag" id="deliveryPath"></div>
+<div class="selection-panel"><h2>逐跳转发 / Hop-by-hop forwarding</h2><div class="hops" id="hops"></div><pre id="pathDetail"></pre></div>
+</section><aside>
+<h2>持续追踪 / Track a pair</h2>
+<label for="ground">地面站 / GS</label><select id="ground"></select>
+<label for="zone">地域端点 / Zone</label><select id="zone"></select>
+<label for="direction">通信方向 / Direction</label><select id="direction"><option value="to-zone">GS → Zone</option><option value="to-ground">Zone → GS</option></select>
+<label for="branch">详情规则分支 / Rules</label><select id="branch"><option value="delivery">Delivery 后</option><option value="base">基础 / Base</option></select>
+<p class="status" id="service"></p>
+<p class="status" id="planningScope"></p><div class="hops" id="associatedGrounds"></div>
+<h2>对象详情 / Inspect an object</h2>
+<label for="inspect">查看对象 / Object</label><select id="inspect"></select><button id="useSelection">用于路径查询 / Use in query</button>
+<p class="facts" id="facts"></p>
+<h2 id="rulesTitle">转发规则 / Forwarding rules</h2>
+<div class="table-wrap"><table><thead><tr><th>节点</th><th>目的</th><th>入标签</th><th>动作</th><th>出标签</th><th>下一跳</th></tr></thead><tbody id="rules"></tbody></table></div>
+<h2>查询目的的更新 / Updates</h2><div class="table-wrap" id="events"></div>
+<p class="status">点选节点或 Zone 只改变详情；查询对象在播放期间保持固定。绿色为基础路径，粉色为 Delivery 路径，黄色虚线为模型记录的服务关系。</p>
+</aside></main>
+<footer>边界与代表点来自 Scene；服务卫星来自记录，路径逐跳读取实际规则。服务关系不表示已建立末跳链路。<br>仅展示离线 GZ 计划；不同步交付时，模型选出的服务星与当前转发出口可能不同。未记录的信息显示未知。</footer>
+<script>/*SPATIAL_VIEW*/</script><script>
+const data = /*INSPECTION_DATA*/null;
+const nodes = new Map(data.nodes.map(node => [node.node_id, node]));
+const zones = data.endpoints.filter(endpoint => endpoint.kind === 'geographic-zone/v1');
+const name = id => nodes.get(id)?.name || id;
+const sameDestination = (rule, destination) => rule.destination.kind === destination[0] && rule.destination.identity === destination[1];
+function option(select, value, text) {
+  const item = document.createElement('option');
+  item.value = value; item.textContent = text; select.append(item);
+}
+for (const node of data.nodes.filter(node => node.kind === 'ground_station')) option(byId('ground'), node.node_id, node.name);
+for (const zone of zones) option(byId('zone'), zone.id, zone.id);
+for (const zone of zones) option(byId('inspect'), `zone:${zone.id}`, `Zone · ${zone.id}`);
+for (const node of data.nodes) option(byId('inspect'), `node:${node.node_id}`, `${node.kind === 'ground_station' ? 'GS' : 'Satellite'} · ${node.name}`);
+const globe = new InspectionGlobe(byId('globe'), inspectObject, feature => inspectObject(feature.id));
+function inspectObject(id) {
+  byId('inspect').value = id;
+  update();
+}
+function serviceText(frame, id) {
+  if (frame.assignments === null || !Object.hasOwn(frame.assignments, id)) return '未知 / Unknown';
+  return frame.assignments[id] === null ? '不可服务 / Unserved' : name(frame.assignments[id]);
+}
+function zoneOutline(zone) {
+  const bounds = zone.data.bounds;
+  if (!bounds) return [];
+  const {south_deg:south, north_deg:north, west_deg:west} = bounds;
+  let east = bounds.east_deg;
+  if (east <= west) east += 360;
+  const corners = [[south,west],[south,east],[north,east],[north,west],[south,west]];
+  const points = [];
+  for (let side=1; side<corners.length; side++) {
+    const a = corners[side-1], b = corners[side];
+    const count = Math.max(1, Math.ceil(Math.max(Math.abs(b[0]-a[0]), Math.abs(b[1]-a[1])) / 2));
+    for (let step=0; step<count; step++) points.push(spherePoint(a.map((v,i) => v+(b[i]-v)*step/count)));
+  }
+  points.push(spherePoint(corners[0]));
+  return points;
+}
+const boundaries = new Map(zones.map(zone => [zone.id, zoneOutline(zone)]));
+function serviceLine(lines, a, b) {
+  for (let part=0; part<16; part+=2) {
+    const point = fraction => a.map((value,axis) => value+(b[axis]-value)*fraction);
+    lines.push({a:point(part/16), b:point((part+1)/16), color:'#f0cf82', width:1.5});
+  }
+}
+function trace(frame, branch, source, destination) {
+  const path = [source], steps = [], visited = new Set();
+  const available = new Set(frame.links.map(pair => JSON.stringify(pair)));
+  let node = source, label = null;
+  while (true) {
+    const state = JSON.stringify([node, label]);
+    if (visited.has(state)) return {path, steps, status:'环路 / Loop'};
+    visited.add(state);
+    const rule = (frame[branch][node] || []).find(rule => label === null
+      ? rule.incoming_label === null && sameDestination(rule, destination)
+      : rule.incoming_label === label);
+    if (!rule) return {path, steps, status:'缺少匹配规则 / Missing rule'};
+    if (!sameDestination(rule, destination)) return {path, steps, status:'标签目的不一致 / Wrong binding'};
+    steps.push(`${name(node)}: ${label === null ? '目的分类' : `入 ${label}`} → ${rule.action}${rule.outgoing_label === null ? '' : ` / 出 ${rule.outgoing_label}`}${rule.next_hop === null ? '' : ` → ${name(rule.next_hop)}`}`);
+    if (rule.action === 'deliver' || rule.action === 'pop_deliver') return {path, steps, status:'交付出口 / Egress'};
+    if (!available.has(JSON.stringify([node, rule.next_hop]))) return {path, steps, status:'出口链路不可用 / Link unavailable'};
+    node = rule.next_hop; label = rule.outgoing_label;
+    path.push(node);
+  }
+}
+function update() {
+  const frame = data.frames[Number(byId('timeline').value)];
+  if (!frame) return;
+  const zoneId = byId('zone').value;
+  const ground = byId('ground').value;
+  const branch = byId('branch').value;
+  const toZone = byId('direction').value === 'to-zone';
+  const source = toZone ? ground : frame.assignments?.[zoneId];
+  const destination = toZone ? ['endpoint',zoneId] : ['node',ground];
+  const associations = frame.associations?.[zoneId];
+  const outsideScope = associations !== undefined && !associations.includes(ground);
+  const unserved = frame.assignments?.[zoneId] === null;
+  const inspected = byId('inspect').value;
+  const focus = byId('focus').checked;
+  byId('timestamp').textContent = frame.timestamp;
+  byId('nodeCount').textContent = data.nodes.length;
+  byId('zoneCount').textContent = zones.length;
+  byId('servedCount').textContent = frame.assignments === null ? '?' : zones.filter(zone => frame.assignments[zone.id]).length;
+  byId('sampleNote').textContent = `${frame.base_held ? '基础生成已结束，保持末状态；' : ''}服务映射求值 / Evaluated: ${frame.evaluation_timestamp || '未记录'}`;
+  const paths = {};
+  for (const choice of ['base','delivery']) {
+    paths[choice] = source && zoneId && ground ? trace(frame, choice, source, destination)
+      : {path:[], steps:[], status:'缺少入口或服务记录 / No ingress or service'};
+    // Explain absent ingress rules from recorded model choices. Keep any actual
+    // forwarding path visible, including rules still present during Delivery.
+    if (paths[choice].steps.length === 0) {
+      if (outsideScope) paths[choice].status = '未纳入规划 / Not planned';
+      else if (unserved) paths[choice].status = '当前无服务卫星 / Unserved';
+    }
+    const label = choice === 'base' ? '基础 / Base' : '交付后 / Delivery';
+    byId(`${choice}Path`).textContent = `${label}: ${paths[choice].path.map(name).join(' → ') || '—'} · ${paths[choice].status}`;
+  }
+  const selected = new Set([...paths.base.path, ...paths.delivery.path]);
+  if (frame.assignments?.[zoneId]) selected.add(frame.assignments[zoneId]);
+  if (inspected.startsWith('node:')) selected.add(inspected.slice(5));
+  const points = data.nodes.filter(node => !focus || selected.has(node.node_id)).map(node => ({
+    id:`node:${node.node_id}`, label:selected.has(node.node_id) ? node.name : '', position:frame.positions[node.node_id],
+    color:inspected === `node:${node.node_id}` ? '#ffffff' : node.kind === 'ground_station' ? '#f0cf82' : '#83a8ff',
+    radius:selected.has(node.node_id) ? 5 : 3
+  }));
+  const outlines = [], lines = [];
+  const visibleZones = zones.filter(zone => !focus || zone.id === zoneId || inspected === `zone:${zone.id}`);
+  if (byId('zones').checked) for (const zone of visibleZones) {
+    const chosen = zone.id === zoneId || inspected === `zone:${zone.id}`;
+    points.push({id:`zone:${zone.id}`, label:chosen ? zone.id : '', position:spherePoint([zone.data.latitude_deg,zone.data.longitude_deg]), color:'#f1a0b6', radius:chosen ? 5 : 3});
+    outlines.push({points:boundaries.get(zone.id), color:chosen ? '#d797b1' : '#6f5369', width:chosen ? 1.5 : 1, feature:{id:`zone:${zone.id}`}});
+  }
+  if (byId('services').checked) for (const zone of visibleZones) {
+    const satellite = frame.assignments?.[zone.id];
+    if (satellite && frame.positions[satellite]) serviceLine(lines, spherePoint([zone.data.latitude_deg,zone.data.longitude_deg]), frame.positions[satellite]);
+  }
+  if (byId('links').checked) for (const [a,b] of frame.links) {
+    if (!focus || (selected.has(a) && selected.has(b))) lines.push({a:frame.positions[a],b:frame.positions[b],color:'#2d4356',width:1});
+  }
+  for (const choice of ['base','delivery']) {
+    if (!byId(`${choice}Routes`).checked) continue;
+    const path = paths[choice].path;
+    for (let index=1; index<path.length; index++) lines.push({a:frame.positions[path[index-1]],b:frame.positions[path[index]],color:choice === 'base' ? '#6edbd2' : '#f1a0b6',width:choice === 'base' ? 4 : 2});
+  }
+  globe.set(points, lines, {outlines});
+  byId('pathDetail').textContent = paths[branch].steps.join('\n') || paths[branch].status;
+  byId('hops').replaceChildren();
+  for (const id of paths[branch].path) {
+    const button = document.createElement('button'); button.textContent = name(id);
+    button.onclick = () => inspectObject(`node:${id}`); byId('hops').append(button);
+  }
+  byId('service').textContent = `模型服务星 / Service: ${serviceText(frame,zoneId)} · 关联 GS: ${associations ? associations.map(name).join(', ') || '无' : '未知'}${!toZone ? ' · 回程入口采用该服务映射' : ''}`;
+  if (associations === undefined) {
+    byId('planningScope').textContent = '规划范围未知 / Unknown scope：未记录 GS 关联；路径仍按实际规则读取。';
+  } else if (outsideScope) {
+    byId('planningScope').textContent = `未纳入规划 / Not planned：${name(ground)} 不在 ${zoneId} 的关联 GS 中。关联 GS：${associations.map(name).join(', ') || '无'}。`;
+  } else {
+    byId('planningScope').textContent = '已纳入规划范围 / In scope：是否可通行仍取决于服务、链路和当前转发规则。';
+  }
+  byId('associatedGrounds').replaceChildren();
+  if (outsideScope) for (const associated of associations) {
+    const button = document.createElement('button');
+    button.textContent = `查看 ${name(associated)} 路径 / View path`;
+    button.onclick = () => {byId('ground').value = associated; update();};
+    byId('associatedGrounds').append(button);
+  }
+  const zone = inspected.startsWith('zone:') ? zones.find(item => item.id === inspected.slice(5)) : null;
+  const node = inspected.startsWith('node:') ? nodes.get(inspected.slice(5)) : null;
+  if (data.plan_details) {
+    const parameters = new URLSearchParams({branch,timestamp:frame.timestamp,ground,zone:zoneId,
+                                           direction:byId('direction').value});
+    if (node) parameters.set('node',node.node_id);
+    if (zone) parameters.set('destination',JSON.stringify(['endpoint',zone.id]));
+    byId('planDetails').href = `${data.plan_details}?${parameters}`;
+    byId('planDetails').hidden = false;
+  }
+  const facts = [];
+  if (zone) {
+    facts.push(`Zone: ${zone.id}`, `代表点: ${zone.data.latitude_deg}°, ${zone.data.longitude_deg}°`);
+    const bounds = zone.data.bounds;
+    facts.push(bounds ? `边界: 南 ${bounds.south_deg}° / 北 ${bounds.north_deg}° / 西 ${bounds.west_deg}° / 东 ${bounds.east_deg}°` : '边界未提供，仅显示代表点');
+    facts.push(`模型服务星: ${serviceText(frame,zone.id)}`, `关联 GS: ${(frame.associations?.[zone.id] || []).map(name).join(', ') || '无记录'}`);
+  } else if (node) {
+    facts.push(`${node.kind === 'ground_station' ? 'GS' : 'Satellite'}: ${node.name}`, `ID: ${node.node_id}`);
+    const position = frame.positions[node.node_id];
+    if (position) facts.push(`ECEF (km): ${position.map(value => (value/1000).toFixed(1)).join(', ')}`);
+    const serving = zones.filter(item => frame.assignments?.[item.id] === node.node_id).map(item => item.id);
+    facts.push(`记录的服务 Zone: ${frame.assignments === null ? '未知' : serving.join(', ') || '无'}`);
+  }
+  byId('facts').textContent = facts.join('\n');
+  byId('useSelection').hidden = !(zone || node?.kind === 'ground_station');
+  byId('rulesTitle').textContent = node ? '该节点完整规则 / Node rules' : '该 Zone 的规则 / Zone rules';
+  byId('rules').replaceChildren();
+  for (const [id,rules] of Object.entries(frame[branch])) for (const rule of rules) {
+    if (node ? id !== node.node_id : !zone || !sameDestination(rule,['endpoint',zone.id])) continue;
+    const row = document.createElement('tr');
+    const values = [name(id),rule.destination.identity,rule.incoming_label ?? '分类',rule.action,rule.outgoing_label ?? '—',rule.next_hop ? name(rule.next_hop) : '交付'];
+    for (const value of values) {const cell=document.createElement('td');cell.textContent=value;row.append(cell);}
+    byId('rules').append(row);
+  }
+  byId('events').replaceChildren();
+  for (const event of data.events[branch]) {
+    if (!sameDestination(event.rule,destination)) continue;
+    const button = document.createElement('button'); button.className = 'event';
+    const seconds = (Date.parse(event.timestamp)-Date.parse(data.start))/1000;
+    button.textContent = `+${seconds}s · ${name(event.node)} · ${event.kind}`;
+    button.onclick = () => {byId('timeline').value = data.frames.findIndex(item => item.timestamp === event.timestamp); update();};
+    byId('events').append(button);
+  }
+}
+byId('useSelection').onclick = () => {
+  const selected = byId('inspect').value;
+  if (selected.startsWith('zone:')) byId('zone').value = selected.slice(5);
+  else if (selected.startsWith('node:')) byId('ground').value = selected.slice(5);
+  update();
+};
+byId('zone').oninput = () => {byId('inspect').value=`zone:${byId('zone').value}`;update();};
+for (const id of ['ground','direction','branch','inspect','focus','zones','services','links','baseRoutes','deliveryRoutes']) byId(id).oninput = update;
+byId('overview').onclick = () => {byId('focus').checked=false;update();};
+byId('reset').onclick = () => globe.reset();
+bindTimeline(data.frames, update);
+const query = new URLSearchParams(location.search);
+if (['base','delivery'].includes(query.get('branch'))) byId('branch').value = query.get('branch');
+if (nodes.get(query.get('ground'))?.kind === 'ground_station') byId('ground').value = query.get('ground');
+if (zones.some(zone => zone.id === query.get('zone'))) byId('zone').value = query.get('zone');
+if (['to-zone','to-ground'].includes(query.get('direction'))) byId('direction').value = query.get('direction');
+if (query.has('destination')) {
+  const [kind,identity] = JSON.parse(query.get('destination'));
+  if (kind === 'endpoint' && zones.some(zone => zone.id === identity)) byId('inspect').value = `zone:${identity}`;
+}
+if (nodes.has(query.get('node'))) byId('inspect').value = `node:${query.get('node')}`;
+if (query.has('timestamp')) {
+  const index = data.frames.findIndex(frame => Date.parse(frame.timestamp) >= Date.parse(query.get('timestamp')));
+  byId('timeline').value = index < 0 ? data.frames.length-1 : index;
+}
+update();
+</script></html>

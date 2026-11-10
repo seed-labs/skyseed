@@ -11,6 +11,7 @@ from .scene_entities import (
     Constellation, GroundStation, GroundStationGroup, Satellite, SatelliteOrbit,
     SatelliteShell, ScenePositionSource, _number, _validate_data,
 )
+from .scene_endpoints import AccessEndpoint, default_zones
 
 _GROUP_TYPES = {entity.kind: entity for entity in (
     Constellation, SatelliteShell, SatelliteOrbit, GroundStationGroup,
@@ -26,6 +27,43 @@ class Scene:
         _validate_data(self.data, "Scene.data")
         self._nodes = {}
         self._groups = {}
+        self._endpoints = {}
+
+    @property
+    def endpoints(self):
+        return tuple(self._endpoints.values())
+
+    def get_endpoint(self, endpoint_id):
+        return self._endpoints[endpoint_id]
+
+    def get_endpoints(self, kind=None):
+        return tuple(endpoint for endpoint in self._endpoints.values()
+                     if kind is None or endpoint.kind == kind)
+
+    def add_endpoint(self, endpoint):
+        if not isinstance(endpoint, AccessEndpoint):
+            raise TypeError("endpoint must be an AccessEndpoint")
+        if endpoint.endpoint_id in self._endpoints:
+            raise ValueError(f"duplicate endpoint identity: {endpoint.endpoint_id}")
+        self._endpoints[endpoint.endpoint_id] = endpoint
+        return endpoint
+
+    def create_endpoint(self, endpoint_id, *, kind, data=None):
+        return self.add_endpoint(AccessEndpoint(endpoint_id, kind, {} if data is None else data))
+
+    def create_zone(self, endpoint_id, *, latitude_deg, longitude_deg, bounds=None, data=None):
+        fields = {} if data is None else dict(data)
+        fields.update(latitude_deg=latitude_deg, longitude_deg=longitude_deg)
+        if bounds is not None:
+            fields["bounds"] = bounds
+        return self.create_endpoint(endpoint_id, kind="geographic-zone/v1", data=fields)
+
+    def create_default_zones(self):
+        zones = default_zones()
+        if any(zone.endpoint_id in self._endpoints for zone in zones):
+            raise ValueError("default zone identities already exist")
+        self._endpoints.update((zone.endpoint_id, zone) for zone in zones)
+        return zones
 
     @property
     def nodes(self):
@@ -210,6 +248,8 @@ class Scene:
     def validate(self):
         """Check editable data; construction already checked fixed fields and references."""
         _validate_data(self.data, "Scene.data")
+        for endpoint in self.endpoints:
+            endpoint.validate()
         for group in self.groups:
             _validate_data(group.data, f"group {group.group_id!r}.data")
         for node in self.nodes:
@@ -244,7 +284,9 @@ class Scene:
                             longitude_deg=node.longitude_deg, elevation_m=node.elevation_m)
             nodes.append(item)
         text = json.dumps({"format": _FORMAT, "version": _VERSION, "groups": groups,
-                           "nodes": nodes, "data": self.data}, indent=2, ensure_ascii=False,
+                           "nodes": nodes, "data": self.data,
+                           "endpoints": [asdict(endpoint) for endpoint in self.endpoints]},
+                          indent=2, ensure_ascii=False,
                           allow_nan=False) + "\n"
         path = Path(path)
         temporary = None
@@ -267,6 +309,9 @@ class Scene:
             if record["format"] != _FORMAT or record["version"] != _VERSION:
                 raise ValueError("unsupported Scene format or version; regenerate earlier draft .scene files")
             scene = cls(data=record["data"])
+            for item in record.get("endpoints", []):
+                location = f"endpoint {item.get('endpoint_id')!r}"
+                scene.add_endpoint(AccessEndpoint(**item))
             # Fixed domain levels allow parent-first adoption even if records in
             # the file are unordered. References must resolve to the right type.
             buckets = {kind: [] for kind in _GROUP_TYPES}

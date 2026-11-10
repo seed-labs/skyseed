@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SkySEED · Offline experiment</title>
+<style>
+  :root { color-scheme: light; font-family: system-ui, sans-serif; color: #233b4b; background: #f4f7f9; }
+  body { max-width: 1100px; margin: 0 auto; padding: 42px 28px; }
+  h1 { font-size: 2rem; margin: 8px 0; } h2 { font-size: 1.2rem; margin-top: 0; }
+  .eyebrow { letter-spacing: .15em; font-size: .8rem; color: #45716d; }
+  p { line-height: 1.7; } .muted, small { color: #607680; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(285px, 1fr)); gap: 18px; margin: 26px 0; }
+  article, .flow { background: white; border: 1px solid #d8e3e7; border-radius: 14px; padding: 22px; }
+  a { color: #086c69; text-decoration-thickness: 1px; text-underline-offset: 3px; }
+  .primary { display: inline-block; padding: 9px 14px; background: #086c69; color: white; border-radius: 7px; text-decoration: none; }
+  .tag { display: inline-block; font-size: .75rem; padding: 4px 8px; background: #e8f1ed; border-radius: 5px; }
+  .flow { line-height: 2; } .flow strong { color: #086c69; }
+  details { margin: 22px 0; } summary { cursor: pointer; } li { margin: 10px 0; }
+</style>
+<header>
+  <div class="eyebrow">SKYSEED / OFFLINE EXPERIMENT</div>
+  <h1>从场景到可执行计划</h1>
+  <p class="muted">Scene → Emulator + Planning &amp; Control</p>
+  <span class="tag">离线产物 · Offline artifacts</span>
+  <p>所有页面来自同一个场景与同一次规划。已生成部署文件和后端指令，尚未启动网络。<br>
+  <small>One scene, one planning run. Deployment files and backend instructions are ready; the network has not been started.</small></p>
+</header>
+<div class="flow">
+  <strong>Scene</strong> → Emulator → Deployment files ↘<br>
+  <strong>Scene</strong> → Physical → Link → execution LinkPlans → <strong>Compiler</strong><br>
+  &emsp; &emsp; &emsp; &emsp; &emsp; &emsp; ↳ base LinkPlans → Network → delivery RoutePlans ↗
+</div>
+<main class="grid">
+  <article><h2>01 · Scene</h2><p>查看 shell、orbit、卫星与地面站的初始组织。<br><small>Initial constellation structure and ground locations.</small></p><a class="primary" href="scene/index.html">查看场景 / Scene</a></article>
+  <article><h2>02 · Emulator</h2><p>静态接入网与节点部署文件，供 Compiler 读取服务及地址。<br><small>Static access networks and real SEED deployment mappings.</small></p><a href="deployment/docker-compose.yml">Compose 文件</a> · <a href="scene.scene">保存的 Scene</a></article>
+  <article><h2>03 · Physical</h2><p>随时间观察位置与物理候选。候选并不等于已建链。<br><small>Positions and feasible candidates over time.</small></p><a class="primary" href="physical/index.html">查看物理机会 / Physical</a></article>
+  <article><h2>04 · Link</h2><p>比较基础与执行连接，检查建链等待和 5% 下行丢包。<br><small>Base versus execution links, setup time and downlink loss.</small></p><a class="primary" href="link/index.html">查看连接 / Link</a> <a href="link/plans/index.html">计划详情</a></article>
+  <article><h2>05 · Network</h2><p>查看 Zone 服务、GS ↔ Zone 路径、局部标签及延迟交付。<br><small>Zone service, paths, local labels and delayed rule delivery.</small></p><a class="primary" href="network/index.html">MPLS-like 路由</a> <a href="network/plans/index.html">计划详情</a><p><small>补充 / Supplement: <a href="network-ip/index.html">普通 IP 路由</a></small></p></article>
+  <article><h2>06 · Compiler</h2><p>沿逻辑操作查看 veth、流量控制与转发表指令。<br><small>Inspect veth, traffic control and forwarding instructions.</small></p><a class="primary" href="compiler/index.html">查看后端指令 / Compiler</a></article>
+</main>
+<details><summary>输出文件与复用 / Files and reuse</summary><ul>
+  <li><a href="emulator.bin">Emulator construction description</a>（本示例生成的 SEED 描述）</li>
+  <li><a href="link/plans/execution_link.plan">执行 LinkPlans</a> · <a href="link/plans/base_link.plan">基础 LinkPlans</a></li>
+  <li><a href="network/plans/delivery_route.plan">MPLS-like Delivery RoutePlans</a> · <a href="network-ip/plans/delivery_route.plan">IP Delivery RoutePlans</a></li>
+  <li><a href="compiler/bpf.plan">BPF PhysicalPlans</a> · <a href="compiler/linux.plan">Linux PhysicalPlans</a></li>
+  <li><a href="summary.json">规模与分阶段耗时 / Size and stage timings</a></li>
+</ul></details>
+<p class="muted">这是计划检查工具，不是运行监控。5% 丢包和 200 ms 节点延迟是演示设定。<br><small>Planning inspection, not runtime monitoring. Loss and delivery delays are illustrative settings.</small></p>
+</html>

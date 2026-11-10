@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SkySEED · 计划详情</title>
+<style>/*INSPECTION_STYLE*/
+main{display:block;max-width:1350px;margin:auto;padding:24px}
+header a,a{color:#8edfd7}
+.panel{padding:20px;margin-bottom:20px;border:1px solid #293e53;border-radius:12px;background:#101e2e}
+.filters{display:grid;grid-template-columns:1fr 1fr;gap:12px 22px}
+.facts{font-size:14px;white-space:pre-line}
+.table-wrap{max-height:none;overflow:auto}
+table{font-size:13px}
+td{vertical-align:top}
+td:first-child,td:last-child{white-space:nowrap}
+td:nth-child(3){min-width:150px;max-width:320px;overflow-wrap:anywhere}
+td:nth-child(4){min-width:260px;max-width:620px;overflow-wrap:anywhere}
+pre{max-height:350px;font-size:12px;white-space:pre-wrap;overflow:auto}
+small{display:block}
+.downloads{display:flex;gap:18px;align-items:center;flex-wrap:wrap}
+#archiveInfo{margin:12px 0 0}
+@media(max-width:650px){.filters{grid-template-columns:1fr}}
+</style>
+<header><div><div class="brand">SKYSEED / PLAN DETAILS</div><h1 id="title">计划详情</h1><small>从图中对象追到计划记录 / From objects to plan records</small></div><a id="back" href="../index.html">返回图形 / Back to view</a></header>
+<main>
+<section class="panel">
+  <div class="filters">
+    <div><label for="file">计划分支 / Branch</label><select id="file"></select></div>
+    <div><label for="plan">批次与覆盖区间 / Batch</label><select id="plan"></select></div>
+  </div>
+  <div class="downloads"><a id="download" download>下载完整 .plan 文件</a><span id="archiveStatus"></span></div>
+  <p id="archiveInfo" class="status"></p>
+  <p class="facts" id="planInfo"></p>
+  <details><summary>如何理解这份计划 / Reading this plan</summary>
+    <p class="status">区间表示这份计划的覆盖，不表示每秒都有新操作。初始状态是起点操作前的配置；新操作由本批首次返回。RoutePlan 的前批上下文仅用于还原状态，不重复成为新指令。交付批次可能因延迟尾部重叠。图中查看显示该时刻应用操作后的状态。</p>
+    <p class="status">Coverage is an interval, not an update every second. Initial entries precede operations at the start. New operations belong to this batch; RoutePlan context restores state without redelivery. Delayed batches may overlap. The graph shows state after operations at that time.</p>
+    <p class="status" id="timeReference"></p>
+    <p class="status">这里的表格来自保存后重新读取的计划，与原始计划逐份比较。图中的位置、候选、服务分配等观察资料由父页面另外提供，不包含在 .plan 文件中。“完整字段”是便于阅读的 JSON 视图；计划文件保留原始值类型。</p>
+    <p class="status">Tables use restored plans, compared with originals. The parent page separately supplies geometry and model observations. Full fields use a readable JSON view; the plan archive retains original value types.</p>
+  </details>
+</section>
+<section class="panel">
+  <div class="filters">
+    <div><label for="node">节点筛选 / Node</label><select id="node"></select></div>
+    <div><label for="target" id="targetLabel">连接或目的 / Connection or destination</label><select id="target"></select></div>
+    <div><label for="part">记录类别 / Contents</label><select id="part"><option value="operations">本批新操作 / New operations</option><option value="initial">起点前状态 / Initial state</option><option value="context">前批上下文 / Prior context</option></select></div>
+    <div><label>筛选范围 / Scope</label><div><button id="clear">全部对象 / All objects</button></div></div>
+  </div>
+  <p id="count" class="status"></p>
+  <div class="table-wrap"><table><thead><tr><th>时刻 / Time</th><th>操作 / Kind</th><th>对象 / Object</th><th>内容 / Content</th><th>图形 / View</th></tr></thead><tbody id="records"></tbody></table></div>
+  <p id="empty" class="status"></p>
+</section>
+</main>
+<footer>计划详情与所属图形页面共用同一批生成结果。保存与恢复不会重算模型，也不代表已经运行网络。<br>These are logical plan values, not evidence of runtime execution.</footer>
+<script>
+const data = /*INSPECTION_DATA*/null;
+const el = id => document.getElementById(id);
+const query = new URLSearchParams(location.search);
+const isLink = data.kind === 'link';
+const firstPlan = data.archives.find(item => item.plans.length)?.plans[0];
+const offsetSeconds = timestamp => ((Date.parse(timestamp)-Date.parse(firstPlan.start))/1000).toFixed(3);
+const branches = {base:'基础 / Base', execution:'执行 / Execution', delivery:'交付 / Delivery'};
+let viewTime = query.get('timestamp');
+const archive = () => data.archives[Number(el('file').value)];
+const plan = () => archive().plans[Number(el('plan').value)];
+const targetKey = record => JSON.stringify(isLink ? record.link_id : record.destination);
+const targetLabel = record => isLink ? record.target : `${record.destination[0]} · ${record.destination[1]}`;
+
+function option(select, value, label) {
+  const item = document.createElement('option');
+  item.value = value;
+  item.textContent = label;
+  select.append(item);
+}
+
+function graphURL(record=null) {
+  const parameters = new URLSearchParams();
+  parameters.set('branch', archive().branch);
+  const time = record ? (record.timestamp || plan().start) : (viewTime || plan()?.start);
+  if (time) parameters.set('timestamp', time);
+  const node = record && !isLink ? record.target : el('node').value;
+  if (node) parameters.set('node', node);
+  const target = record ? targetKey(record) : el('target').value;
+  if (target) parameters.set(isLink ? 'link' : 'destination', target);
+  for (const key of ['ground','zone','direction']) {
+    if (query.has(key)) parameters.set(key,query.get(key));
+  }
+  return `../index.html?${parameters}`;
+}
+
+function showRecords() {
+  el('records').replaceChildren();
+  el('back').href = graphURL();
+  const selected = plan();
+  if (!selected) {
+    el('planInfo').textContent = '空计划序列 / Empty plan sequence';
+    el('count').textContent = '';
+    el('empty').textContent = '此文件没有计划 / No plans in this file';
+    return;
+  }
+  el('planInfo').textContent = `${selected.start} → ${selected.end}\n起点表项 ${selected.initial.length} · 本批新操作 ${selected.operations.length}`;
+  if (!isLink) el('planInfo').textContent += ` · 前批上下文 ${selected.context.length}`;
+  const records = selected[el('part').value];
+  const visible = records.filter(record =>
+    (!el('node').value || record.nodes.includes(el('node').value)) &&
+    (!el('target').value || targetKey(record) === el('target').value));
+  el('count').textContent = `当前筛选 ${visible.length} / 本类别 ${records.length} 条 · Filtered / Total`;
+  el('empty').textContent = visible.length ? '' : '本批此类别没有符合筛选的记录；可切换类别或清除筛选。 / No matching records.';
+  for (const record of visible) {
+    const row = document.createElement('tr');
+    const offset = record.timestamp
+      ? `+${offsetSeconds(record.timestamp)} s`
+      : '起点前 / Initial';
+    for (const value of [offset,record.kind || 'initial']) {
+      const cell = document.createElement('td');
+      cell.textContent = value;
+      row.append(cell);
+    }
+    const target = document.createElement('td');
+    target.textContent = record.target;
+    if (!isLink) {
+      const destination = document.createElement('small');
+      destination.textContent = targetLabel(record);
+      target.append(destination);
+    }
+    row.append(target);
+    const content = document.createElement('td');
+    content.textContent = record.detail || '撤销连接 / Withdraw connection';
+    if (record.fields) {
+      const fields = document.createElement('details');
+      const summary = document.createElement('summary');
+      summary.textContent = '完整字段 / Full fields';
+      const text = document.createElement('pre');
+      text.textContent = record.fields;
+      fields.append(summary,text);
+      content.append(fields);
+    }
+    row.append(content);
+    const action = document.createElement('td');
+    const link = document.createElement('a');
+    link.href = graphURL(record);
+    link.textContent = '图中查看 / View';
+    action.append(link);
+    row.append(action);
+    el('records').append(row);
+  }
+}
+
+function selectFile(initial=false) {
+  const selected = archive();
+  el('download').href = selected.href;
+  el('download').textContent = `下载 / Download ${selected.name}`;
+  el('archiveStatus').textContent = selected.equivalent ? '保存／恢复一致 / Round trip matches' : '保存／恢复存在差异 / Round trip differs';
+  el('archiveInfo').textContent = `${selected.plans.length} 份计划 · ${(selected.bytes/1024).toFixed(1)} KiB · 写入 ${selected.write_seconds.toFixed(3)} s · 恢复／比较／摘要 ${selected.read_seconds.toFixed(3)} s`;
+  el('plan').replaceChildren();
+  let selectedIndex = 0;
+  selected.plans.forEach((item,index) => {
+    option(el('plan'),index,`${index+1} · +${offsetSeconds(item.start)} → +${offsetSeconds(item.end)} s`);
+    if (viewTime && Date.parse(item.start) <= Date.parse(viewTime) && Date.parse(viewTime) <= Date.parse(item.end)) {
+      selectedIndex = index;
+    }
+  });
+  el('plan').value = selectedIndex;
+  const nodes = new Set();
+  const targets = new Map();
+  for (const item of selected.plans) {
+    for (const record of [...item.initial,...item.operations,...item.context]) {
+      record.nodes.forEach(node => nodes.add(node));
+      targets.set(targetKey(record),targetLabel(record));
+    }
+  }
+  const previousNode = initial ? query.get('node') : el('node').value;
+  const previousTarget = initial ? query.get(isLink?'link':'destination') : el('target').value;
+  // Keep an inspected object selected even when this branch has no records for it.
+  if (previousNode) nodes.add(previousNode);
+  if (previousTarget && !targets.has(previousTarget)) {
+    targets.set(previousTarget,`${JSON.parse(previousTarget).join(' · ')} · 无记录 / No records`);
+  }
+  el('node').replaceChildren();
+  el('target').replaceChildren();
+  option(el('node'),'','全部节点 / All nodes');
+  option(el('target'),'','全部对象 / All objects');
+  for (const node of [...nodes].sort()) option(el('node'),node,node);
+  for (const [identity,label] of targets) option(el('target'),identity,label);
+  el('node').value = previousNode || '';
+  el('target').value = previousTarget || '';
+  showRecords();
+}
+
+el('title').textContent = isLink ? 'LinkPlan · 计划文件与记录' : 'RoutePlan · 计划文件与记录';
+document.title = `SkySEED · ${isLink ? 'LinkPlan' : 'RoutePlan'} 计划详情`;
+el('targetLabel').textContent = isLink ? '连接筛选 / Connection' : '目的筛选 / Destination';
+if (isLink) el('part').querySelector('[value="context"]').remove();
+el('timeReference').textContent = firstPlan ? `秒数基准 / Offset origin: ${firstPlan.start}` : '';
+data.archives.forEach((item,index) => option(el('file'),index,branches[item.branch] || item.branch));
+const requestedBranch = data.archives.findIndex(item => item.branch === query.get('branch'));
+el('file').value = requestedBranch >= 0 ? requestedBranch : 0;
+el('file').onchange = () => selectFile();
+el('plan').onchange = () => {viewTime = plan()?.start;showRecords();};
+for (const id of ['node','target','part']) el(id).onchange = showRecords;
+el('clear').onclick = () => {el('node').value='';el('target').value='';showRecords();};
+selectFile(true);
+</script>
+</html>

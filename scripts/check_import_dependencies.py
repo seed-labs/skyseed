@@ -1,4 +1,4 @@
-"""Check the new Scene/Emulator dependency boundary using the active source root."""
+"""Check Scene, Emulator and offline P&C boundaries in the active source root."""
 import ast
 from check_active_source import verify_source
 
@@ -18,14 +18,18 @@ def main():
                     errors.append(f'{path}:{node.lineno}: Scene imports outside its module')
             for name in names:
                 if path.is_relative_to(root / 'scene') and (
-                    name == 'seedemu' or name.startswith('seedemu.') or name.startswith('skyseed.emulator')
+                    name == 'seedemu' or name.startswith('seedemu.') or name.startswith(('skyseed.emulator', 'skyseed.pc'))
                 ):
-                    errors.append(f'{path}:{node.lineno}: Scene must not depend on SEED/Emulator')
-                if name.startswith('skyseed.') and name.split('.')[1] not in {'scene', 'emulator'}:
+                    errors.append(f'{path}:{node.lineno}: Scene must not depend on SEED/Emulator/P&C')
+                if path.is_relative_to(root / 'pc') and (
+                    name == 'seedemu' or name.startswith(('seedemu.', 'skyseed.emulator'))
+                ):
+                    errors.append(f'{path}:{node.lineno}: offline P&C must not depend on SEED/Emulator')
+                if name.startswith('skyseed.') and name.split('.')[1] not in {'scene', 'emulator', 'pc'}:
                     errors.append(f'{path}:{node.lineno}: unimplemented/legacy dependency {name}')
     if errors:
         raise SystemExit('\n'.join(errors))
-    print('Scene and Emulator dependency boundaries passed.')
+    print('Scene, Emulator and offline P&C dependency boundaries passed.')
 
 
 if __name__ == '__main__':

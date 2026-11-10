@@ -4,8 +4,9 @@ from .scene_entities import (
     SatelliteOrbit, SatelliteShell, ScenePositionSource,
 )
 from .scene import Scene
+from .scene_endpoints import AccessEndpoint
 
 __all__ = [
     "Scene", "Constellation", "SatelliteShell", "SatelliteOrbit", "Satellite",
-    "GroundStation", "GroundStationGroup", "ScenePositionSource",
+    "GroundStation", "GroundStationGroup", "ScenePositionSource", "AccessEndpoint",
 ]

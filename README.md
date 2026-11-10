@@ -5,13 +5,15 @@ satellite-network **Scene** and an **Emulator** that turns it into SEED nodes.
 You can combine them with ground networks and services, generate deployment files,
 and start the network with Docker Compose.
 
-This development stage supports Scene authoring and static deployment.
-PlanningControl, PlanCompiler, Runner and dynamic satellite links are future work.
+This development stage also supports offline PlanningControl, saved logical plans
+and PlanCompiler output for MPLS-like BPF forwarding and ordinary IP/Linux forwarding.
+Runner and live execution of dynamic satellite plans remain future work.
 
 ## Start here
 
 - [Architecture](new_docs/architecture.md): components and how they fit together.
 - [Tiny network](new_examples/tiny_network/README.md): build, start and inspect a working example.
+- [Offline Emu and P&C](new_examples/offline_planning/README.md) · [中文](new_examples/offline_planning/README.zh-CN.md): generate deployment files, plans and visualizations without running the network.
 - [Scene](new_docs/scene.md) and [Emulator](new_docs/emulator.md): usage and key interface rules.
 - [Development](new_docs/development.md): source layout, focused checks and migration.
 
