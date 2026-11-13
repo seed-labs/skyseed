@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SkySEED · Link 连接与计划</title>
+<style>/*INSPECTION_STYLE*/
+header a{color:#8edfd7}header nav{text-align:right}header nav small{display:block;margin-top:8px}
+.steps{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:15px 0}.steps div{padding:12px;background:#112334;border:1px solid #26384c;border-radius:9px}.steps strong{font-size:23px;display:block;color:#6edbd2}.steps small{font-size:11px}#events{max-height:330px}.event{display:block;width:100%;text-align:left;margin:4px 0;font-size:11px}.track{height:28px;position:relative;background:#172739;border-radius:4px;margin:7px 0;overflow:hidden}.track span{position:absolute;top:0;bottom:0;opacity:.8}.track b{position:relative;padding:4px 8px;font-size:11px;line-height:28px;text-shadow:0 1px 3px #000}.changed{color:#f1a0b6}
+</style>
+<header><div><div class="brand">SKYSEED / LINK</div><h1>从候选到连接计划 <small>LinkPlan</small></h1><small>查看真实选择、准备过程与两条计划分支 / Actual decisions & timed operations</small></div><nav><a id="planDetails" hidden>计划详情 / Plan details ↗</a><small>离线预计算 / Offline</small></nav></header>
+<main><section class="stage">
+  <div class="controls"><button id="overview">全部同图 / Overview</button><label><input id="candidates" type="checkbox">物理候选 / Candidates</label><label><input id="focus" type="checkbox">仅看所选 / Focus</label></div>
+  <div class="steps"><div><strong id="candidateCount">—</strong><small>物理机会 / Candidate pairs</small></div><div><strong id="selectedCount">—</strong><small>已选择 / Selected</small></div><div><strong id="pendingCount">—</strong><small>准备中 / Preparing</small></div><div><strong id="activeCount">—</strong><small>执行可用 / Operational</small></div></div>
+  <div class="legend"><span id="operationalLegend" style="color:#6edbd2">— 两分支可用</span><span style="color:#f0cf82">— 准备中</span><span style="color:#f1a0b6">— 分支不同</span><span style="color:#536a7e">— 候选</span></div>
+  <canvas id="globe" aria-label="Link 连接计划地球视图"></canvas>
+  <div class="controls"><button id="play">播放 / Play</button><input id="timeline" type="range" min="0" value="0" aria-label="计划时刻"><time id="timestamp"></time><button id="reset">重置视角</button></div>
+  <p class="status" id="sampleNote"></p>
+  <div class="selection-panel"><h2 id="selectionTitle">选择连接查看状态与方向属性</h2><div class="facts" id="selectionFacts"></div><div id="tracks"></div><details><summary>物理依据与完整方向属性 / Evidence & properties</summary><pre id="selectionData"></pre></details></div>
+</section><aside>
+  <label for="branch">显示分支 / Branch</label><select id="branch"><option value="compare">基础与执行对照 / Compare</option><option value="base">基础计划 / Base</option><option value="execution">执行计划 / Execution</option></select>
+  <label for="node">节点 / Node</label><select id="node"><option value="">全部节点 / All nodes</option></select>
+  <p class="status">点击节点、连接或事件查看详情。选择只高亮；勾选“仅看所选”再隔离显示。</p>
+  <h2>当前连接 / Connections</h2><div class="table-wrap"><table><thead><tr><th>端点 / Endpoints</th><th>状态 / State</th></tr></thead><tbody id="links"></tbody></table></div>
+  <h2>定时操作 / Timed operations</h2><div class="controls"><button id="baseEvents" aria-pressed="true">基础</button><button id="executionEvents" aria-pressed="false">执行</button></div><div class="table-wrap" id="events"></div>
+  <p class="status">准备完成时刻按实际时间显示，不取整到采样点。候选和选择来自最近一次已记录求值；没有记录时显示未知。</p>
+</aside></main>
+<footer>基础计划供路由使用，执行计划可经 Perturbation 修改。浏览器只展示导出的模型结果，不重新选择连接或计算计划。<br>Base plans support routing; execution plans may differ. Playback is an inspection of precomputed results.</footer>
+<script>/*SPATIAL_VIEW*/</script><script>
+const data = /*INSPECTION_DATA*/null;
+const meta = sceneIndex(data).nodes;
+const key = id => JSON.stringify(id);
+const name = id => meta.get(id)?.name || id;
+const label = id => id.map(name).join(' ↔ ');
+const map = values => new Map((values || []).map(value => [key(value.id), value]));
+const prepared = data.frames.map(frame => ({
+  ...frame,
+  baseMap: map(frame.base),
+  executionMap: map(frame.execution),
+  candidateMap: map(frame.candidates),
+  pendingMap: map(frame.pending),
+}));
+const start = Date.parse(data.start);
+const finish = Date.parse(data.end);
+let selected = null;
+let eventBranch = 'base';
+const eventsByLink = {base: new Map(), execution: new Map()};
+for (const branch of ['base', 'execution']) {
+  for (const event of data.events[branch]) {
+    const identity = key(event.id);
+    if (!eventsByLink[branch].has(identity)) {
+      eventsByLink[branch].set(identity, []);
+    }
+    eventsByLink[branch].get(identity).push(event);
+  }
+}
+const globe = new InspectionGlobe(byId('globe'), id => {
+  byId('node').value = id;
+  selected = null;
+  update();
+}, feature => {
+  selected = key(feature.id);
+  update();
+});
+for (const node of data.nodes) {
+  const option = document.createElement('option');
+  option.value = node.node_id;
+  option.textContent = node.name;
+  byId('node').append(option);
+}
+
+function setTime(timestamp) {
+  const index = data.frames.findIndex(frame => Date.parse(frame.timestamp) >= Date.parse(timestamp));
+  byId('timeline').value = index < 0 ? data.frames.length - 1 : index;
+  update();
+}
+
+function stateLabel(identity, frame, branch) {
+  if (branch === 'compare') {
+    const base = frame.baseMap.has(identity);
+    const execution = frame.executionMap.has(identity);
+    if (base && execution) return '可用';
+    if (base) return '仅基础可用';
+    if (execution) return '仅执行可用';
+  } else if (frame[`${branch}Map`].has(identity)) {
+    return '可用';
+  }
+  if (frame.pendingMap.has(identity)) return '准备中';
+  return '候选';
+}
+
+function addTrack(title, branch) {
+  const track = document.createElement('div');
+  track.className = 'track';
+  for (let index = 0; index < prepared.length; index++) {
+    const frame = prepared[index];
+    const state = branch === 'pending' ? frame.pendingMap : frame[`${branch}Map`];
+    if (!state.has(selected)) continue;
+    const left = Date.parse(frame.timestamp);
+    const right = index + 1 < prepared.length ? Date.parse(prepared[index + 1].timestamp) : finish;
+    const bar = document.createElement('span');
+    bar.style.left = `${100 * (left - start) / (finish - start)}%`;
+    bar.style.width = `${100 * (right - left) / (finish - start)}%`;
+    bar.style.background = branch === 'pending' ? '#a68a32' : branch === 'base' ? '#4b73a4' : '#258779';
+    track.append(bar);
+  }
+  const text = document.createElement('b');
+  text.textContent = title;
+  track.append(text);
+  byId('tracks').append(track);
+}
+
+function update() {
+  const frame = prepared[Number(byId('timeline').value)];
+  if (!frame) return;
+  byId('timestamp').textContent = frame.timestamp;
+  byId('candidateCount').textContent = frame.candidates?.length ?? '未知';
+  byId('selectedCount').textContent = frame.selected?.length ?? '未知';
+  byId('pendingCount').textContent = frame.pending?.length ?? '未知';
+  byId('activeCount').textContent = frame.execution.length;
+  byId('sampleNote').textContent = frame.evaluation_timestamp
+    ? `最近求值 / Evaluated: ${frame.evaluation_timestamp} · 计划覆盖 [${data.start}, ${data.end})`
+    : '没有提供选择过程记录；仅展示计划中的已知状态。';
+
+  const branch = byId('branch').value;
+  const node = byId('node').value;
+  if (data.plan_details) {
+    const parameters = new URLSearchParams({branch:branch === 'compare' ? 'execution' : branch,
+                                           timestamp:frame.timestamp});
+    if (selected) parameters.set('link',selected);
+    if (node) parameters.set('node',node);
+    byId('planDetails').href = `${data.plan_details}?${parameters}`;
+    byId('planDetails').hidden = false;
+  }
+  const operational = branch === 'compare'
+    ? new Map([...frame.baseMap, ...frame.executionMap])
+    : frame[`${branch}Map`];
+  const available = new Map(byId('candidates').checked ? frame.candidateMap : []);
+  for (const [identity, link] of frame.pendingMap) available.set(identity, link);
+  for (const [identity, link] of operational) available.set(identity, link);
+  byId('operationalLegend').textContent = branch === 'base'
+    ? '— 基础可用' : branch === 'execution' ? '— 执行可用' : '— 两分支可用';
+  const selectedPair = selected ? JSON.parse(selected) : [];
+  const focused = identity => {
+    if (selected) return identity === selected;
+    return !node || JSON.parse(identity).includes(node);
+  };
+  const lines = [];
+  for (const [identity, link] of available) {
+    const base = frame.baseMap.get(identity);
+    const execution = frame.executionMap.get(identity);
+    const pending = frame.pendingMap.has(identity);
+    if (byId('focus').checked && !focused(identity)) continue;
+    const [first, second] = link.id;
+    if (!frame.positions[first] || !frame.positions[second]) continue;
+    let color = '#536a7e';
+    if (pending) color = '#f0cf82';
+    if (operational.has(identity)) color = '#6edbd2';
+    if (branch === 'compare' && JSON.stringify(base?.directions) !== JSON.stringify(execution?.directions)) {
+      color = '#f1a0b6';
+    }
+    lines.push({
+      a: frame.positions[first], b: frame.positions[second],
+      color, width: identity === selected ? 3 : 1, feature: {id: link.id},
+    });
+  }
+  const visibleNodes = new Set(lines.flatMap(line => line.feature.id));
+  for (const id of selectedPair) visibleNodes.add(id);
+  if (node) visibleNodes.add(node);
+  const points = [];
+  for (const [id, position] of Object.entries(frame.positions)) {
+    if (byId('focus').checked && !visibleNodes.has(id)) continue;
+    const highlighted = selectedPair.includes(id) || id === node;
+    const color = meta.get(id)?.kind === 'ground_station' ? '#ffcd88' : '#83a8ff';
+    points.push({
+      id, position, color: highlighted ? '#ffffff' : color,
+      radius: highlighted ? 5 : 3, label: highlighted ? name(id) : null,
+    });
+  }
+  globe.set(points, lines);
+
+  byId('links').replaceChildren();
+  for (const [identity, link] of available) {
+    if (node && !link.id.includes(node)) continue;
+    const row = document.createElement('tr');
+    const cell = document.createElement('td');
+    const button = document.createElement('button');
+    button.className = 'peer-button';
+    button.textContent = label(link.id);
+    button.setAttribute('aria-pressed', identity === selected);
+    button.onclick = () => {
+      selected = identity;
+      update();
+    };
+    cell.append(button);
+    row.append(cell);
+    const status = document.createElement('td');
+    status.textContent = stateLabel(identity, frame, branch);
+    row.append(status);
+    byId('links').append(row);
+  }
+
+  byId('selectionTitle').textContent = selected ? label(selectedPair) : node ? name(node) : '选择连接查看状态与方向属性';
+  const base = frame.baseMap.get(selected);
+  const execution = frame.executionMap.get(selected);
+  const pending = frame.pendingMap.get(selected);
+  const facts = selected ? [
+    ['基础状态', base ? '可用' : '未建立'],
+    ['执行状态', execution ? '可用' : '未建立'],
+    ['准备完成', pending?.ready_at || '—'],
+    ['时间轴', `${data.start} → ${data.end}`],
+  ] : [['视图', `${points.length} 个节点 · ${lines.length} 条连接／机会`]];
+  showFacts(byId('selectionFacts'), facts);
+  byId('selectionData').textContent = selected ? JSON.stringify({
+    candidate: frame.candidateMap.get(selected) ?? null,
+    base: base ?? null, execution: execution ?? null,
+  }, null, 2) : '';
+  byId('tracks').replaceChildren();
+  if (selected) {
+    addTrack('准备 / Setup', 'pending');
+    addTrack('基础 / Base', 'base');
+    addTrack('执行 / Execution', 'execution');
+  }
+
+  byId('events').replaceChildren();
+  const events = selected ? (eventsByLink[eventBranch].get(selected) || []) : data.events[eventBranch];
+  const nearby = events.filter(event => !node || event.id.includes(node));
+  let first = nearby.findIndex(event => event.timestamp >= frame.timestamp);
+  if (first < 0) first = nearby.length;
+  const shown = selected ? nearby : nearby.slice(Math.max(0, first - 8), first + 25);
+  for (const event of shown) {
+    const button = document.createElement('button');
+    button.className = 'event';
+    const seconds = (Date.parse(event.timestamp) - start) / 1000;
+    button.textContent = `+${seconds}s · ${event.kind} · ${label(event.id)}`;
+    button.onclick = () => {
+      selected = key(event.id);
+      setTime(event.timestamp);
+    };
+    byId('events').append(button);
+  }
+  if (!shown.length) byId('events').textContent = '当前范围没有操作 / No operations';
+}
+
+byId('overview').onclick = () => {
+  selected = null;
+  byId('node').value = '';
+  byId('focus').checked = false;
+  update();
+};
+byId('node').onchange = () => {
+  selected = null;
+  update();
+};
+for (const id of ['branch', 'focus', 'candidates']) byId(id).onchange = update;
+for (const branch of ['base', 'execution']) {
+  byId(`${branch}Events`).onclick = () => {
+    eventBranch = branch;
+    byId('baseEvents').setAttribute('aria-pressed', branch === 'base');
+    byId('executionEvents').setAttribute('aria-pressed', branch === 'execution');
+    update();
+  };
+}
+byId('reset').onclick = () => globe.reset();
+bindTimeline(data.frames, update);
+const query = new URLSearchParams(location.search);
+if (['base','execution','compare'].includes(query.get('branch'))) byId('branch').value = query.get('branch');
+if (meta.has(query.get('node'))) byId('node').value = query.get('node');
+selected = query.get('link');
+if (query.has('timestamp')) setTime(query.get('timestamp'));
+else update();
+
+</script>
+</html>

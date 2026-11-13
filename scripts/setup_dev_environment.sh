@@ -30,7 +30,7 @@ fi
 
 if [[ ! -f "$SEED_EMULATOR_ROOT/setup.py" ]]; then
     echo "Required SEED ExtensionNode checkout not found: $SEED_EMULATOR_ROOT" >&2
-    echo "Clone https://github.com/EMLionHeart/seed-emulator (pr/extension-node)." >&2
+    echo "Clone the SEED extension-node revision listed in README.md." >&2
     echo "Set SEED_EMULATOR_CHECKOUT to that checkout; see README.md." >&2
     exit 1
 fi
@@ -44,12 +44,12 @@ else
     "$CONDA_COMMAND" env create "${ENVIRONMENT_ARGS[@]}" --file environment.yml
 fi
 
-echo "Installing required SEED fork from $SEED_EMULATOR_ROOT"
+echo "Installing SEED from $SEED_EMULATOR_ROOT"
 "$CONDA_COMMAND" run "${ENVIRONMENT_ARGS[@]}" \
     python -m pip install --editable "$SEED_EMULATOR_ROOT"
 "$CONDA_COMMAND" run "${ENVIRONMENT_ARGS[@]}" \
     python -m pip install --editable '.[test]'
 
-echo "SkySEED development environment is ready: ${SKYSEED_ENV_PREFIX:-$ENVIRONMENT_NAME}"
 "$CONDA_COMMAND" run "${ENVIRONMENT_ARGS[@]}" python -m pip --version
 "$CONDA_COMMAND" run "${ENVIRONMENT_ARGS[@]}" python scripts/check_dev_environment.py
+echo "SkySEED development environment is ready: ${SKYSEED_ENV_PREFIX:-$ENVIRONMENT_NAME}"

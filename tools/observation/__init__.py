@@ -1,1 +1,1 @@
-"""Observation of completed facts; active Traffic remains explicitly enabled."""
+"""Independent views of Scene, saved plans and actual execution records."""

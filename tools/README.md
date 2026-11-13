@@ -1,34 +1,43 @@
-# Generation, observation and development tools
+# Repository Tools
 
-`write_experiment_tools(output, physical_world=world, publication=None)` renders
-completed generation facts and available runtime records. During `serve()`, the
-Controller supplies a completed publication to the optional presentation callback.
-It runs separately from calculation and runtime progress; failure preserves domain
-results and is reported under `results/experiment/presentation-status.json`.
+[中文](README.zh-CN.md)
 
-Open `output/visualizations/index.html`, or the fixed [interactive demos](../docs/demos/index.html).
+- [Observation](observation/README.md): read saved Scene, logical plans, compiled
+  instructions and actual execution records. These tools do not run the network.
+- [S4 view.py](../examples/s4_handover/view.py): a short example of independent
+  Scene/Physical/Link/Network/Compiler exports.
+- `deployment/build_images.py`: build reusable images and a runtime Compose file
+  from SEED deployment output, as shown in the S4 Emu entry.
+- [Shell shortcuts](deployment/shell.sh): SEED-style Docker commands, environment
+  entry and S4 runtime queries; setup below.
 
-| Tool | What to inspect |
+Tools are optional repository utilities, separate from the `skyseed` package.
+
+## Shell shortcuts
+
+After [installation](../README.md#installation), load the script in Bash from the
+repository root. It locates the checkout from its own path:
+
+```bash
+source tools/deployment/shell.sh
+skyseed
+```
+
+| Command | Purpose |
 |---|---|
-| [PhysicalWorld](observation/physical_world/README.md) | Time, physical entities and candidate feasibility |
-| [Zone](observation/zone/README.md) | Static geography and boundaries |
-| [Planner](observation/planner/README.md) | Selected state, acquisition, paths, changes and optional Areas |
-| [Compiler](observation/bpf_compiler/README.md) | Activation work and material lineage |
-| [Runner](observation/runner/README.md) | Actual initialization, preparation, activation and cleanup |
-| [Traffic generation](generation/traffic/README.md) | GS/Zone schedules and preview before deployment |
-| [Traffic observation](observation/traffic/README.md) | Recorded sending, available packet/path evidence and replay |
-| [Performance](observation/performance/README.md) | Measured spans, work and resources by owner |
+| `skyseed` | Activate the setup script's `skyseed_dev` Conda environment and enter this checkout |
+| `dockps` | List running container IDs and names |
+| `docksh NAME` | Open Bash in the selected container |
+| `dcbuild`, `dcup`, `dcdown` | Docker Compose build, up and down in the current Compose directory |
+| `skytime`, `skynodes` | Read S4's current phase, cycle, endpoints and serving satellite |
 
-Tools never rerun Models or infer execution success from planned state. Readers pin
-completed byte prefixes; browser assets live under `visualizations/`, raw runtime
-records under `runs/<invocation>/`, and Tool measurements under `results/tools/`.
-[Output guide](../docs/user-guides/outputs-and-tools.md) explains these distinctions.
-[_presentation](observation/_presentation/README.md) contains neutral display helpers.
-[Generation](generation/traffic/README.md) owns the explicitly enabled workload sender,
-assembled only by experiment orchestration.
+Load the script in each new terminal. To keep the commands available, add
+`source /absolute/path/to/skyseed/tools/deployment/shell.sh` to `~/.bashrc` **after
+Conda initialization**, replacing the path with your checkout. This only defines
+commands; it does not activate an environment or start containers at shell startup.
+With a differently named environment, activate it yourself instead of using `skyseed`.
 
-[Observation](observation/) owns read-only readers, exports and entrypoints. Imports/commands use `tools.observation.*`;
-ordinary Examples keep `import tools; tools.write_experiment_tools(...)`.
-[Development](development/README.md) contains independent reusable checks and the
-copyable Python driver. Opening a page does not start either calculation or active
-measurement. Local route dispositions are shown with unknown end-to-end reachability.
+The Docker shortcuts wrap the same commands used in SEED environments; they do
+not require a separate SEED shell configuration. `skytime` and `skynodes` require
+S4 to have started on this machine; once it stops they show its last recorded
+state. See the [manual experiment guide](../examples/s4_handover/MANUAL.md) for usage.

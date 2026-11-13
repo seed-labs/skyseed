@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SkySEED · Scene 场景结构</title>
+<style>/*INSPECTION_STYLE*/</style>
+<header><div><div class="brand">SKYSEED / SCENE</div><h1>场景结构 <small>Scene</small></h1><small>星座 · Shell · 轨道 · 地面站 / Constellations, shells, orbits & ground stations</small></div><span class="badge">静态场景 / Static scene</span></header>
+<main>
+  <section class="stage">
+    <div class="controls"><button id="overview" aria-pressed="true">全部同图 / Overview</button><button id="spaceView" aria-pressed="false">轨道结构 / Orbits</button><button id="groundView" aria-pressed="false">地面站 / Ground</button><button id="reset">重置视角 / Reset</button></div>
+    <canvas id="globe" aria-label="Scene 静态轨道与地面站视图"></canvas>
+    <p class="status" id="viewNote"></p>
+    <div class="selection-panel"><h2 id="selectionTitle">场景 / Scene</h2><div class="facts" id="selectionFacts"></div><details><summary>原始资料 / Original inputs</summary><pre id="selectionData"></pre></details></div>
+  </section>
+  <aside>
+    <div class="cards"><div><span class="metric" id="satelliteCount"></span><small>卫星 / Satellites</small></div><div><span class="metric" id="groundCount"></span><small>地面站 / Ground</small></div><div><span class="metric" id="orbitCount"></span><small>轨道面 / Orbits</small></div></div>
+    <p class="status">点击只高亮并查看资料；勾选下方选项才单独显示。<br>Selection highlights and inspects; isolation is optional.</p>
+    <label><input id="isolate" type="checkbox"> 仅显示所选对象 / Isolate selection</label>
+    <h2>组织关系 / Organization</h2><div class="group-list" id="groups" aria-label="场景分组"></div>
+    <label for="node">选择节点 / Select node</label><select id="node"></select>
+    <p class="status" id="groupInfo"></p>
+    <div class="legend"><span style="color:#83a8ff">● 卫星 / Satellite</span><span style="color:#ffcd88">● 地面站 / Ground</span><span style="color:#6edbd2">— 选中轨道 / Selected orbit</span></div>
+  </aside>
+</main>
+<footer>Scene 独立保存结构与输入，不负责状态推进。轨道来自输入参数，卫星表示各自历元的初始相位。同图展示用于查看结构；同刻星地相对位置请看 Physical。<br>Scene owns inputs, not propagation. The combined schematic is not a simultaneous ECEF snapshot; use Physical for satellite–ground alignment.</footer>
+<script>/*SPATIAL_VIEW*/</script>
+<script>
+const data = /*INSPECTION_DATA*/null;
+const index = sceneIndex(data), {groups, nodes, members} = index;
+const positions = {...data.geometry.satellites,...data.geometry.ground};
+const names = {constellation:'星座 / Constellation', shell:'轨道壳 / Shell', orbit:'轨道面 / Orbit', ground_station_group:'站点组 / Ground group'};
+const orbitColors = new Map(data.groups.filter(g => g.kind === 'orbit').map((g,i) => [g.group_id,palette[i%palette.length]]));
+let mode = 'all';
+let selected = {kind:'scene',id:null};
+const globe = new InspectionGlobe(byId('globe'), id => selectNode(id), feature => feature.kind === 'group' ? selectGroup(feature.id) : selectNode(feature.id));
+function descendant(id, ancestor) { for (; id !== null; id = groups.get(id).parent_id) if (id === ancestor) return true; return false; }
+function activeNode(node) { return mode === 'all' || (mode === 'ground' ? node.kind === 'ground_station' : node.kind === 'satellite'); }
+function inSelection(node) { return selected.kind === 'scene' || (selected.kind === 'node' ? selected.id === node.node_id : descendant(node.group_id,selected.id)); }
+function setMode(next) { mode = next; selected = {kind:'scene',id:null}; byId('isolate').checked=false; update(); }
+function selectGroup(id) {
+  if(id === null) { setMode('all'); return; }
+  selected = {kind:'group',id};
+  if (mode !== 'all') mode = groups.get(id).kind === 'ground_station_group' ? 'ground' : 'space';
+  update();
+}
+function selectNode(id) { selected = {kind:'node',id}; if(mode !== 'all') mode = nodes.get(id).kind === 'ground_station' ? 'ground' : 'space'; update(); }
+function groupButton(group, depth) {
+  const button = document.createElement('button'); button.groupId = group?.group_id ?? null;
+  button.style.paddingLeft = `${10+depth*14}px`;
+  button.textContent = group ? `${names[group.kind]} · ${group.group_id.split('/').at(-1)} (${members.get(group.group_id).length})` : '全部 / All';
+  button.onclick = () => selectGroup(button.groupId); byId('groups').append(button);
+}
+groupButton(null,0); for (const {group,depth} of index.ordered) groupButton(group,depth);
+byId('satelliteCount').textContent = data.nodes.filter(n=>n.kind==='satellite').length;
+byId('groundCount').textContent = data.nodes.filter(n=>n.kind==='ground_station').length;
+byId('orbitCount').textContent = orbitColors.size;
+function update() {
+  byId('overview').setAttribute('aria-pressed',String(mode==='all'&&!byId('isolate').checked));
+  byId('spaceView').setAttribute('aria-pressed',String(mode==='space'));
+  byId('groundView').setAttribute('aria-pressed',String(mode==='ground'));
+  for (const button of byId('groups').children) button.setAttribute('aria-pressed',String(selected.kind!=='node' && button.groupId===selected.id));
+  const visible = data.nodes.filter(activeNode), chosen = visible.filter(inSelection);
+  byId('node').replaceChildren();
+  const placeholder=document.createElement('option'); placeholder.value=''; placeholder.textContent='选择节点… / Select a node…'; byId('node').append(placeholder);
+  const selectable=selected.kind==='group'?chosen:visible;
+  for (const node of selectable) { const option=document.createElement('option'); option.value=node.node_id; option.textContent=node.name; byId('node').append(option); }
+  byId('node').disabled=selectable.length===0; byId('node').value=selected.kind==='node'?selected.id:'';
+  byId('groupInfo').textContent=`显示范围 / In view: ${byId('isolate').checked?chosen.length:visible.length} · 当前选择 / Selected: ${chosen.length} 节点 / nodes`;
+  byId('viewNote').textContent=mode==='all'?'全场景结构示意 · 各自历元的初始相位与地面分布 · 非同刻星地位置 / Combined schematic, not simultaneous satellite–ground positions.':mode==='space'?'轨道结构示意 · 各自历元的初始相位 · 不播放时间 / Initial geometry at each source epoch; no time playback.':'地面站地理分布 · 地图为显示参考 / Ground locations on a geographic display globe.';
+  let facts=[], raw, title;
+  if (selected.kind==='scene') {
+    title=mode==='all'?'整个场景 / Entire scene':mode==='space'?'轨道组织 / Orbital organization':'地面站分布 / Ground geography'; raw={data:data.data};
+    facts=[['范围 / Scope',`${visible.length} 节点 / nodes`],['Shell',data.groups.filter(g=>g.kind==='shell').length],['历元 / Epoch','各来源独立 / Per source']];
+  } else if (selected.kind==='group') {
+    const group=groups.get(selected.id); title=`${names[group.kind]} · ${group.group_id}`; raw=group;
+    facts=[['节点 / Nodes',members.get(group.group_id).length],['父组 / Parent',group.parent_id??'—']];
+    const shell=group.kind==='shell'?group:group.kind==='orbit'?groups.get(group.parent_id):null;
+    if(shell) facts.push(['高度 / Altitude',`${shell.altitude_m/1000} km`],['倾角 / Incl.',`${shell.inclination_deg}°`],['历元 / Epoch',shell.epoch]);
+    if(group.kind==='orbit') facts.push(['RAAN',`${group.raan_deg}°`]);
+  } else {
+    const node=nodes.get(selected.id), source=node.position_source.data; title=node.name; raw=node;
+    facts=[['身份 / ID',node.node_id],['归属 / Group',node.group_id??'未分组 / Ungrouped'],['来源 / Source',node.position_source.kind]];
+    if(source.epoch) facts.push(['历元 / Epoch',source.epoch]);
+    if(source.mean_anomaly_deg!=null) facts.push(['初始相位 / Phase',`${source.mean_anomaly_deg}°`]);
+    if(source.altitude_m!=null) facts.push(['高度 / Altitude',`${source.altitude_m/1000} km`]);
+    if(source.latitude_deg!=null) facts.push(['纬度 / Lat.',`${source.latitude_deg}°`],['经度 / Lon.',`${source.longitude_deg}°`],['海拔 / Elev.',`${source.elevation_m} m`]);
+    if(node.kind==='satellite' && !data.geometry.satellites[node.node_id]) facts.push(['轮廓 / Outline','此来源未绘制；查看原始资料 / Inputs only for this source']);
+  }
+  byId('selectionTitle').textContent=title; showFacts(byId('selectionFacts'),facts); byId('selectionData').textContent=JSON.stringify(raw,null,2);
+  const isolate=byId('isolate').checked;
+  const unplaced=visible.filter(n=>!positions[n.node_id]).length;
+  if(unplaced) byId('viewNote').textContent+=` ${unplaced} 个节点仅显示输入资料 / input-only nodes.`;
+  const points=visible.filter(n=>positions[n.node_id] && (!isolate || inSelection(n))).map(n=>({id:n.node_id,position:positions[n.node_id],
+    color:selected.kind==='node'&&selected.id===n.node_id?'#ffffff':n.kind==='ground_station'?'#ffcd88':orbitColors.get(n.group_id)||'#83a8ff',
+    radius:selected.kind==='node'&&selected.id===n.node_id?5.5:n.kind==='ground_station'?4:2.8,label:selected.kind==='node'&&selected.id===n.node_id?n.name:null}));
+  const outlines=[];
+  if(mode!=='ground') for(const orbit of data.geometry.orbits) {
+    const related=selected.kind==='scene' || (selected.kind==='group'?orbit.orbit_id!==null&&descendant(orbit.orbit_id,selected.id):orbit.node_id===selected.id || orbit.orbit_id!==null&&orbit.orbit_id===nodes.get(selected.id).group_id);
+    if(isolate&&!related) continue;
+    const highlighted=selected.kind!=='scene'&&related;
+    outlines.push({points:orbit.points_m,color:highlighted?'#6edbd2':'#405163',width:highlighted?1.6:.7,
+      feature:orbit.orbit_id===null?{kind:'node',id:orbit.node_id}:{kind:'group',id:orbit.orbit_id}});
+  }
+  globe.set(points,[],{outlines,geographic:mode!=='space'});
+}
+byId('overview').onclick=()=>setMode('all');
+byId('spaceView').onclick=()=>setMode('space'); byId('groundView').onclick=()=>setMode('ground');
+byId('node').onchange=()=>{if(byId('node').value)selectNode(byId('node').value)};
+byId('isolate').onchange=update; byId('reset').onclick=()=>globe.reset(); update();
+</script>
+</html>

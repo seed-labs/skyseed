@@ -1,11 +1,14 @@
-# Source organization
+# SkySEED modules
 
-[Emulator](emulator/README.md) constructs the SEED scene. [Configuration](configuration/README.md)
-loads declarations; [adapters](adapters/README.md) project them into receiver-owned inputs.
-[Simulator](simulator/README.md) owns PhysicalWorld and Planner. [Backend](backend/README.md)
-compiles Plans and executes retained materials. [Experiment](experiment/README.md)
-orchestrates computation and controls, using [Deployer](deployment/README.md) for
-network resources. [Shared](shared/README.md) contains neutral mechanics.
+[中文](README.zh-CN.md)
 
-See [architecture](../../docs/architecture/overview.md) for relationships and
-[developer reference](../../docs/development/README.md) for current contracts.
+- [scene](scene/README.md): Scenario facts, queries and persistence.
+- [emulator](emulator/README.md): SEED construction and node configuration.
+- [pc](pc/README.md): Layer assembly, requests and plan files.
+- [pc/physical](pc/physical/README.md): Positions and candidate models.
+- [pc/link](pc/link/README.md): Connections, properties and perturbation.
+- [pc/network](pc/network/README.md): Service, routing and delivery.
+- [pc/compiler](pc/compiler/README.md): Backend instructions and physical plans.
+- [runner](runner/README.md): Execution, resource maintenance and Store.
+
+The [usage guide](../../docs/usage.md) connects the complete workflow.
