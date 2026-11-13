@@ -17,11 +17,10 @@ flowchart TD
 在仓库根目录、`skyseed_dev` 环境中运行：
 
 ```bash
-python -m tools.observation.scene.inspection --output /tmp/skyseed-scene-view
+python -m tools.observation.scene.inspection --scene path/to/input.scene --output /tmp/skyseed-scene-view
 ```
 
-打开 `index.html` 即可离线查看；添加 `--scene path/to/input.scene` 使用保存的 Scene。
-默认场景含四个轨道面、64 颗卫星和三个地面站。
+打开 `index.html` 即可离线查看输入 Scene。
 
 - **全部同图（默认）**：轨道、卫星和地面站共同显示。选中分组或节点只高亮，
   保留其他对象；隔离或切换视图后，点击“全部同图”恢复整个场景。
@@ -35,7 +34,6 @@ python -m tools.observation.scene.inspection --output /tmp/skyseed-scene-view
 
 `inspection_data(scene)` 导出原始资料和静态 `geometry`，格式为 `skyseed.scene-inspection/v2`。
 `write_inspection(data, output)` 写出 `scene.json` 和自包含页面。
-先前的可选时间预览接口和命令参数已移除，Scene 类与其保存格式没有变化。
 
 `inspection.py` 负责命令入口与导出，`viewer.html` 负责选择和展示。
 共享的 `../_presentation/scene_display.py` 读取 Scene 资料并生成静态圆轮廓，不进行轨道传播。

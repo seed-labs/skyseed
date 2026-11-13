@@ -2,14 +2,9 @@
 
 **English** · [中文](README.zh-CN.md)
 
-```bash
-python -m tools.observation.network.inspection --output /tmp/skyseed-network
-```
-
-Open the generated `index.html`. The demo retains 64 satellites and three approximate city GS
-positions, adding six bounded illustrative regions rather than a complete global partition.
-Half the satellites receive an extra 200 ms update delay as a Delivery comparison condition.
-This optional Ground Station–Zone inspector can serve as a starting point for custom tools.
+Use `write_network` from the [saved-artifact tools](../README.md), passing Scene,
+both RoutePlan files, the base LinkPlan and drawing context. Open the exported
+`index.html`. The display targets default GZ routing and can seed a custom tool.
 
 | Interaction | What it shows |
 |---|---|
@@ -32,23 +27,10 @@ link path exists. With no matched ingress rule, the path reports "Not planned" o
 when the corresponding fact is recorded. Existing forwarding paths remain visible, including
 delayed rules after a service change. Missing association records leave the scope unknown.
 
-`inspection_data` reads RoutePlans, base LinkPlans and optional GZ observations. Overlapping delivery
-batches are projected into non-overlapping time intervals, counting prior context only once.
-Paths follow actual rules without recomputing routes or service assignment. Only display positions
-query Physical. Actual event times are retained even with additional sparse display samples.
-Beyond base coverage, the final base and link states are explicitly held for the delivery tail.
-
-`plans/index.html` holds the longer tables and downloads for `base_route.plan` and
-`delivery_route.plan`. It reads the original saved batches, before the display's
-overlap projection, and compares restored values with the originals. Initial entries,
-new operations and prior context remain separate; context is not another delivery.
-Returning to the graph retains the GS/Zone/direction query; a row selects its node and
-time. The graph shows state after operations at that time, not the prior initial state.
-
-The demo uses `tools.observation._presentation.plan_details`'s shared
-`write_plan_details(output, kind="route", streams={"base": ...,
-"delivery": ...})` and sets `data["plan_details"] = "plans/index.html"` before
-`write_inspection`. Generation, display sampling, plan files/details and page writing
-are timed separately. The JSON is display data; `.plan` files are reusable logical plans.
-Scene geometry and model observations stay with the parent page, outside those files.
-This tool is not evidence of BPF packet or Runner execution.
+`inspection_data(scene, base_plans, delivery_plans, link_plans, positions=..., evaluations=...)`
+reads rules from plans and geometry/optional GZ observations from saved data,
+without model calls. Paths follow actual rules. Overlapping Delivery context is
+counted once; the delayed tail retains and marks final base/link state.
+`write_network` splits views by base-plan windows; detail tables retain original
+batches, initial state, new operations and context. These are plans, not packet
+observations or Runner execution.

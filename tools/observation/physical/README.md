@@ -2,15 +2,16 @@
 
 [中文](README.zh-CN.md) · **English**
 
-Inspect real [Physical](../../../new_src/skyseed/pc/physical/README.md) results:
+Inspect real [Physical](../../../src/skyseed/pc/physical/README.md) results:
 position snapshots, per-node candidates, distance, one-way delay, elevation and
 custom fields. This optional intermediate-results tool supports development and
 research; it does not select connections or generate LinkPlan.
 
-From the repository root, in `skyseed_dev`:
+Read saved observations without running a Physical model:
 
-```bash
-python -m tools.observation.physical.inspection --output /tmp/skyseed-physical-view
+```python
+from tools.observation.plan_views import write_physical
+write_physical("output/observations/plans.json", "output/views/physical")
 ```
 
 Open the standalone `index.html` offline. The default overview shows all nodes
@@ -25,22 +26,15 @@ Uncheck “All candidates” to keep all nodes while showing only the selected q
 candidates. Group filtering never drops peers from the actual reports.
 Opposite reports are merged only for drawing lines; missing values stay unknown.
 
-Add `--scene path/to/input.scene` for a saved Scene. Use `--position-model sgp4`
-for TLE satellites. `--start`, `--steps`, `--step-seconds`, `--max-isl-distance-m`,
-`--min-elevation-deg` and `--max-ground-distance-m` control sampling and geometry.
-The default demo shares its 64 satellites and three ground stations with
-[Scene inspection](../scene/README.md); Physical additionally samples 13 one-minute
-states. Scene shows static orbital organization and ground geography together,
-with optional orbit-only and ground-only views.
-Physical shows actual model results and does not impose schematic orbit lines on
-custom trajectories.
+Physical shows actual sampled model results; it does not impose schematic
+orbit lines on custom trajectories.
 
 `inspection_data(physical, timestamps)` accepts a configured PhysicalLayer with
 custom models. `write_inspection(data, output)` writes `physical.json` and embeds
 those same facts in the page. Custom fields must be JSON serializable for this
-tool; the core does not impose that requirement. Query and write times are reported
-separately. The browser does not rerun models or infer unrecorded rejection reasons.
+tool; the core does not impose that requirement. This is a calculation-side export;
+`write_physical` only reads the saved context. The browser does not rerun models or infer unrecorded rejection reasons.
 
-`inspection.py` owns export and CLI; `viewer.html` owns the results view. Shared
+`inspection.py` owns sampling export and page generation; `viewer.html` owns the results view. Shared
 page/globe assets are in `../_presentation/`. The globe and its documented
 Natural Earth coastlines are display references; model geometry remains authoritative.

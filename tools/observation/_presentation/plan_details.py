@@ -4,6 +4,7 @@ from dataclasses import fields, is_dataclass
 from datetime import datetime
 from itertools import zip_longest
 import json
+import os
 from pathlib import Path
 from time import perf_counter
 
@@ -95,20 +96,24 @@ def archive_summary(path, expected, *, write_seconds):
             "equivalent": equivalent, "plans": restored}
 
 
-def write_plan_details(output, *, kind, streams):
+def write_plan_details(output, *, kind, streams, files=None):
     """Attach a plans/ subpage to one inspector, keeping each original batch intact.
 
     streams maps branch names to finite plan sequences. Geometry and model
-    observations remain in the parent inspector; only plans are archived here.
+    observations remain in the parent inspector. With files, read existing archives
+    instead of making visualization own their persistence.
     """
     directory = Path(output) / "plans"
     archives = []
     for branch, values in streams.items():
         plans = tuple(values)
-        path = directory / f"{branch}_{kind}.plan"
+        path = directory / f"{branch}_{kind}.plan" if files is None else Path(files[branch])
         begun = perf_counter()
-        save_plans(path, iter(plans))
+        if files is None:
+            save_plans(path, iter(plans))
         archive = archive_summary(path, plans, write_seconds=perf_counter() - begun)
+        archive["href"] = os.path.relpath(path, directory)
+        archive["existing"] = files is not None
         archives.append({"branch": branch, **archive})
     data = {"format": "skyseed.plan-details/v1", "kind": kind, "archives": archives}
     write_page(data, directory, template=Path(__file__).with_name("plan_details.html"), data_name="plans")

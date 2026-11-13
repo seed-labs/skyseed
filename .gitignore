@@ -11,10 +11,5 @@
 build/
 dist/
 src/*.egg-info/
-new_src/*.egg-info/
-new_examples/*/output*/
-examples/*/output/
-
-# Preserved pre-migration output trees stay at their original locations.
-/skyseed_v2/examples/*/output/
-/skyseed_v2/src/*.egg-info/
+examples/*/output*/
+.pytest_cache/

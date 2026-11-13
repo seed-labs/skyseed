@@ -20,4 +20,4 @@ python -m tools.observation.compiler.inspection output/bpf.plan output/linux.pla
 打开生成的 `index.html`。独立页面和 `compilation.json` 仅包含传入的计划，不运行模型、
 重算位置或补算路线。缺少后端或筛选为空时明确显示无记录。
 `instruction_display.py` 仅解释内置指令的展示含义；未知指令保留原始记录，不虚构动作。
-编译入口与指令含义见 [模块说明](../../../new_src/skyseed/pc/compiler/README.zh-CN.md)。
+编译入口与指令含义见 [模块说明](../../../src/skyseed/pc/compiler/README.zh-CN.md)。

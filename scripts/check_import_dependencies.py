@@ -7,6 +7,8 @@ def main():
     root = verify_source()
     errors = []
     for path in root.rglob('*.py'):
+        is_scene = path.is_relative_to(root / 'scene')
+        is_pc = path.is_relative_to(root / 'pc')
         tree = ast.parse(path.read_text(), filename=str(path))
         for node in ast.walk(tree):
             names = []
@@ -14,18 +16,16 @@ def main():
                 names = [alias.name for alias in node.names]
             elif isinstance(node, ast.ImportFrom):
                 names = [node.module] if node.module else []
-                if node.level and path.is_relative_to(root / 'scene') and node.level > 1:
+                if is_scene and node.level > 1:
                     errors.append(f'{path}:{node.lineno}: Scene imports outside its module')
             for name in names:
-                if path.is_relative_to(root / 'scene') and (
-                    name == 'seedemu' or name.startswith('seedemu.') or name.startswith(('skyseed.emulator', 'skyseed.pc'))
-                ):
+                uses_seed = name == 'seedemu' or name.startswith('seedemu.')
+                uses_runtime = name.startswith(('skyseed.emulator', 'skyseed.runner', 'skyseed.store'))
+                if is_scene and (uses_seed or uses_runtime or name.startswith('skyseed.pc')):
                     errors.append(f'{path}:{node.lineno}: Scene must not depend on SEED/Emulator/P&C')
-                if path.is_relative_to(root / 'pc') and (
-                    name == 'seedemu' or name.startswith(('seedemu.', 'skyseed.emulator'))
-                ):
+                if is_pc and (uses_seed or uses_runtime):
                     errors.append(f'{path}:{node.lineno}: offline P&C must not depend on SEED/Emulator')
-                if name.startswith('skyseed.') and name.split('.')[1] not in {'scene', 'emulator', 'pc'}:
+                if name.startswith('skyseed.') and name.split('.')[1] not in {'scene', 'emulator', 'pc', 'runner', 'store'}:
                     errors.append(f'{path}:{node.lineno}: unimplemented/legacy dependency {name}')
     if errors:
         raise SystemExit('\n'.join(errors))

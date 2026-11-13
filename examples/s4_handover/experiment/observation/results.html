@@ -1,0 +1,77 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>S4 · 实际运行</title>
+<style>
+:root{color-scheme:dark}body{margin:0;background:#101724;color:#e7effb;font:16px system-ui}main{max-width:1250px;margin:auto;padding:28px}h1{font-size:28px;margin-bottom:8px}p{color:#adc0d7;line-height:1.6}.cards{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(180px,1fr))}.card{background:#1a273a;padding:14px;min-width:0;border-radius:8px}.card strong{display:block;font-size:26px;margin:7px 0}canvas{width:100%;height:260px;background:#142033;border-radius:8px}table{border-collapse:collapse;width:100%;margin:20px 0;font-size:14px}td,th{border-bottom:1px solid #334359;padding:9px;text-align:left}a{color:#8ec9ff}input{width:100%}pre{white-space:pre-wrap;background:#182438;padding:16px}.legend{display:flex;gap:20px;margin:16px 0}.note{border-left:3px solid #87baff;padding-left:14px}button{padding:7px 14px}#hover{min-height:28px}th{color:#afc4df}
+</style><main><a id="overview">← 构建与计划 / Build & plans</a><h1>S4 · 持续连接与服务切换</h1>
+<p id="configuration"></p><p id="outage"></p>
+<div class="cards" id="cards"></div><p id="validation" class="note" hidden></p><div class="legend"><span style="color:#ffcf72">● 同一 TCP 连接</span><span>│ 实际接入切换</span></div>
+<canvas id="plot"></canvas><p id="hover">移动指针查看时刻；下方表格可定位切换。</p><label>时间窗口起点 / Window start <span id="time"></span><input id="seek" type="range" min="0" value="0" step="1"></label><button id="all">全程</button> <button id="zoom">60 秒窗口</button>
+<p class="note">纵轴为 RTT（毫秒）的 log₁₀(1 + RTT) 刻度，悬停显示原值。点来自实际 TCP echo；没有回复的时段留空。TCP 每 0.2 秒发送下一条 echo，未重建连接；长等待会直接体现在回复间隔中。竖线来自已采用规则后的 UT 接入操作。计划路径、规则状态与逐包路径是不同证据，本页不声称抓到了每跳路径。</p>
+<h2>服务切换 / Service changes</h2><table><thead><tr><th>时刻 (s)</th><th>事件</th><th>原服务节点</th><th>新服务节点</th><th>接入滞后 (ms)</th><th>同连接前后 echo</th></tr></thead><tbody id="handover"></tbody></table>
+<h2>原始证据 / Evidence</h2><p id="links"></p><details><summary>完整统计与构建配置</summary><pre id="details"></pre></details></main>
+<script>const D=/*RESULT_DATA*/null;const $=id=>document.getElementById(id);const S=D.summary;let windowSize=S.duration_s;
+if(D.validation){$('validation').hidden=false;$('validation').textContent=D.validation.note_zh;}
+$('configuration').textContent=`${D.build.satellites} 颗卫星 · ${D.build.ground_stations} 个 GS · ${D.build.zones} 个分区。杭州 UT 所属分区 ↔ 最近的默认 GS；备用 GS 可手动测试。`;
+$('outage').textContent=D.build.perturbation?`橙色阴影：配置的区域断链窗口 ${D.build.perturbation.start_seconds}–${D.build.perturbation.end_seconds} s；点的空缺和恢复来自实际测量。`:'未配置区域断链。';
+const cards=[['TCP 错误',S.tcp_errors.length,'保留原始错误记录'],['截止时未完成探测',S.tcp_pending_at_end==null?'未记录':S.tcp_pending_at_end.length,'未收到回复，不计为成功'],['TCP 连接',S.tcp_connections,'服务端接收 '+S.server_accepts+' 次'],['TCP echo',S.tcp_echoes,'最长无回复 '+S.tcp_max_silence_s?.toFixed(3)+' s'],['服务变化',S.service_changes.length,'含断开／恢复；排除初始化及清理']];
+for(const [title,value,note] of cards){const card=document.createElement('div');card.className='card';const label=document.createElement('span');label.textContent=title;const strong=document.createElement('strong');strong.textContent=value;const small=document.createElement('span');small.textContent=note;card.append(label,strong,small);$('cards').append(card)}
+$('seek').max=Math.max(0,Math.floor(S.duration_s)-1);$('details').textContent=JSON.stringify({summary:S,build:D.build},null,2);
+for(const event of S.service_changes){const row=document.createElement('tr');for(const value of [event.time.toFixed(3),{handover:'切换 / handover',disconnect:'断开 / disconnect',reconnect:'恢复 / reconnect'}[event.kind],event.previous??'无服务',event.node??'无服务',event.attachment_lag_ms.toFixed(2),event.echo_before_and_after?'有 / observed':'未证明 / not shown']){const cell=document.createElement('td');cell.textContent=value;row.append(cell)}row.onclick=()=>{windowSize=60;$('seek').value=Math.max(0,event.time-20);draw()};$('handover').append(row)}
+$('overview').href=D.overview_href;
+for(const name of D.record_files){const a=document.createElement('a');a.href=D.records_href+'/'+name;a.textContent=name;$('links').append(a,document.createTextNode(' · '))}
+const canvas=$('plot');
+const maxRtt=D.tcp.reduce((largest,point)=>Math.max(largest,point.rtt_ms),1);
+const scale=Math.ceil(Math.log10(1+maxRtt));
+function draw(){
+ const ratio=devicePixelRatio||1, width=canvas.clientWidth, height=260;
+ canvas.width=width*ratio;canvas.height=height*ratio;
+ const context=canvas.getContext('2d');context.scale(ratio,ratio);
+ const start=+$('seek').value,end=Math.min(S.duration_s,start+windowSize);
+ const x=time=>70+(time-start)/(end-start)*(width-95);
+ const y=rtt=>215-Math.log10(1+rtt)/scale*180;
+ if(D.build.perturbation){
+  const period=D.build.simulated_seconds;
+  const first=D.build.repeat?Math.floor(start/period):0;
+  const last=D.build.repeat?Math.floor(end/period):0;
+  for(let cycle=first;cycle<=last;cycle++){
+   const a=Math.max(start,cycle*period+D.build.perturbation.start_seconds);
+   const b=Math.min(end,cycle*period+D.build.perturbation.end_seconds);
+   if(a<b){context.fillStyle='#ff98552a';context.fillRect(x(a),25,x(b)-x(a),190)}
+  }
+ }
+ context.font='12px system-ui';
+ for(let exponent=0;exponent<=scale;exponent++){
+  const rtt=10**exponent-1, row=y(rtt);
+  context.strokeStyle='#33445b';context.beginPath();context.moveTo(70,row);context.lineTo(width-25,row);context.stroke();
+  context.fillStyle='#b8c9dc';context.fillText(String(rtt),8,row+4);
+ }
+ context.fillText('RTT (ms)',8,18);context.fillStyle='#ffcf72';
+ for(const point of D.tcp){
+  if(point.time<start||point.time>end)continue;
+  context.beginPath();context.arc(x(point.time),y(point.rtt_ms),2,0,Math.PI*2);context.fill();
+ }
+ context.strokeStyle='#dae5f188';
+ for(const event of D.attachments){
+  if(event.time<start||event.time>end)continue;
+  context.beginPath();context.moveTo(x(event.time),25);context.lineTo(x(event.time),215);context.stroke();
+ }
+ context.fillStyle='#b8c9dc';
+ for(let index=0;index<=6;index++){
+  const time=start+(end-start)*index/6;context.fillText(time.toFixed(0)+' s',x(time)-12,245);
+ }
+ $('time').textContent=start.toFixed(0)+'–'+end.toFixed(0)+' s';
+}
+$('seek').oninput=draw;
+$('all').onclick=()=>{windowSize=S.duration_s;$('seek').value=0;draw()};
+$('zoom').onclick=()=>{windowSize=60;draw()};
+window.onresize=draw;
+canvas.onmousemove=event=>{
+ const bounds=canvas.getBoundingClientRect();
+ const start=+$('seek').value,end=Math.min(S.duration_s,start+windowSize);
+ const time=start+(event.clientX-bounds.left-70)/(bounds.width-95)*(end-start);
+ let closest=null;
+ for(const point of D.tcp){
+  if(!closest||Math.abs(point.time-time)<Math.abs(closest.time-time))closest=point;
+ }
+ $('hover').textContent=closest?'时刻 '+closest.time.toFixed(3)+' s · 序号 '+closest.sequence+' · RTT '+closest.rtt_ms.toFixed(3)+' ms':'';
+};
+draw();</script></html>

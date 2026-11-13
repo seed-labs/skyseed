@@ -1,19 +1,18 @@
 # Engineering entry
 
-Read [README](README.md) and the active [developer references](new_docs/README.md).
-[Development](new_docs/development.md) gives the active source root, environment,
-focused checks and migration rules. The `docs/` tree is retired reference material. Read history
-only when the task needs a past decision or measurement.
+Read [README](README.md) and the [documentation index](docs/README.md).
+[Development](docs/development.md) gives the source layout, environment and focused
+checks. `src/skyseed` is the only implementation; `tests` contains current tests.
 
-For the paper-aligned redesign in this local workspace, first read the engineering
-[WORKFLOW](/home/lionheart/workspace/skyseed-work-context/WORKFLOW.md) and
-[HANDOFF](/home/lionheart/workspace/skyseed-work-context/HANDOFF.md). They record the
-design sources, migration status, single active implementation rule, and focused
-test strategy. The current task determines implementation authorization; the Work
-role described there does not override it. Active repository documentation
-describes the new implemented scope, while the adopted paper design and confirmed
-user decisions define the redesign target. Verify the active source and test roots
-before running checks; do not treat an unimplemented migration as already active.
+If the workspace provides a sibling `skyseed-work-context` directory, first read
+its `WORKFLOW.md` and `HANDOFF.md`. They record the design
+sources, current stage and collaboration rules. These are optional local context,
+not files shipped with the repository. On other machines use repository
+instructions and report any genuinely missing design context. The current task
+determines implementation authorization.
+The adopted paper design and confirmed user decisions define the target; repository
+documentation describes the implemented interfaces. Verify the installed source
+before running checks.
 
 - Use the existing `skyseed_dev` environment for ordinary work. Report the actual Python
   executable, version and Conda identity. Create isolated environments or change dependencies
@@ -33,9 +32,9 @@ before running checks; do not treat an unimplemented migration as already active
   retain checks for concrete identity, data-loss and source-selection mistakes.
 - Wait for owned work and cleanup to finish. Slowness alone is not failure; no arbitrary
   termination timers or automatic forced kills. Preserve the primary error through cleanup.
-- Maintain each precise contract in one developer reference topic. Architecture explains mechanisms,
-  guides show operations, local READMEs explain useful interfaces, history preserves original
-  conditions, and plans state their status. Update affected examples and diagrams; do not
+- Maintain each precise contract in its module README. The root introduces the system,
+  the usage guide connects operations, and reference tables locate interfaces and artifacts.
+  Update affected examples and diagrams; do not
   duplicate exhaustive API inventories or mirror the complete import graph in prose.
 - Report the Architecture Delta: changed public methods/types, records, ownership,
   dependencies, execution paths and example behavior, or explicitly state none.

@@ -2,13 +2,9 @@
 
 **中文** · [English](README.md)
 
-```bash
-python -m tools.observation.network.inspection --output /tmp/skyseed-network
-```
-
-打开生成的 `index.html`。沿用 64 星、三个近似城市 GS，添加六个带边界的示意地域；
-这些区域不是完整全球划分。半数卫星的更新额外延迟 200 ms，作为 Delivery 对照条件。
-这是默认 Ground Station–Zone 模型的可选检查工具，可作为自定义工具的起点。
+使用[保存产物查看工具](../README.zh-CN.md)的 `write_network`，传入 Scene、
+两份 RoutePlan、基础 LinkPlan 和绘图 context，打开生成的 `index.html`。
+默认展示针对 GZ 模型，可作为自定义工具的起点。
 
 | 操作 | 查看内容 |
 |---|---|
@@ -30,19 +26,8 @@ python -m tools.observation.network.inspection --output /tmp/skyseed-network
 仍然存在的实际转发路径继续显示，包括服务变化后尚未撤销的延迟规则。
 没有关联记录时，规划范围保持未知。
 
-`inspection_data` 读取 RoutePlan、基础 LinkPlan 和可选 GZ 观察记录。重叠交付批次先投影到
-不重叠时间区间；前批上下文只计入一次。路径逐跳读取规则，不重新选路或计算服务分配。
-仅显示位置时查询 Physical；事件时间始终保留，附加稀疏采样不丢事件。
-尾部超出基础覆盖时保持最后的基础及链路配置，并标明该状态。
-
-`plans/index.html` 单独承载较长的表格，以及 `base_route.plan`、`delivery_route.plan` 下载。
-它读取展示投影之前的原始批次，并将恢复值与原始计划比较。
-起点状态、本批新操作、前批上下文分开；上下文不是再次交付。
-返回图形保留 GS／Zone／方向查询；从某行返回会选择对应节点与时刻。
-图形显示该时刻应用操作后的状态，不是起点操作前的状态。
-
-演示使用 `tools.observation._presentation.plan_details` 中共用的
-`write_plan_details(output, kind="route", streams={"base": ...,
-"delivery": ...})`，在 `write_inspection` 前设置 `data["plan_details"] = "plans/index.html"`。
-分别报告生成、展示采样、计划文件／详情及页面写出耗时。JSON 是展示数据，`.plan` 文件是可复用的逻辑计划；
-Scene 几何和模型观察资料仍由父页面提供，不混入计划文件。本工具不代表实际 BPF 报文或 Runner 执行。
+`inspection_data(scene, base_plans, delivery_plans, link_plans, positions=..., evaluations=...)`
+从计划读取规则，从保存资料读取几何和可选 GZ 观察，不调用模型。路径逐跳检查规则；
+重叠 Delivery 上下文只计入一次，延迟尾部保持基础及链路最终状态并标记。
+`write_network` 按基础计划分段展示，详情表保留原始批次，包括起点、新操作和上下文。
+本工具展示计划，不代表实际报文或 Runner 执行。

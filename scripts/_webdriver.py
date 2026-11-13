@@ -1,17 +1,19 @@
-"""Small Firefox WebDriver helpers shared by repository visual gates."""
+"""Firefox WebDriver helpers for the documentation diagram check."""
 
 from __future__ import annotations
 
-import base64
 import json
 from pathlib import Path
-import shutil
 import socket
 import subprocess
 import time
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.request import Request, build_opener, ProxyHandler
+
+
+# WebDriver is a local service; workstation web proxies must not intercept it.
+_HTTP = build_opener(ProxyHandler({}))
 
 
 def _request(
@@ -29,7 +31,7 @@ def _request(
         headers={"Content-Type": "application/json"},
     )
     try:
-        with urlopen(request, timeout=timeout) as response:
+        with _HTTP.open(request, timeout=timeout) as response:
             result = json.loads(response.read().decode("utf-8"))
     except HTTPError as error:
         body = error.read().decode("utf-8", errors="replace")
@@ -50,10 +52,6 @@ def _available_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
         listener.bind(("127.0.0.1", 0))
         return int(listener.getsockname()[1])
-
-
-def _default_geckodriver() -> str | None:
-    return shutil.which("geckodriver")
 
 
 def _stop_snap_driver_scope(port: int) -> bool:
@@ -131,27 +129,6 @@ def _execute(base_url: str, session_id: str, script: str) -> Any:
         method="POST",
         value={"script": script, "args": []},
     )
-
-
-def _capture_screenshot(
-    base_url: str,
-    session_id: str,
-    directory: Path | None,
-    filename: str,
-) -> str | None:
-    if directory is None:
-        return None
-    directory.mkdir(parents=True, exist_ok=True)
-    encoded = _request(
-        f"{base_url}/session/{session_id}/screenshot", timeout=30.0
-    )
-    if not isinstance(encoded, str):
-        raise RuntimeError(
-            "WebDriver screenshot response is not base64 text"
-        )
-    path = directory / filename
-    path.write_bytes(base64.b64decode(encoded))
-    return path.name
 
 
 __all__: list[str] = []

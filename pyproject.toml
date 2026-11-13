@@ -14,10 +14,10 @@ dependencies = ["seedemu==0.0.7", "numpy>=1.24", "astropy>=6", "sgp4>=2.24,<3", 
 test = ["pytest>=7"]
 
 [tool.setuptools.packages.find]
-where = ["new_src"]
+where = ["src"]
 
 [tool.pytest.ini_options]
-testpaths = ["new_tests"]
+testpaths = ["tests"]
 addopts = "--import-mode=importlib"
 
 [tool.setuptools.package-data]

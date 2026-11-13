@@ -1,0 +1,258 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>S4 · Execution replay</title>
+<style>/*INSPECTION_STYLE*/
+body{background:#0c1522;color:#dce9f4;font:15px system-ui;margin:0}main{display:block;max-width:1600px;margin:auto;padding:24px}a{color:#86d6fa}h1{font-size:28px;margin:12px 0}.muted{color:#9eb5c8;line-height:1.6}.toolbar,.cards{display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin:18px 0}.cards>div{background:#15263a;padding:14px 20px;border-radius:10px;min-width:150px}.cards strong{display:block;font:24px monospace;margin-top:6px}button,select,input{background:#193149;color:#ebf6ff;border:1px solid #45627a;border-radius:5px;padding:7px}#time{flex:1;min-width:260px}#seconds{width:100px}.toolbar select{width:auto;margin:0}.badge{white-space:normal}.layout{display:grid;grid-template-columns:minmax(500px,1.7fr) minmax(340px,1fr);gap:20px}canvas{width:100%;height:650px;background:#0c1929;border-radius:12px}aside{background:#142338;border-radius:12px;padding:18px;max-height:720px;overflow:auto}table{width:100%;border-collapse:collapse;font-size:13px}td,th{text-align:left;padding:8px 5px;border-bottom:1px solid #30465c;overflow-wrap:anywhere}pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px}#path button{padding:4px;margin:3px}.badge{color:#89e3c0}#node{max-width:100%}.details{background:#142338;padding:16px;border-radius:12px;margin-top:20px}@media(max-width:900px){.layout{display:block}canvas{height:460px}}
+.inspector-tabs{display:flex;gap:8px;position:sticky;top:0;background:#142338;padding:8px 0;z-index:1}.inspector-tabs button[aria-pressed="true"]{border-color:#8bdacb;background:#254b55}aside [hidden]{display:none}</style><main>
+<a href="../../../../index.html">← 实验总览</a> · <a href="../results/index.html">流量统计与原始证据 →</a>
+<h1>执行回放 <span class="muted">/ S4 communication</span></h1>
+<p class="muted">按实际执行回执还原链路、标签规则与 UT 接入；位置来自 Scene 模型。亮线和移动光点是当前规则推导的路径示意，<b>不是逐跳抓包轨迹</b>。链路操作内部的短暂过渡没有单独记录。</p>
+<div class="cards"><div>实际相对时间<strong id="stamp"></strong></div><div>活动链路<strong id="count"></strong></div><div>已发布 generation<strong id="generation"></strong></div><div>最近 TCP 回应<strong id="echo"></strong></div></div>
+<div class="toolbar"><button id="play">播放 / Play</button><button id="previous">上一操作</button><button id="next">下一操作</button><input id="time" type="range" min="0" step="0.001"><input id="seconds" type="number" min="0" step="0.01"><span>秒</span><select id="direction"><option value="out">UT → GS</option><option value="in">GS → UT</option></select><label><input type="checkbox" id="all" checked>所有链路</label><label><input type="checkbox" id="zones" checked>Zone 分布</label><button id="focus">定位路径</button></div>
+
+<div class="layout"><section><canvas id="globe"></canvas><p class="muted">绿色：所选业务的规则推导路径（含星间及星地段）；紫色：UT 临时接入；灰蓝色：其他活动链路；细网格：Zone 边界。</p><h3>当前规则推导路径</h3><div id="path"></div><p id="outcome" class="badge"></p><p class="muted">拖动地球旋转；点节点或链路查看详情。可用下拉框选择背面的节点。</p></section>
+<aside><div class="inspector-tabs"><button id="tab-zone" aria-pressed="true">分区 / Zone</button><button id="tab-node" aria-pressed="false">节点 / Node</button><button id="tab-outage" aria-pressed="false">干扰 / Outage</button></div><section id="zone-panel"><h3>Zone / 分区</h3><select id="zone"></select><button id="focus-zone">定位所选分区</button><div id="zonefacts"></div><div id="zone-grounds"></div><p class="muted">本例每个 Zone 按中心点球面距离关联最近 3 个 GS，不因不可达自动改选。关联决定预计算的通信需求，不保证有路径。服务分配按中心点最高仰角选择，门限 5°，不保证整个分区边缘均可见。切换此选择只查看分区；绿色业务路径仍是 UT 与默认 GS。</p><details><summary>服务与临时 UT 接入的区别</summary><p class="muted">几何值来自位置模型及插值，仅作参考；末端规则来自实际采用回执；UT 接入另据 attachment 记录。无末端规则不等于无几何候选。紫线是示例 veth 接入，没有独立的无线链路预算、时延或丢包模型。</p></details></section><div class="details" id="outage-panel" hidden><strong>区域星地断链 / Regional GS outage</strong><p id="outage-description"></p><div id="outage-regions"></div><button id="outage-before">中断前</button> <button id="outage-during">中断期间</button> <button id="outage-after">恢复后</button><p id="outage-state"></p><details><summary>受影响 GS 的实际连接</summary><div id="affected-stations"></div></details><p class="muted">橙色边界和时间窗表示本例配置；各 GS 的连接数来自实际执行回执。区域内的 ISL 和 UT 接入不受此模型影响。</p></div><section id="node-panel" hidden><h3>节点 / Node</h3><select id="node"></select><div id="nodefacts"></div><h4>已生效的规则</h4><label><input type="checkbox" id="relevant" checked>只看本实验两端目的</label><div id="rules"></div><h4>连接与方向属性</h4><div id="connections"></div><details><summary>最近相关执行回执</summary><pre id="receipt"></pre></details></section></aside></div>
+<div class="details"><h3>当前时点的观测</h3><div id="observed"></div><details><summary>最近一次全网操作及记录来源</summary><p id="source"></p><pre id="event"></pre></details></div>
+</main><script>const D=/*INSPECTION_DATA*/null;</script><script>/*SPATIAL_VIEW*/</script>
+<script>
+const nodes=new Map(D.nodes.map(node=>[node.node_id,node]));
+const edgeKey=ids=>JSON.stringify(ids), ruleKey=match=>JSON.stringify(match);
+const targets=new Map(D.links.map(link=>[edgeKey(link.link_id),link]));
+const ports=new Map();
+for(const link of D.links)for(const end of link.endpoints)ports.set(end.node_id+'|'+end.port,link);
+const name=id=>D.names[id]||id;
+const outage=D.perturbation, affected=new Set(outage?.affected_stations||[]);
+const outageOutlines=[];
+function circleOutline(region){
+ const latitude=region.latitude_deg*Math.PI/180, longitude=region.longitude_deg*Math.PI/180;
+ const distance=region.radius_km/6371.0088, points=[];
+ for(let degree=0;degree<=360;degree+=5){
+  const bearing=degree*Math.PI/180;
+  const lat=Math.asin(Math.sin(latitude)*Math.cos(distance)+Math.cos(latitude)*Math.sin(distance)*Math.cos(bearing));
+  const lon=longitude+Math.atan2(Math.sin(bearing)*Math.sin(distance)*Math.cos(latitude),Math.cos(distance)-Math.sin(latitude)*Math.sin(lat));
+  points.push(spherePoint([lat*180/Math.PI,lon*180/Math.PI]));
+ }
+ return points;
+}
+if(outage){
+ for(const region of outage.regions){
+  outageOutlines.push(circleOutline(region));
+  const button=document.createElement('button');button.textContent='定位 '+region.name;
+  button.onclick=()=>{globe.yaw=-region.longitude_deg*Math.PI/180;globe.tilt=region.latitude_deg*Math.PI/180;render()};
+  byId('outage-regions').append(button);
+ }
+ byId('outage-description').textContent=`配置窗口 ${outage.start_seconds}–${outage.end_seconds} s · `+outage.regions.map(r=>`${r.name} (${r.latitude_deg}°, ${r.longitude_deg}°), 半径 ${r.radius_km} km`).join('；')+` · ${affected.size} 个 GS。按球面距离截断，不代表射频传播计算。`;
+ byId('outage-before').onclick=()=>seek((D.repeat_period?Math.floor(now/D.repeat_period)*D.repeat_period:0)+outage.start_seconds-1);
+ byId('outage-during').onclick=()=>seek((D.repeat_period?Math.floor(now/D.repeat_period)*D.repeat_period:0)+(outage.start_seconds+outage.end_seconds)/2);
+ byId('outage-after').onclick=()=>seek((D.repeat_period?Math.floor(now/D.repeat_period)*D.repeat_period:0)+outage.end_seconds+1);
+}else byId('tab-outage').hidden=true;
+const zones=new Map(D.zones.map(zone=>[zone.id,zone]));
+let selectedZone=D.experiment.zone;
+const zoneOutlines=new Map(D.zones.map(zone=>{
+ const b={...zone.bounds};
+ if(b.east_deg<b.west_deg)b.east_deg+=360;
+ const corners=[[b.south_deg,b.west_deg],[b.south_deg,b.east_deg],[b.north_deg,b.east_deg],[b.north_deg,b.west_deg],[b.south_deg,b.west_deg]];
+ const points=[];
+ for(let edge=1;edge<corners.length;edge++){
+  const first=corners[edge-1],last=corners[edge];
+  const steps=Math.ceil(Math.max(Math.abs(last[0]-first[0]),Math.abs(last[1]-first[1]))/5);
+  for(let step=0;step<steps;step++)points.push(spherePoint(first.map((v,i)=>v+(last[i]-v)*step/steps)));
+ }
+ points.push(spherePoint(corners[0]));
+ return [zone.id,{points,color:'#405b68',width:.6,feature:{zone_id:zone.id}}];
+}));
+for(const zone of D.zones){
+ const option=document.createElement('option');option.value=zone.id;
+ const grounds=D.routing.associations[zone.id]||[];
+ option.textContent=zone.id+' · '+grounds.map(name).join(', ');byId('zone').append(option);
+}
+byId('zone').value=selectedZone;
+function showInspector(which){
+ for(const name of ['zone','node','outage']){
+  byId(name+'-panel').hidden=name!==which;
+  byId('tab-'+name).setAttribute('aria-pressed',String(name===which));
+ }
+}
+for(const name of ['zone','node','outage'])byId('tab-'+name).onclick=()=>showInspector(name);
+function selectZone(id){selectedZone=id;byId('zone').value=id;showInspector('zone');render()}
+const ground=D.experiment.ground_station;
+const gsPrefix=nodes.get(ground).identity_address;
+const utPrefix=D.experiment.ut_address+'/32';
+const zonePrefix=D.destinations.find(x=>x.kind==='endpoint'&&x.identity===D.experiment.zone).prefix;
+let linkState=new Map(), rules=new Map(), latestNode=new Map(), services=new Map(), cursor=0, generation=0, now=0, selected=ground, activePath=[];
+let positions={}, timer=null, phase=0;
+const globe=new InspectionGlobe(byId('globe'),id=>{
+ if(id.startsWith('__zone__:')){selectZone(id.slice(9));return}
+ selected=id;byId('node').value=id;showInspector('node');if(id==='__ut__'){selectedZone=D.experiment.zone;byId('zone').value=selectedZone}render();
+},feature=>{
+ if(feature.zone_id){selectZone(feature.zone_id);return}
+ selected=feature.link_id[0];byId('node').value=selected;showInspector('node');render();byId('receipt').textContent=JSON.stringify(feature,null,2);
+});
+for(const node of D.nodes){const option=document.createElement('option');option.value=node.node_id;option.textContent=name(node.node_id);byId('node').append(option)}
+const utOption=document.createElement('option');utOption.value='__ut__';utOption.textContent='UT · stable terminal';byId('node').prepend(utOption);
+byId('node').value=selected;byId('source').textContent=D.source;
+byId('time').max=byId('seconds').max=D.duration;
+function apply(event){
+ if(event.record.generation)generation=event.record.generation;
+ for(const instruction of event.instructions){
+  const p=instruction.parameters, node=instruction.node;
+  if(node)latestNode.set(node,event);
+  if(instruction.opcode==='veth.create'){const key=edgeKey(p.link_id);linkState.set(key,{...p,properties:{},time:event.time});for(const id of p.link_id)latestNode.set(id,event)}
+  if(instruction.opcode==='veth.delete'){linkState.delete(edgeKey(p.link_id));for(const id of p.link_id)latestNode.set(id,event)}
+  if(instruction.opcode==='netem.replace'){
+   // requires identifies the same resource; resolve this node/interface once per change.
+   const link=interfaceLinks.get(node+'|'+p.interface);const live=linkState.get(link);
+   if(live)live.properties[node]=p;
+  }
+  if(instruction.opcode==='bpf.rule'){
+   if(!rules.has(node))rules.set(node,new Map());
+   const previous=rules.get(node).get(ruleKey(p.match));
+   if(previous?.destination[0]==='endpoint'&&previous.action==='pop_deliver')services.get(previous.destination[1])?.delete(node);
+   if(p.kind!=='withdraw'&&p.destination[0]==='endpoint'&&p.action==='pop_deliver'){
+    if(!services.has(p.destination[1]))services.set(p.destination[1],new Set());
+    services.get(p.destination[1]).add(node);
+   }
+   if(p.kind==='withdraw')rules.get(node).delete(ruleKey(p.match));
+   else rules.get(node).set(ruleKey(p.match),{...p,time:event.time,generation:event.record.generation});
+  }
+ }
+}
+const interfaceLinks=new Map();for(const [key,link]of targets)for(const end of link.endpoints)interfaceLinks.set(end.node_id+'|'+end.interface,key);
+function seek(value){
+ now=Math.max(0,Math.min(D.duration,Number(value)));
+ if(cursor&&D.events[cursor-1].time>now){linkState.clear();rules.clear();latestNode.clear();services.clear();cursor=0;generation=0}
+ while(cursor<D.events.length&&D.events[cursor].time<=now)apply(D.events[cursor++]);
+ byId('time').value=byId('seconds').value=now;render();
+}
+function trace(){
+ const attachment=D.attachments.findLast(event=>event.time<=now);
+ const service=attachment?.node;
+ if(!service)return {hops:[],message:'UT 尚未接入 / not attached'};
+ const outward=byId('direction').value==='out', destination=outward?gsPrefix:utPrefix;
+ let node=outward?service:ground, match=['prefix',destination];const hops=[],seen=new Set();
+ while(node){
+  const state=node+'|'+ruleKey(match);if(seen.has(state))return {hops,message:'环路 / loop'};seen.add(state);
+  const rule=rules.get(node)?.get(ruleKey(match));hops.push({node,rule,match});
+  if(!rule)return {hops,message:'无匹配规则 / no match'};
+  if(rule.action==='pop_deliver'||rule.action==='deliver'){
+   const expected=outward?ground:service;
+   return {hops,message:node===expected?'当前规则连通 / rule-derived path connected':'到达其他服务星，UT 尚未跟随 / attachment mismatch'};
+  }
+  const link=ports.get(node+'|'+rule.port);
+  if(!link||!linkState.has(edgeKey(link.link_id)))return {hops,message:'出口未绑定：丢弃 / missing link → drop'};
+  const property=linkState.get(edgeKey(link.link_id)).properties[node];
+  if(property?.drop||property?.loss_percent===100)return {hops,message:'出口链路全丢弃 / netem drop'};
+  node=link.link_id.find(id=>id!==node);
+  match=rule.outgoing_label==null?['prefix',destination]:['label',rule.outgoing_label];
+ }
+ return {hops,message:'无出口 / no exit'};
+}
+function table(headers,rows){const t=document.createElement('table');const head=t.insertRow();for(const value of headers){const cell=document.createElement('th');cell.textContent=value;head.append(cell)}for(const row of rows){const tr=t.insertRow();for(const value of row)tr.insertCell().textContent=value??'—'}return t}
+function interpolatedPositions(samples,time){
+ let low=0,high=samples.length;
+ while(low<high){
+  const middle=Math.floor((low+high)/2);
+  if(samples[middle].time<=time)low=middle+1;else high=middle;
+ }
+ const left=Math.max(0,low-1),a=samples[left],b=samples[Math.min(left+1,samples.length-1)];
+ const alpha=b.time===a.time?0:Math.max(0,Math.min(1,(time-a.time)/(b.time-a.time)));
+ const result={};
+ for(const [id,p]of Object.entries(a.positions))result[id]=p.map((v,i)=>v+(b.positions[id][i]-v)*alpha);
+ return result;
+}
+function render(){
+ const cycleTime=D.repeat_period?now%D.repeat_period:now;
+ positions=interpolatedPositions(D.geometry,cycleTime);
+ const result=trace();activePath=result.hops;
+ const pathIds=new Set(activePath.map(h=>h.node));const pathEdges=new Set();
+ for(let i=1;i<activePath.length;i++)pathEdges.add(edgeKey([activePath[i-1].node,activePath[i].node].sort()));
+ const lines=[];
+ for(const [key,link]of linkState){const onPath=pathEdges.has(key);if(byId('all').checked||onPath||link.link_id.includes(selected))lines.push({a:positions[link.link_id[0]],b:positions[link.link_id[1]],color:onPath?'#62f4d3':link.link_id.includes(selected)?'#d4a5ff':'#38506b',width:onPath?3:1,feature:link})}
+ const points=D.nodes.map(node=>({id:node.node_id,position:positions[node.node_id],radius:node.node_id===selected?3:pathIds.has(node.node_id)?2:1.3,color:node.node_id===selected?'#ffc778':pathIds.has(node.node_id)?'#62f4d3':node.kind==='satellite'?'#86a5c9':'#f2bb84',label:node.node_id===selected?name(selected):''}));
+ const zonePosition=spherePoint([D.experiment.ut_latitude_deg??D.zone.latitude_deg,D.experiment.ut_longitude_deg??D.zone.longitude_deg]);points.push({id:'__ut__',position:zonePosition,radius:2.5,color:'#e4a7fa',label:'UT · '+D.experiment.zone});
+ const attachment=D.attachments.findLast(event=>event.time<=now);
+ if(attachment?.node)lines.push({a:zonePosition,b:positions[attachment.node],color:'#e4a7fa',width:2});
+ const zone=zones.get(selectedZone);
+ const outlines=byId('zones').checked?[...zoneOutlines.values()]:[];
+ outlines.push({...zoneOutlines.get(D.experiment.zone),color:'#b07acf',width:2});
+ if(selectedZone!==D.experiment.zone){
+  outlines.push({...zoneOutlines.get(selectedZone),color:'#ffc778',width:2});
+  points.push({id:'__zone__:'+selectedZone,position:spherePoint([zone.latitude_deg,zone.longitude_deg]),radius:2.5,color:'#ffc778',label:selectedZone});
+ }
+ const associated=D.routing.associations[selectedZone]||[];
+ for(const point of points)if(associated.includes(point.id)){point.radius=Math.max(point.radius,2);point.label=name(point.id)}
+ renderZone(zone,attachment);
+
+ if(outage){
+  const active=cycleTime>=outage.start_seconds&&cycleTime<outage.end_seconds;
+  for(const points of outageOutlines)outlines.push({points,color:active?'#ff9d51':'#a66b45',width:active?3:1});
+  for(const point of points)if(affected.has(point.id)){point.radius=Math.max(point.radius,2);point.color='#ff9d51'}
+  byId('outage-state').textContent=active?'当前处于配置的中断窗口；链路状态以下方实际回执为准。':cycleTime<outage.start_seconds?'尚未进入配置窗口。':'配置窗口已结束；链路按当前基础计划恢复。';
+  const counts=new Map([...affected].map(id=>[id,0]));
+  for(const link of linkState.values())for(const id of link.link_id)if(affected.has(id))counts.set(id,counts.get(id)+1);
+  byId('affected-stations').replaceChildren(table(['受影响 GS','实际活动连接'],[...counts].map(([id,count])=>[name(id),count])));
+ }
+ globe.set(points,lines,{outlines});
+ byId('stamp').textContent=now.toFixed(3)+' s';byId('count').textContent=linkState.size;byId('generation').textContent=generation;
+ byId('path').replaceChildren();for(const hop of activePath){const button=document.createElement('button');button.textContent=name(hop.node);button.onclick=()=>{selected=hop.node;byId('node').value=selected;showInspector('node');render()};byId('path').append(button,document.createTextNode(' → '))}
+ byId('outcome').textContent=result.message;
+ const recentEcho=D.traffic.tcp.findLast(e=>e.time<=now);byId('echo').textContent=recentEcho?'#'+recentEcho.sequence+' · '+(now-recentEcho.time).toFixed(2)+' s ago':'暂无 / none';
+ const node=nodes.get(selected);if(selected==='__ut__'){
+ byId('nodefacts').replaceChildren(table(['属性','值'],[['身份','示例 UT 容器'],['应用地址',D.experiment.ut_address],['标签路径的分区',D.experiment.zone],['实际服务星',attachment?.node||'未接入'],['接入时刻',attachment?attachment.time.toFixed(3)+' s':'—'],['接入模型','临时 veth；未模拟独立 UT 无线链路']]));
+ byId('rules').textContent='UT 直接发送原始 IP 包；入口压标签，中间按 label 转发，服务星弹标后由临时 IP 路由交付 UT。';
+ byId('connections').replaceChildren(table(['连接','状态'],[['UT → 服务星',attachment?.node||'无接入'],['GS 应用地址',gsPrefix]]));
+ byId('receipt').textContent=JSON.stringify(attachment||null,null,2);
+ }else{byId('nodefacts').replaceChildren(table(['属性','值'],[['身份',selected],['类型',node.kind],['业务地址',node.identity_address],['规则数',rules.get(selected)?.size||0]]));
+ if(node.ground_location){
+  const [lat,lon]=node.ground_location;
+  const values=skyGeometry(positions[selected],lat,lon);
+  byId('nodefacts').append(table(['当前几何参考（插值）','值'],[['最高仰角',values.best.elevation.toFixed(2)+'°'],['对应卫星',name(values.best.id)],['斜距',values.best.distance.toFixed(1)+' km'],['≥ '+D.routing.ground_min_elevation_deg+'° 候选数',values.eligible]]));
+ }
+ const ownRules=[...(rules.get(selected)?.values()||[])].filter(rule=>!byId('relevant').checked||rule.prefix===gsPrefix||rule.prefix===zonePrefix||rule.prefix===utPrefix);
+ byId('rules').replaceChildren(table(['目的 / 匹配','动作','出口','实际生效'],ownRules.map(rule=>[rule.destination[1]+' / '+rule.match.join(' '),rule.action+(rule.outgoing_label!=null?' '+rule.outgoing_label:''),rule.port||'local',rule.time.toFixed(3)+' s / G'+rule.generation])));
+ const connections=[];for(const link of linkState.values())if(link.link_id.includes(selected)){const peer=link.link_id.find(id=>id!==selected),end=link.endpoints.find(e=>e.node_id===selected),p=link.properties[selected];connections.push([name(peer),end.interface+' / port '+end.port,p?(p.rate_bps/1e6)+' Mbps / '+p.delay_us+' μs / loss '+p.loss_percent+'%':'—'])}
+ byId('connections').replaceChildren(table(['对端','接口','本端发送属性'],connections));
+ byId('receipt').textContent=JSON.stringify(latestNode.get(selected)?.record||null,null,2);
+ }
+ byId('event').textContent=JSON.stringify(D.events[cursor-1]?.record||null,null,2);
+ const observationRows=[['UT 服务星',attachment?.node||'未接入'],['TCP',recentEcho?'sequence '+recentEcho.sequence+' · RTT '+recentEcho.rtt_ms.toFixed(3)+' ms · at '+recentEcho.time.toFixed(3)+' s':'尚无回应']];
+ byId('observed').replaceChildren(table(['观测','最近记录（不是当前持续成功保证）'],observationRows));
+}
+// Inspect only the selected ground point; never recompute all Zone/satellite pairs per frame.
+function surfacePoint(latitude,longitude){
+ const lat=latitude*Math.PI/180,lon=longitude*Math.PI/180,e2=0.0066943799901413165;
+ const radius=earthRadius/Math.sqrt(1-e2*Math.sin(lat)**2);
+ return [radius*Math.cos(lat)*Math.cos(lon),radius*Math.cos(lat)*Math.sin(lon),radius*(1-e2)*Math.sin(lat)];
+}
+function skyGeometry(point,latitude,longitude){
+ const lat=latitude*Math.PI/180,lon=longitude*Math.PI/180,up=[Math.cos(lat)*Math.cos(lon),Math.cos(lat)*Math.sin(lon),Math.sin(lat)];
+ const entries=[];let best=null;
+ for(const node of D.nodes)if(node.kind==='satellite'){
+  const delta=positions[node.node_id].map((value,i)=>value-point[i]),distance=Math.hypot(...delta);
+  const sine=delta.reduce((sum,value,i)=>sum+value*up[i],0)/distance;
+  const entry={id:node.node_id,distance:distance/1000,elevation:Math.asin(Math.max(-1,Math.min(1,sine)))*180/Math.PI};
+  entries.push(entry);
+  if(!best||entry.elevation>best.elevation||(entry.elevation===best.elevation&&entry.id<best.id))best=entry;
+ }
+ return {best,entries,eligible:entries.filter(value=>value.elevation>=D.routing.ground_min_elevation_deg).length};
+}
+function renderZone(zone,attachment){
+ const values=skyGeometry(surfacePoint(zone.latitude_deg,zone.longitude_deg),zone.latitude_deg,zone.longitude_deg);
+ const assigned=[...(services.get(zone.id)||[])];
+ const rows=[['中心点',zone.latitude_deg+'°, '+zone.longitude_deg+'°'],['范围',JSON.stringify(zone.bounds)],['最高几何仰角（插值参考）',values.best.elevation.toFixed(2)+'° / '+name(values.best.id)],['几何门限判断（参考）',values.best.elevation>=D.routing.service_min_elevation_deg?'达到 '+D.routing.service_min_elevation_deg+'° 门限':'低于门限'],['实际采用的末端规则',assigned.map(name).join(', ')||'无已采用末端规则']];
+ for(const id of assigned){const value=values.entries.find(v=>v.id===id);rows.push(['末端星当前几何',name(id)+' · '+value.elevation.toFixed(2)+'° / '+value.distance.toFixed(1)+' km'])}
+ if(zone.id===D.experiment.zone)rows.push(['UT 实际接入',attachment?.node?name(attachment.node):'未接入']);
+ byId('zonefacts').replaceChildren(table(['分区属性','值'],rows));
+ byId('zone-grounds').replaceChildren(document.createTextNode('关联 GS：'));
+ for(const id of D.routing.associations[zone.id]||[]){const button=document.createElement('button');button.textContent=name(id);button.onclick=()=>{selected=id;byId('node').value=id;showInspector('node');render()};byId('zone-grounds').append(button)}
+}
+function animate(){if(timer){phase=(phase+.03)%1;seek(now+.1);if(now>=D.duration){clearInterval(timer);timer=null;byId('play').textContent='播放 / Play'}else if(activePath.length>1){const step=phase*(activePath.length-1),i=Math.floor(step),a=positions[activePath[i].node],b=positions[activePath[i+1].node],point=a.map((v,j)=>v+(b[j]-v)*(step-i));const p=globe.project(point);if(globe.visible(p)){globe.ctx.fillStyle='#fff';globe.ctx.beginPath();globe.ctx.arc(p[0],p[1],5,0,Math.PI*2);globe.ctx.fill()}}}}
+byId('play').onclick=()=>{if(timer){clearInterval(timer);timer=null;byId('play').textContent='播放 / Play'}else{if(now>=D.duration)seek(0);timer=setInterval(animate,50);byId('play').textContent='暂停 / Pause'}};
+byId('time').oninput=event=>seek(event.target.value);byId('seconds').oninput=event=>seek(event.target.value);
+byId('next').onclick=()=>seek(D.events.find(event=>event.time>now+1e-7)?.time??D.duration);
+byId('previous').onclick=()=>seek(D.events.findLast(event=>event.time<now-1e-7)?.time??0);
+byId('node').onchange=event=>{selected=event.target.value;render()};
+byId('zone').onchange=event=>selectZone(event.target.value);
+byId('focus-zone').onclick=()=>{const z=zones.get(selectedZone);globe.yaw=-z.longitude_deg*Math.PI/180;globe.tilt=z.latitude_deg*Math.PI/180;render()};
+for(const id of ['direction','all','relevant','zones'])byId(id).onchange=render;
+byId('focus').onclick=()=>{const p=positions[activePath[0]?.node||ground];globe.yaw=-Math.atan2(p[1],p[0]);globe.tilt=Math.atan2(p[2],Math.hypot(p[0],p[1]));render()};
+seek(10);byId('focus').click();
+</script></html>

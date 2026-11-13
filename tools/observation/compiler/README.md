@@ -27,4 +27,4 @@ An absent backend or empty selection displays no records.
 `instruction_display.py` interprets the built-in instruction ABI solely for
 display; unfamiliar opcodes retain their raw records without invented actions.
 The compiler API and instruction contract are in the
-[module README](../../../new_src/skyseed/pc/compiler/README.md).
+[module README](../../../src/skyseed/pc/compiler/README.md).

@@ -18,11 +18,10 @@ flowchart TD
 From the repository root, in `skyseed_dev`:
 
 ```bash
-python -m tools.observation.scene.inspection --output /tmp/skyseed-scene-view
+python -m tools.observation.scene.inspection --scene path/to/input.scene --output /tmp/skyseed-scene-view
 ```
 
-Open `index.html` offline. Add `--scene path/to/input.scene` for a saved Scene.
-The default contains four orbital planes, 64 satellites and three ground stations.
+Open `index.html` offline. The page displays the supplied Scene.
 
 - **Overview (default):** orbits, satellites and ground stations in one schematic.
   Selecting a group or node highlights it without hiding the rest; “Overview”
@@ -40,8 +39,7 @@ The default contains four orbital planes, 64 satellites and three ground station
 
 `inspection_data(scene)` exports original inputs plus static `geometry` in
 `skyseed.scene-inspection/v2`. `write_inspection(data, output)` writes `scene.json`
-and a self-contained page. The previous optional time-preview API and CLI options
-have been removed; Scene itself and its persistence format are unchanged.
+and a self-contained page.
 
 `inspection.py` owns the CLI/export, `viewer.html` owns selection and presentation.
 Shared `../_presentation/scene_display.py` reads Scene inputs and constructs static

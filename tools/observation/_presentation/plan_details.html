@@ -150,7 +150,7 @@ function selectFile(initial=false) {
   el('download').href = selected.href;
   el('download').textContent = `下载 / Download ${selected.name}`;
   el('archiveStatus').textContent = selected.equivalent ? '保存／恢复一致 / Round trip matches' : '保存／恢复存在差异 / Round trip differs';
-  el('archiveInfo').textContent = `${selected.plans.length} 份计划 · ${(selected.bytes/1024).toFixed(1)} KiB · 写入 ${selected.write_seconds.toFixed(3)} s · 恢复／比较／摘要 ${selected.read_seconds.toFixed(3)} s`;
+  el('archiveInfo').textContent = `${selected.plans.length} 份计划 · ${(selected.bytes/1024).toFixed(1)} KiB · ${selected.existing ? "读取已有存档" : "写入 " + selected.write_seconds.toFixed(3) + " s"} · 恢复／比较／摘要 ${selected.read_seconds.toFixed(3)} s`;
   el('plan').replaceChildren();
   let selectedIndex = 0;
   selected.plans.forEach((item,index) => {

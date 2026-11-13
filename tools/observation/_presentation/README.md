@@ -1,8 +1,7 @@
 # Shared presentation helpers
 
-This private package contains output/HTML mechanics, offline Earth references,
-Shell filtering and spatial display interactions shared by Tools. It owns browser
-presentation only: no Model calls, domain schemas, runtime evidence or lifecycle
-control. Domain readers remain beside the Tool that interprets them.
+This private package contains standalone-page writing, shared globe/style assets,
+Scene input geometry and plan-detail rendering. It performs no Model calls or
+runtime lifecycle control. Tool-specific observations stay beside their reader.
 
-Tool-specific pages and direct demos are listed in the [Tools index](../README.md).
+Tool-specific pages are listed in the [Tools index](../README.md).
