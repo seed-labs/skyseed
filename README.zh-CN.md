@@ -58,19 +58,20 @@ conda activate skyseed_dev
 python scripts/check_dev_environment.py
 ```
 
-脚本会安装两个 checkout 及 Python 依赖。SEED 位于其他位置时，先设置
+脚本会安装两个 checkout、Python 依赖，以及本仓库 `tools/` 中独立的
+`skyseed-tools` 工具包。SEED 位于其他位置时，先设置
 `SEED_EMULATOR_CHECKOUT` 指向其目录。已有仓库从根目录执行最后三条命令。
 移动 checkout 或改变安装元数据后，重新安装当前源码：
 
 ```bash
-python -m pip install --no-deps --no-build-isolation --editable .
+python -m pip install --no-deps --no-build-isolation --editable . --editable ./tools
 ```
 
 源码位于 `src/skyseed`，测试位于 `tests`。实际运行网络需要 Linux、Docker Compose
 及[使用指南](docs/usage.zh-CN.md#运行环境)列出的主机能力；离线规划与查看不会启动容器。
 
 随后可用 [tiny network](examples/tiny_network/README.zh-CN.md) 做短小的 SEED 部署，
-或按 [S4](examples/s4_handover/README.zh-CN.md) 完成规划、可视化和 TCP 换星实验：
+或按 [S4](examples/s4_handover/README.zh-CN.md) 完成规划、可视化和手动换星实验：
 默认循环执行十分钟场景，直到 Ctrl+C 停止。
 启动部署前先准备运行依赖。
 

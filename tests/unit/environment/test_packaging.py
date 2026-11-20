@@ -86,3 +86,36 @@ assert tuple(load_plans('routes.plan'))[0].end_rules == {}
         imported = subprocess.run([sys.executable, "-I", "-c", code, str(wheel)],
                                   cwd=tmp_path, capture_output=True, text=True)
         assert imported.returncode == 0, imported.stdout + imported.stderr
+
+
+def test_repository_tools_wheel_imports_and_contains_view_assets(tmp_path):
+    project = tmp_path / "tools"
+    shutil.copytree(ROOT / "tools", project,
+                    ignore=shutil.ignore_patterns("__pycache__", "*.egg-info", "build"))
+    result = subprocess.run(
+        [sys.executable, "-m", "pip", "wheel", "--no-deps", "--no-build-isolation",
+         "--wheel-dir", str(tmp_path / "wheels"), str(project)],
+        cwd=tmp_path, capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    wheel, = (tmp_path / "wheels").glob("skyseed_tools-*.whl")
+    installed = tmp_path / "installed"
+    result = subprocess.run(
+        [sys.executable, "-m", "pip", "install", "--no-deps", "--no-compile",
+         "--target", str(installed), str(wheel)], capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    code = """
+import sys
+sys.path.insert(0, sys.argv[1])
+import tools
+from tools.deployment.build_images import build_images
+from tools.observation.plan_views import write_scene, save_context
+from importlib.resources import files
+assert tools.__file__.startswith(sys.argv[1])
+assert files('tools.observation.scene').joinpath('viewer.html').is_file()
+assert files('tools.observation._presentation').joinpath('assets/natural_earth_110m_coastline.json').is_file()
+"""
+    result = subprocess.run([sys.executable, "-I", "-c", code, str(installed)],
+                            cwd=tmp_path, capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr

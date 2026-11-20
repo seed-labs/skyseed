@@ -1,12 +1,13 @@
 """Real example adapter: one TCP connection survives a change of serving node."""
 from datetime import timedelta
+from concurrent.futures import ThreadPoolExecutor
 import json
 import subprocess
+import time
 
 from skyseed import Scene, Runner, PlanCompiler, save_plans
 from skyseed.pc.network import ForwardingRule, LogicalExit, RouteDestination, RouteOperation, RoutePlan
-from examples.s4_handover.experiment.ut.attachment import TerminalExperiment
-from examples.s4_handover.experiment.record_store import RecordStore, archive_measurements
+from examples.s4_handover.experiment.ut.attachment import TerminalAttachment
 from tools.observation.execution.inspection import applied_events
 from tests.live.runner.test_kernel_forwarding import deployment, material
 
@@ -57,48 +58,97 @@ def test_original_ip_over_labels_keeps_same_tcp_connection_across_service_change
     scene = Scene(data={"experiment": {"zone": "zone", "ground_station": "c",
                                       "ut_address": "192.0.2.2"}})
     output = tmp_path / "experiment"
-    with RecordStore(output) as store:
-        with Runner(plans, deployed, output=output, store=store) as runner:
-            with TerminalExperiment(scene, deployed, path, output, seconds=8, capture=True) as terminal:
-                runner.run()
-        stored = archive_measurements(store, output)
-        execution = [value for key, value in sorted(stored.items()) if key.startswith("runner/events/")]
-        assert execution == [json.loads(line) for line in (output / "execution.jsonl").read_text().splitlines()]
-        replay = applied_events(plans, execution)
-        assert any(event["time"] > 3 and event["kind"] == "route" for event in replay["events"])
-        assert store.get_user("tcp-client/000000000")["kind"] == "connecting"
+    with Runner(plans, deployed, output=output) as runner:
+        with TerminalAttachment(scene, deployed, path, output) as terminal:
+            configuration = json.loads((output / 'terminal.json').read_text())
+            ground_ip = configuration['ground_ips']['c']
+            with ThreadPoolExecutor(max_workers=1) as worker:
+                running = worker.submit(runner.run)
+                capture = None
 
-    client = [json.loads(line) for line in (output / "tcp-client.jsonl").read_text().splitlines()]
-    server = [json.loads(line) for line in (output / "tcp-server.jsonl").read_text().splitlines()]
+                def wait_for_service(node):
+                    state = output / 'attachment-state.json'
+                    while not state.exists() or json.loads(state.read_text())['node'] != node:
+                        if running.done():
+                            running.result()
+                            raise AssertionError(f'run finished without attachment to {node}')
+                        time.sleep(.01)
+
+                try:
+                    wait_for_service('a')
+                    # Capture belongs to the test too, not to the UT adapter.
+                    capture_code = '''
+import json, socket, struct, time
+frames = []
+with socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(3)) as s:
+    s.settimeout(.2)
+    print('ready', flush=True)
+    end = time.monotonic() + 8
+    while time.monotonic() < end:
+        try:
+            packet = s.recv(65535)
+        except TimeoutError:
+            continue
+        if len(packet) < 42 or packet[12:14] != b'\\x88\\x47':
+            continue
+        ip = packet[18:]
+        if ip[0] >> 4 != 4:
+            continue
+        offset = (ip[0] & 15) * 4
+        frames.append([socket.inet_ntoa(ip[12:16]), socket.inet_ntoa(ip[16:20]),
+                       ip[9], list(struct.unpack('!HH', ip[offset:offset+4]))])
+print(json.dumps(frames), flush=True)
+'''
+                    capture = subprocess.Popen(['docker', 'exec', configuration['containers']['c'],
+                                                'python3', '-u', '-c', capture_code],
+                                               stdout=subprocess.PIPE, text=True)
+                    assert capture.stdout.readline().strip() == 'ready'
+                    # Traffic belongs to this test, just as nc belongs to the user.
+                    server_code = (
+                        "import socket,sys; s=socket.socket(); s.settimeout(10); "
+                        "s.bind((sys.argv[1],9090)); s.listen(); print('ready',flush=True); "
+                        "c,_=s.accept(); c.settimeout(10); f=c.makefile('rwb',buffering=0); "
+                        "exec('for line in f:\\n f.write(line)'); c.close(); s.close()")
+                    client_code = (
+                        "import socket,sys; s=socket.create_connection((sys.argv[1],9090),5); "
+                        "print(s.getsockname()[0],flush=True); f=s.makefile('rwb',buffering=0); "
+                        "exec('for line in sys.stdin:\\n f.write(line.encode())\\n print(f.readline().decode().strip(),flush=True)'); "
+                        "s.close()")
+                    with subprocess.Popen(['docker', 'exec', configuration['containers']['c'],
+                                           'python3', '-u', '-c', server_code, ground_ip],
+                                          stdout=subprocess.PIPE, text=True) as server:
+                        assert server.stdout.readline().strip() == 'ready'
+                        with subprocess.Popen(['docker', 'exec', '-i', terminal.name, 'python3', '-u',
+                                               '-c', client_code, ground_ip], stdin=subprocess.PIPE,
+                                              stdout=subprocess.PIPE, text=True) as client:
+                            assert client.stdout.readline().strip() == '192.0.2.2'
+                            for node in ('a', 'b'):
+                                wait_for_service(node)
+                                client.stdin.write(node + '\n')
+                                client.stdin.flush()
+                                assert client.stdout.readline().strip() == node
+                        assert client.returncode == 0
+                    assert server.returncode == 0
+                    running.result()
+                finally:
+                    runner.stop()
+                    if capture is not None:
+                        captured, _ = capture.communicate()
+
+    assert capture.returncode == 0
+    packets = json.loads(captured)
+    assert any('192.0.2.2' in packet[:2] and 9090 in packet[3] for packet in packets)
+    assert all(packet[2] != 4 for packet in packets)  # No IP-in-IP inside MPLS.
+
+    execution = [json.loads(line) for line in (output / 'execution.jsonl').read_text().splitlines()]
+    replay = applied_events(plans, execution)
+    assert any(event['time'] > 3 and event['kind'] == 'route' for event in replay['events'])
     attachments = [json.loads(line) for line in (output / "attachment.jsonl").read_text().splitlines()]
-    processes = next(event for event in attachments if event["kind"] == "processes")
-    assert processes["exit_codes"] == [0, 0]
-    first_attachment = next(event for event in attachments if event["kind"] == "attachment")
-    first_connect = next(event for event in client if event["kind"] == "connecting")
-    assert first_connect["monotonic"] >= first_attachment["monotonic"]
-    handover = next(event["monotonic"] for event in attachments if event.get("node") == "b")
-    configuration = json.loads((output / "terminal.json").read_text())
+    assert [event['node'] for event in attachments if event['kind'] == 'attachment'] == ['a', 'b']
     assert False in configuration["changes"][change.isoformat() + "|a"]
-    assert sum(event["kind"] == "accepted" for event in server) == 1
-    assert sum(event["kind"] == "connected" for event in client) == 1
-    assert not [event for event in client if event["kind"] == "error"]
-    assert any(event["kind"] == "echo" and event["monotonic"] < handover for event in client)
-    assert any(event["kind"] == "echo" and event["monotonic"] > handover + 1 for event in client)
-    connected = next(event for event in client if event["kind"] == "connected")
-    assert connected["local"][0] == "192.0.2.2"
-    assert connected["peer"][0] == configuration["ground_ip"]
-    # Check the actual wire format, not just the absence of a tunnel in code.
-    for side in ("ut", "gs"):
-        encapsulated = subprocess.check_output(
-            ["tcpdump", "-n", "-r", str(output / f"{side}.pcap"), "ip proto 4"],
-            text=True, stderr=subprocess.DEVNULL)
-        assert not encapsulated.strip()
-    labeled = subprocess.check_output(
-        ["tcpdump", "-nn", "-r", str(output / "gs.pcap")],
-        text=True, stderr=subprocess.DEVNULL)
-    packets = [line for line in labeled.splitlines() if "MPLS" in line]
-    assert any("192.0.2.2" in line and ".2323" in line for line in packets)
-    assert all(line.count(" IP ") == 1 for line in packets)
+    assert next(event['errors'] for event in attachments if event['kind'] == 'cleanup') == []
+    assert not (output / 'tcp-client.jsonl').exists()
+    assert not (output / 'ut.pcap').exists()
     for name, container in deployed.containers().items():
         links = json.loads(subprocess.check_output(
             ["docker", "exec", container["Id"], "ip", "-j", "link", "show"], text=True))

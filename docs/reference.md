@@ -62,7 +62,7 @@ Names below illustrate the S4 output layout; core save APIs accept caller paths.
 | `plans/physical/*.plan` | Backend targets and timed instructions | Run against a matching deployment |
 | `observations/plans.json` | Sampled drawing data and optional model decisions | Render plans without models |
 | `views/` | Generated standalone pages | Open offline |
-| `runs/<run>/` | Frozen inputs, actual execution and example measurements | Analyze that run |
+| `runs/<run>/` | Execution receipts, UT attachment state and diagnostic logs | Analyze that run |
 
 Physical **snapshots** are model results; Physical**Plans** are compiled instructions.
 Store shares live state; exported JSON/JSONL retains offline records. Field-level

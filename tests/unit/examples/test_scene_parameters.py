@@ -52,7 +52,7 @@ def test_preset_matches_reviewed_filing_within_published_precision(name, element
 
 
 def test_s4_example_keeps_nodes_groups_endpoints_and_metadata(tmp_path):
-    scene = build_scene()
+    scene = build_scene(("S4",))
     assert len(scene.get_satellites()) == 348
     assert len(scene.get_ground_stations()) == 32
     assert len(scene.endpoints) == 732

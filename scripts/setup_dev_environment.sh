@@ -48,7 +48,7 @@ echo "Installing SEED from $SEED_EMULATOR_ROOT"
 "$CONDA_COMMAND" run "${ENVIRONMENT_ARGS[@]}" \
     python -m pip install --editable "$SEED_EMULATOR_ROOT"
 "$CONDA_COMMAND" run "${ENVIRONMENT_ARGS[@]}" \
-    python -m pip install --editable '.[test]'
+    python -m pip install --editable '.[test]' --editable ./tools
 
 "$CONDA_COMMAND" run "${ENVIRONMENT_ARGS[@]}" python -m pip --version
 "$CONDA_COMMAND" run "${ENVIRONMENT_ARGS[@]}" python scripts/check_dev_environment.py

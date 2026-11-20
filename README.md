@@ -61,13 +61,14 @@ conda activate skyseed_dev
 python scripts/check_dev_environment.py
 ```
 
-The setup script installs both checkouts and the Python dependencies. If SEED is
+The setup script installs both checkouts, Python dependencies and the optional
+`skyseed-tools` package from this checkout’s `tools/` directory. If SEED is
 elsewhere, set `SEED_EMULATOR_CHECKOUT` to its directory before running the script.
 For an existing clone, run the last three commands from its root. After moving a checkout or changing installation
 metadata, reinstall it with:
 
 ```bash
-python -m pip install --no-deps --no-build-isolation --editable .
+python -m pip install --no-deps --no-build-isolation --editable . --editable ./tools
 ```
 
 The source is `src/skyseed`; tests are under `tests`. Actual network execution
@@ -77,7 +78,7 @@ not start containers.
 
 Then follow the [tiny network](examples/tiny_network/README.md) for a short SEED
 deployment, or [S4](examples/s4_handover/README.md) for planning, visualization and
-a TCP handover experiment that repeats a ten-minute scenario until Ctrl+C.
+a manual handover experiment that repeats a ten-minute scenario until Ctrl+C.
 Prepare the runtime dependencies before starting either deployment.
 
 Repository documentation covers the implemented interfaces and their use. Research

@@ -11,5 +11,6 @@
 build/
 dist/
 src/*.egg-info/
+tools/*.egg-info/
 examples/*/output*/
 .pytest_cache/

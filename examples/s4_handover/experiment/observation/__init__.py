@@ -1,1 +1,1 @@
-"""Export self-contained pages from plans and runtime observations."""
+"""Navigation for the example's offline plan views."""

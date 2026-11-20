@@ -4,7 +4,9 @@
 
 复用现有 `skyseed_dev` 环境，需要新环境时按[安装说明](../README.zh-CN.md#安装)配置。
 `pyproject.toml` 只从 `src` 发现包，默认收集 `tests`。
-示例正常导入安装的 `skyseed`，不自行修改 Python 搜索路径。
+示例正常导入安装的 `skyseed`，不自行修改 Python 搜索路径。开发安装脚本还将 `tools/`
+作为独立的 `skyseed-tools` 可编辑安装；已有环境更新时执行一次
+`python -m pip install -e ./tools`。
 
 ## 开发脚本与结果工具
 

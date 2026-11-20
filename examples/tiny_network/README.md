@@ -22,12 +22,11 @@ provides the client–GS path and return route.
 ## Build and start
 
 With [SkySEED installed](../../README.md#installation) and Docker Compose available,
-run from the repository root:
+run from the repository root in the configured development environment:
 
 ```bash
-conda activate skyseed_dev
 python examples/tiny_network/emulator.py
-python -m tools.deployment.build_images examples/tiny_network/output
+python tools/deployment/build_images.py examples/tiny_network/output
 cd examples/tiny_network/output
 docker compose -f docker-compose.runtime.yml -p skyseed-tiny up -d
 ```
@@ -65,7 +64,7 @@ before starting another copy with the same fixed names and addresses.
 ## Reuse a saved Scene
 
 The default example passes `build_scene()` directly to Emu. To save and reload it
-instead, run from the repository root:
+instead, run from the repository root in the configured development environment:
 
 ```bash
 python examples/tiny_network/scene.py examples/tiny_network/tiny.scene

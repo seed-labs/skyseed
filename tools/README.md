@@ -12,6 +12,15 @@
   entry and S4 runtime queries; setup below.
 
 Tools are optional repository utilities, separate from the `skyseed` package.
+The development setup installs them as the editable `skyseed-tools` distribution,
+so examples can import them from any working directory. When updating an existing
+environment, run once from the repository root:
+
+```bash
+python -m pip install -e ./tools
+```
+
+This does not add Tools to the core wheel or change Python paths in examples.
 
 ## Shell shortcuts
 

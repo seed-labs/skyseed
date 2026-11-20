@@ -19,11 +19,11 @@ LAN 的 `.1` 是 Docker bridge 网关，Edge 与 G1 的私有 eBGP 提供 Client
 
 ## 构建与启动
 
-完成[安装](../../README.zh-CN.md#安装)，准备 Docker Compose 后，从仓库根目录执行：
+完成[安装](../../README.zh-CN.md#安装)，准备 Docker Compose 后，在已配置的开发环境中从仓库根目录执行：
 
 ```bash
 python examples/tiny_network/emulator.py
-python -m tools.deployment.build_images examples/tiny_network/output
+python tools/deployment/build_images.py examples/tiny_network/output
 cd examples/tiny_network/output
 docker compose -f docker-compose.runtime.yml -p skyseed-tiny up -d
 ```

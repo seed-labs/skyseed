@@ -5,7 +5,9 @@
 Use the existing `skyseed_dev` environment. [Installation](../README.md#installation)
 sets up a new environment when needed. `pyproject.toml` selects `src` as the only
 package root and `tests` for default collection. Examples import the installed
-`skyseed` package without editing Python's search path.
+`skyseed` package without editing Python's search path. The setup script also
+installs `tools/` as a separate editable `skyseed-tools` package; update it with
+`python -m pip install -e ./tools` when upgrading an existing environment.
 
 ## Development scripts and result tools
 

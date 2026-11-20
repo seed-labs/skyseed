@@ -1,4 +1,4 @@
-"""Short real BPF run: three GS, retained sockets, loop reset and SIGINT cleanup."""
+"""Short real BPF run: three GS, retained containers, loop reset and SIGINT cleanup."""
 from datetime import datetime, timedelta, timezone
 import json
 import os
@@ -13,7 +13,7 @@ from skyseed import Scene, Runner, PlanCompiler, save_plans
 from skyseed.pc.network import ForwardingRule, LogicalExit, RouteDestination, RouteOperation, RoutePlan
 from skyseed.pc.link import ConnectionCandidate, LinkConfiguration, LinkProperties, LinkPlan, LinkOperation
 from skyseed.pc.physical import LinkCandidate
-from examples.s4_handover.experiment.ut import TerminalExperiment
+from examples.s4_handover.experiment.ut import TerminalAttachment
 from examples.s4_handover.experiment.repetition import RepeatedPlans
 from examples.s4_handover.experiment.console import RunConsole
 from tools.observation.execution.inspection import applied_events
@@ -61,10 +61,10 @@ def test_three_ground_stations_repeat_and_interrupt(deployment, tmp_path):
     scene = Scene(data={'experiment': {'zone': 'z', 'ut_address': '192.0.2.2'}})
     console = RunConsole(tmp_path, run, {'simulated_seconds': 3, 'perturbation': {'start_seconds': 2, 'end_seconds': 3}})
     with Runner(repetition.iterate(), deployed, output=run) as runner:
-        with TerminalExperiment(scene, deployed, path, run, seconds=None,
+        with TerminalAttachment(scene, deployed, path, run,
                                 ground_stations=('g', 'h', 'i'), repetition=repetition) as terminal:
             # Exercise each GS -> UT and UT -> GS reply on real TCP. This socket
-            # setup belongs to this test; the manual example only runs one echo.
+            # setup belongs to this test; the example starts no application.
             server = subprocess.Popen(['docker', 'exec', terminal.name, 'python3', '-u', '-c',
                 "import socket; s=socket.socket(); s.bind(('192.0.2.2',2424)); s.listen(); print('ready',flush=True); "
                 "exec('while True:\\n c,a=s.accept()\\n with c: c.sendall(c.recv(100))')"], stdout=subprocess.PIPE, text=True)
@@ -108,8 +108,5 @@ def test_three_ground_stations_repeat_and_interrupt(deployment, tmp_path):
     attachment = [json.loads(line) for line in (run / 'attachment.jsonl').read_text().splitlines()]
     assert [event['node'] for event in attachment if event['kind'] == 'attachment'] == ['a', 'b', 'a', 'b', 'a', 'b']
     assert next(event['errors'] for event in attachment if event['kind'] == 'cleanup') == []
-    client = [json.loads(line) for line in (run / 'tcp-client.jsonl').read_text().splitlines()]
-    assert sum(event['kind'] == 'connected' for event in client) == 1
-    assert any(event['kind'] == 'echo' for event in client if event['monotonic'] > runner.origin + 6)
-    assert not any(event['kind'] == 'error' for event in client)
+    assert not (run / 'tcp-client.jsonl').exists()
     assert not subprocess.check_output(['docker', 'ps', '-aq', '--filter', 'name=^/' + terminal.name + '(-helper)?$'], text=True).strip()

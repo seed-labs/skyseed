@@ -22,7 +22,7 @@ files to assign stable targets. Runner then resolves this run's actual resources
 
 [The tiny network](../examples/tiny_network/README.md) demonstrates Scene and SEED
 construction. [S4](../examples/s4_handover/README.md) has separate `scene.py`, `emu.py`,
-`simu.py`, `view.py` and `run.py`. Its UT, outage and measurements are explicit example
+`simu.py`, `view.py` and `run.py`. Its UT attachment and outage are explicit example
 extensions. Read that configuration before starting the full experiment.
 
 ## Generate and save plans
@@ -116,8 +116,7 @@ with deployment:
 ```
 
 Build deployment images first. Here etcd is already running; the application owns
-its startup and shutdown. S4's `emu.py` builds images and `run.py` manages an
-experiment-local etcd through its helper. `with` is Python's resource context:
+its startup and shutdown. S4's `emu.py` builds images; its manual `run.py` omits Store and needs no etcd. `with` is Python's resource context:
 Deployment starts/stops Compose; Runner prepares/releases its execution resources.
 When finite input finishes naturally, `run()` returns after planned work and
 delayed tails have drained. Calling `Runner.stop()` instead records `stopped`;
@@ -150,8 +149,7 @@ sudo apt install clang linux-libc-dev libbpf1 iproute2 tcpdump
 ```
 
 `clang` and the Linux headers compile the BPF program; `libbpf1` loads it.
-`iproute2` supplies network tools, and the S4 UT helper uses the host's `tcpdump`
-for packet capture. If these host libraries/tools are already installed but
+`iproute2` supplies network tools; `tcpdump` is useful for manual packet inspection. If these host libraries/tools are already installed but
 clang is missing, `conda install -c conda-forge clang` in the active environment
 provides the compiler without changing the host installation.
 Before building the full example, check compilation without deploying anything:
@@ -161,8 +159,7 @@ python -c 'from skyseed.pc.compiler.bpf.compile_program import compile_label_pro
 ```
 
 Initial image builds need network access to the SEED image registry and package
-repositories. Later builds can reuse Docker's cache. S4 also downloads its etcd
-image on first use; it does not require an existing etcd service.
+repositories. Later builds can reuse Docker's cache.
 
 - Linux with veth, namespaces and TC/netem; permission to run privileged Docker
   containers and Docker Compose.
@@ -170,9 +167,8 @@ image on first use; it does not require an existing etcd service.
   headers and libbpf. Runner compiles the packaged program before timed execution.
 - SEED nodes provide their normal tools/software. `all.rp_filter` must be disabled
   by the node setup for BPF local injection. See [Runner](../src/skyseed/runner/README.md).
-- A running etcd v3 endpoint for Store. S4's helper starts the
-  `quay.io/coreos/etcd:v3.6.5` container on a random localhost port and stops it
-  after archiving records.
+- If using Store, provide a running etcd v3 endpoint. The manual S4 example uses
+  local execution records instead.
 
 The included full example precomputes before running. The interfaces also accept
 successive finite requests and plan batches; that is not a built-in multi-machine

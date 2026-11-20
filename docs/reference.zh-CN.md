@@ -59,7 +59,7 @@ Compiler 和执行器支持，任意 `data` 字段不会自动改变报文处理
 | `plans/physical/*.plan` | 后端目标和定时指令 | 在匹配部署上执行 |
 | `observations/plans.json` | 绘图采样及可选模型决策 | 无模型实例也能生成页面 |
 | `views/` | 自包含页面 | 离线打开 |
-| `runs/<run>/` | 冻结输入、实际执行及示例测量 | 分析这一次运行 |
+| `runs/<run>/` | 执行回执、UT 接入状态及诊断日志 | 分析这一次运行 |
 
 Physical 的位置**快照**是模型结果，Physical**Plan** 是编译指令。
 Store 共享运行状态，导出的 JSON／JSONL 保留离线记录。

@@ -13,5 +13,5 @@ skyseed() {
 }
 
 # S4 manual example queries; no Docker scan or container mutation.
-skytime() { (cd "$_skyseed_tools_root" && python -m examples.s4_handover.experiment.console); }
-skynodes() { (cd "$_skyseed_tools_root" && python -m examples.s4_handover.experiment.console nodes); }
+skytime() { python "$_skyseed_tools_root/examples/s4_handover/experiment/console.py"; }
+skynodes() { python "$_skyseed_tools_root/examples/s4_handover/experiment/console.py" nodes; }

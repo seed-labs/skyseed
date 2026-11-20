@@ -31,14 +31,11 @@ class EdgeSocket(RouteSocket):
         self.request(33 if delete else 32, payload, flags=0 if delete else 0x600)
 
 
-class TerminalExperiment:
+class TerminalAttachment:
     """Parent owns the UT container and one observer/attachment process."""
-    def __init__(self, scene, deployment, plans, output, *, seconds, capture=False,
-                 ground_stations=None, repetition=None):
+    def __init__(self, scene, deployment, plans, output, *, ground_stations=None, repetition=None):
         self.scene, self.deployment, self.plans = scene, deployment, plans
         self.output = Path(output).resolve()
-        self.seconds = seconds
-        self.capture = capture
         self.grounds = ground_stations
         self.repetition = repetition
         self.name = "skyseed-ut-" + uuid.uuid4().hex[:10]
@@ -51,7 +48,7 @@ class TerminalExperiment:
         zone = experiment["zone"]
         grounds = tuple(self.grounds) if self.grounds is not None else (experiment["ground_station"],)
         ground = grounds[0]
-        targets, changes, prefix = {}, {}, None
+        targets, changes = {}, {}
         serving_nodes = set()
         first_route = True
         plans = load_plans(self.plans) if self.repetition is None else self.repetition.iterate(cycles=2)
@@ -69,7 +66,6 @@ class TerminalExperiment:
                     key = operation.timestamp.isoformat() + "|" + operation.target
                     changed = None
                     if value["destination"] == ("endpoint", zone):
-                        prefix = value["prefix"]
                         if value["match"][0] == "label":
                             changed = value["kind"] != "withdraw" and value["action"] == "pop_deliver"
                             if value["action"] == "pop_deliver":
@@ -80,10 +76,15 @@ class TerminalExperiment:
         # A retained local label may change from pop to swap at handover.
         # That replacement also removes this node's local delivery permission.
         changes = {key: value for key, value in changes.items() if key.split("|", 1)[1] in serving_nodes}
-        if prefix is None:
-            raise ValueError("the fixed UT zone has no compiled destination in this experiment")
-        containers = self.deployment.containers()
-        image = containers[targets[ground]["service"]]["Config"]["Image"]
+        if not serving_nodes:
+            print(f"UT zone {zone}: no serving satellite in saved plans; UT will remain unattached.", flush=True)
+        # Deployed GS can be absent from plans when they have no satellite links.
+        containers = {}
+        for container in self.deployment.containers().values():
+            identity = container["Config"]["Labels"].get("org.seedsecuritylabs.seedemu.meta.skyseed.scene_id")
+            if identity is not None:
+                containers[identity] = container
+        image = containers[ground]["Config"]["Image"]
         try:
             self.container = subprocess.run([
                 "docker", "run", "-d", "--init", "--name", self.name,
@@ -93,16 +94,15 @@ class TerminalExperiment:
             ut = json.loads(subprocess.run(["docker", "inspect", self.container], check=True,
                                           capture_output=True, text=True).stdout)[0]
             relevant = {key.split("|", 1)[1] for key in changes} | set(grounds)
-            config = {"ground": ground, "zone": zone, "zone_ip": prefix.split("/")[0],
-                      "ground_ip": targets[ground]["identity_address"].split("/")[0],
+            config = {"zone": zone,
                       "ut_address": experiment["ut_address"],
-                      "ut_pid": ut["State"]["Pid"], "changes": changes, "seconds": self.seconds,
-                      "capture": self.capture, "ut_container": self.name,
-                      "ground_ips": {node: targets[node]["identity_address"].split("/")[0] for node in grounds},
-                      "containers": {node: containers[targets[node]["service"]]["Name"].lstrip("/") for node in relevant},
+                      "ut_pid": ut["State"]["Pid"], "changes": changes, "ut_container": self.name,
+                      "ground_ips": {node: targets[node]["identity_address"].split("/")[0]
+                                     for node in grounds if node in targets},
+                      "containers": {node: containers[node]["Name"].lstrip("/") for node in relevant},
                       "period_seconds": None if self.repetition is None else self.repetition.seconds,
                       "start_time": None if self.repetition is None else self.repetition.start.isoformat(),
-                      "nodes": {node: containers[targets[node]["service"]]["State"]["Pid"] for node in relevant},
+                      "nodes": {node: containers[node]["State"]["Pid"] for node in serving_nodes},
                       "output": str(self.output)}
             path = self.output / "terminal.json"
             path.write_text(json.dumps(config, indent=2) + "\n")
@@ -142,7 +142,7 @@ class TerminalExperiment:
         if self.diagnostics:
             self.diagnostics.close()
         if status and not cancel:
-            raise RuntimeError(f"terminal experiment failed ({status}); inspect {self.output / 'terminal-helper.log'}")
+            raise RuntimeError(f"terminal attachment failed ({status}); inspect {self.output / 'terminal-helper.log'}")
 
     def __exit__(self, kind, error, traceback):
         try:
@@ -161,12 +161,7 @@ class Attachment:
         self.output = Path(config["output"])
         self.original = os.open("/proc/self/ns/net", os.O_RDONLY)
         self.nodes = {}
-        self.children = []
-        self.captures = []
-        self.files = []
         self.current = None
-        self.clock = None
-        self.client_started = False
         self.stopped = False
         self.log = (self.output / "attachment.jsonl").open("x")
         signal.signal(signal.SIGTERM, self.stop)
@@ -186,7 +181,6 @@ class Attachment:
 
     def prepare(self):
         terminal = self.config["ut_address"]
-        ground = self.config["ground_ip"]
         for identity, node in self.nodes.items():
             channel = node["socket"]
             if identity == "ut":
@@ -197,17 +191,12 @@ class Attachment:
                 channel.set_link(index, up=True)
                 for address in self.config["ground_ips"].values():
                     channel.route(address + "/32", protocol=252)
-            elif identity not in self.config["ground_ips"]:
+            else:
                 # Before attachment (or after detach), do not fall through to
                 # an unrelated default route for the terminal's address.
                 channel.route(terminal + "/32", protocol=252)
-        self.record("prepared", zone=self.config["zone_ip"], ground=ground,
-                    ut_address=terminal, encapsulation="none")
-        if self.config["capture"]:
-            for node, name in (("ut", "ut"), (self.config["ground"], "gs")):
-                self.launch(node, ["tcpdump", "-i", "any", "-n", "-U", "-w",
-                                   str(self.output / f"{name}.pcap")], f"{name}-capture.log")
-                self.captures.append(self.children.pop())
+        (self.output / "attachment-state.json").write_text(json.dumps({"node": None}) + "\n")
+        self.record("prepared", zone=self.config["zone"], ut_address=terminal)
 
     def attach(self, node, *, activated):
         if node == self.current:
@@ -245,41 +234,6 @@ class Attachment:
         state_file = self.output / "attachment-state.tmp"
         state_file.write_text(json.dumps({"node": node}))
         state_file.replace(self.output / "attachment-state.json")
-        if node is not None and self.clock is not None:
-            self.start_client()
-
-    def launch(self, node, command, name):
-        output = (self.output / name).open("x")
-        self.files.append(output)
-        _setns(self.nodes[node]["namespace"])
-        try:
-            process = subprocess.Popen(command, stdout=output, stderr=subprocess.STDOUT)
-        finally:
-            _setns(self.original)
-        self.children.append(process)
-
-    def traffic(self):
-        seconds = self.config["seconds"]
-        script = str(Path(__file__).with_name("traffic.py"))
-        self.launch(self.config["ground"], [sys.executable, script, "server", self.config["ground_ip"], str(None if seconds is None else seconds + 5),
-                                           str(self.output / "tcp-server.jsonl")], "tcp-server.log")
-        # Wait for the listening fact, not an assumed startup delay.
-        server = self.output / "tcp-server.jsonl"
-        while not server.exists() or not server.stat().st_size:
-            if self.children[0].poll() is not None:
-                raise RuntimeError("TCP server failed before listening")
-            time.sleep(.01)
-        self.record("traffic", wall_offset=time.time() - time.monotonic())
-
-    def start_client(self):
-        if self.client_started:
-            return
-        seconds = self.config["seconds"]
-        remaining = None if seconds is None else self.clock + seconds - time.monotonic()
-        script = str(Path(__file__).with_name("traffic.py"))
-        self.launch("ut", [sys.executable, script, "client", self.config["ground_ip"], str(remaining),
-                           str(self.output / "tcp-client.jsonl")], "tcp-client.log")
-        self.client_started = True
 
     def adopted_service(self, event, active):
         newest = None
@@ -323,17 +277,15 @@ class Attachment:
         self.record("watching")
         with (self.output / "execution.jsonl").open() as stream:
             while not self.stopped:
+                position = stream.tell()
                 line = stream.readline()
-                if not line:
+                if not line.endswith("\n"):
+                    # The writer may still be appending this receipt.
+                    stream.seek(position)
                     time.sleep(.01)
                     continue
                 event = json.loads(line)
-                if event["kind"] == "clock":
-                    self.clock = event["origin"]
-                    self.traffic()
-                    if self.current is not None:
-                        self.start_client()
-                elif event["kind"] == "route":
+                if event["kind"] == "route":
                     chosen = self.adopted_service(event, active)
                     self.attach(chosen, activated=event["activated"])
                 elif event["kind"] in ("drained", "stopped"):
@@ -341,17 +293,6 @@ class Attachment:
                     break
 
     def close(self):
-        # Stop the client before closing its peer, so a deliberate interruption
-        # cannot be observed as an unexpected EOF/network error by that client.
-        for child in reversed(self.children):
-            if self.stopped and child.poll() is None:
-                child.terminate()
-            child.wait()
-        self.record("processes", exit_codes=[child.returncode for child in self.children])
-        for capture in self.captures:
-            if capture.poll() is None:
-                capture.send_signal(signal.SIGINT)
-            capture.wait()
         errors = []
 
         def remove(operation, *args, **kwargs):
@@ -365,7 +306,7 @@ class Attachment:
         # owned resource is removed independently, including a partial veth.
         for identity, node in self.nodes.items():
             channel = node["socket"]
-            if identity != "ut" and identity not in self.config["ground_ips"]:
+            if identity != "ut":
                 for address in self.config["ground_ips"].values():
                     remove(channel.ingress, address, delete=True)
                 try:
@@ -375,18 +316,15 @@ class Attachment:
                         errors.append(error)
                 else:
                     remove(channel.delete_link, edge)
-            if identity not in self.config["ground_ips"]:
-                addresses = self.config["ground_ips"].values() if identity == "ut" else (self.config["ut_address"],)
-                for address in addresses:
-                    remove(channel.route, address + "/32", protocol=252, delete=True)
+            addresses = self.config["ground_ips"].values() if identity == "ut" else (self.config["ut_address"],)
+            for address in addresses:
+                remove(channel.route, address + "/32", protocol=252, delete=True)
             if "identity" in node:
                 remove(channel.delete_link, node["identity"])
             channel.close()
             os.close(node["namespace"])
         self.record("cleanup", previous=self.current, errors=[str(error) for error in errors])
         os.close(self.original)
-        for output in self.files:
-            output.close()
         self.log.close()
         if errors:
             raise ExceptionGroup("UT attachment cleanup failed", errors)

@@ -9,6 +9,15 @@
 
 Tools 是可选仓库工具，与安装的 `skyseed` 包分开。
 
+开发安装脚本会将本目录作为独立的 `skyseed-tools` 可编辑安装，使示例在任意工作目录
+都能导入工具。已有环境更新后，在仓库根目录执行一次：
+
+```bash
+python -m pip install -e ./tools
+```
+
+Tools 不进入核心 wheel，示例也不需要自行修改 Python 搜索路径。
+
 ## 快捷命令
 
 完成[安装](../README.zh-CN.md#安装)后，在仓库根目录的 Bash 中加载脚本。

@@ -13,7 +13,7 @@
 | `unit/compiler` | Stable targets, two-stream lowering, label C program/ABI, IP fallback intents and physical files |
 | `unit/environment` | Installed source selection, mixed-source rejection, clean wheel contents and development scripts |
 | `unit/runner` | Scheduling, plan merging, resource cleanup and BPF version ownership |
-| `unit/examples` | UT routing/cleanup, regional outage and measurement records |
+| `unit/examples` | UT routing/attachment/cleanup, regional outage and plan repetition |
 | `unit/tools` | Saved-plan views and actual-execution replay |
 | `connections` | Scene → real SEED objects → saved description and deployment files; services, routing software and examples |
 | `integration` | Scene → Emu deployment + P&C → saved/restored logical plans → BPF/Linux physical plans; independent requests, lookahead, segmented equivalence and delivery tails |
@@ -36,3 +36,5 @@ Run affected modules and direct consumers; broaden checks for shared-contract
 changes. Add regression tests for concrete failures, with expectations that can
 catch a wrong result independently of the implementation.
 See [development commands](../docs/development.md).
+
+UT receipt following also covers partially appended JSONL records.

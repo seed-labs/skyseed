@@ -1,2 +1,2 @@
-"""Example-only terminal attachment and measurements."""
-from .attachment import TerminalExperiment
+"""Example-only terminal attachment."""
+from .attachment import TerminalAttachment

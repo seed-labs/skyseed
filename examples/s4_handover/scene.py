@@ -1,4 +1,4 @@
-"""Generate S4 from shell parameters, select real GS sites and create zones."""
+"""Generate selected shells, real GS sites and geographic zones."""
 from datetime import datetime
 from pathlib import Path
 
@@ -6,23 +6,30 @@ import yaml
 from skyseed import Scene
 
 
+# Select presets here; the rest of the example consumes the saved Scene.
+SHELLS = ("S4",)                  # e.g. ("S5",) or ("S1", "S2", "S3")
+
 # Fixed geographic selection, made before calculating coverage or paths.
 STATIONS = {
     "North America": ["Redmond", "Cabo San Lucas", "Iqaluit", "Sambro Creek", "Virginia Beach"],
     "South America": ["Punta Arenas", "Manaus", "Lima", "Bogota", "Porto Alegre"],
     "Europe": ["Goonhilly", "Frankfurt", "Kaunas", "Ibi", "Marsala",
-               "Woodwalton", "Hoofddorf", "Aerzen", "Milano"],
+               "Woodwalton", "Hoofddorp", "Aerzen", "Milano"],
     "Africa": ["Lekki"],
     "Asia": ["Akita", "Otaru", "Hitachinaka", "Yamaguchi",
              "Singapore", "Cikarang Barat", "Kendari"],
     "Oceania": ["Cataby", "Awarua", "Toonpan", "Broken Hill", "Suva"],
 }
 
+# Keep the source dataset's spelling separate from the displayed site name.
+SOURCE_NAMES = {"Hoofddorp": "Hoofddorf"}
 
-def build_scene():
+
+def build_scene(shells=SHELLS):
     data = Path(__file__).resolve().parents[2] / "data/starlink"
-    s4 = yaml.safe_load((data / "shells.yaml").read_text())["shells"]["S4"]
-    stations = yaml.safe_load((data / "ground_stations.yaml").read_text())["ground_stations"]
+    presets = yaml.safe_load((data / "shells.yaml").read_text())["shells"]
+    station_file = data / "ground_stations.yaml"
+    stations = yaml.safe_load(station_file.read_text())["ground_stations"]
 
     # This example's fixed traffic endpoints; models and UT read this metadata.
     scene = Scene(data={"experiment": {
@@ -33,21 +40,19 @@ def build_scene():
         "ground_station_source": "data/starlink/ground_stations.yaml, frozen 2026-08-25",
     }})
     scene.create_constellation("Starlink")
-    # A preset supplies ordinary construction parameters, not satellite records.
-    # For a custom shell, change its name and e.g. satellites_per_plane to 60.
-    scene.create_shell(
-        "S4", constellation="Starlink",
-        planes=s4["planes"], satellites_per_plane=s4["satellites_per_plane"],
-        altitude_km=s4["altitude_km"], inclination_deg=s4["inclination_deg"],
-        epoch=datetime.fromisoformat(s4["epoch_utc"]),
-        raan_start_deg=s4["raan_start_deg"], phase_factor=s4["phase_factor"],
-        id_prefix=s4["id_prefix"], first_orbit=s4["first_orbit"],
-    )
+    for name in shells:
+        settings = dict(presets[name])
+        settings["epoch"] = datetime.fromisoformat(settings.pop("epoch_utc"))
+        scene.create_shell(name, constellation="Starlink", **settings)
 
     for region, names in STATIONS.items():
         group = scene.create_ground_station_group(region)
         for name in names:
-            matches = [station for station in stations if station["display_name"].startswith(f"Starlink Gateway - {name},")]
+            source_name = SOURCE_NAMES.get(name, name)
+            matches = [station for station in stations if station["display_name"].startswith(f"Starlink Gateway - {source_name},")]
+            if len(matches) != 1:
+                raise ValueError(f"GS {name!r} in {region!r}: expected one match for {source_name!r} "
+                                 f"in {station_file}, found {len(matches)}")
             station, = matches
             scene.create_ground_station(name, node_id=station["ground_station_id"], group=group.group_id,
                                          latitude_deg=station["latitude_deg"],

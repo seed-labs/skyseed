@@ -21,7 +21,7 @@ Scene 可独立于 Emulator 和 P&C 使用；Emulator 建节点不需要计划�
 
 [小网络](../examples/tiny_network/README.zh-CN.md)展示 Scene 和 SEED 构建。
 [S4](../examples/s4_handover/README.zh-CN.md) 分为 `scene.py`、`emu.py`、`simu.py`、
-`view.py`、`run.py`；UT、干扰和测量是单独列出的示例扩展。运行完整实验前先查看其配置。
+`view.py`、`run.py`；UT 接入和干扰是单独列出的示例扩展。运行完整实验前先查看其配置。
 
 ## 生成与保存计划
 
@@ -106,7 +106,7 @@ with deployment:
 ```
 
 运行前先构建部署镜像。这里假定 etcd 已启动，由应用负责启停；S4 的 `emu.py` 构建镜像，
-`run.py` 通过示例辅助管理本次 etcd。`with` 是 Python 的资源上下文用法：
+手动 `run.py` 省略 Store，不需要 etcd。`with` 是 Python 的资源上下文用法：
 Deployment 负责 Compose 启停，Runner 负责执行资源准备和释放。
 有限输入自然完成时，`run()` 在计划及延迟尾部执行完后返回；主动调用 `Runner.stop()`
 则记录 `stopped`，尚未执行的工作不计为完成。离开上下文时才清理，生命周期见
@@ -136,7 +136,7 @@ sudo apt install clang linux-libc-dev libbpf1 iproute2 tcpdump
 ```
 
 `clang` 和 Linux 头文件用于编译 BPF，`libbpf1` 用于加载；`iproute2` 提供网络工具，
-S4 的 UT 辅助程序使用宿主 `tcpdump` 抓包。系统库与工具已有、仅缺 clang 时，
+`tcpdump` 用于手动查看报文。系统库与工具已有、仅缺 clang 时，
 也可在活动环境执行 `conda install -c conda-forge clang`，无需改动宿主安装。
 构建完整例子前可先验证 BPF 编译，不启动容器：
 
@@ -145,15 +145,13 @@ python -c 'from skyseed.pc.compiler.bpf.compile_program import compile_label_pro
 ```
 
 首次镜像构建需要访问 SEED 镜像源及软件包仓库，后续可复用 Docker 缓存。
-S4 首次运行还会拉取 etcd 镜像，不要求事先启动 etcd 服务。
 
 - Linux 的 veth、namespace、TC/netem；Docker Compose，以及运行特权 Docker 容器的权限。
 - BPF 模式还需要支持 BPF target 的 clang、Linux/BPF 开发头文件和 libbpf。
   Runner 在正式起钟前编译随包提供的程序。
 - 节点使用 SEED 提供的常规工具和软件。BPF 本地产生流量的注入需要节点设置关闭
   `all.rp_filter`，细节见 [Runner](../src/skyseed/runner/README.zh-CN.md)。
-- Store 需要可用的 etcd v3 服务；S4 的辅助启动 `quay.io/coreos/etcd:v3.6.5` 容器，
-  绑定本机随机端口，归档后停止服务。
+- 使用 Store 时需要可用的 etcd v3 服务；手动 S4 示例使用本地执行记录。
 
 当前完整示例先预计算再运行。接口可接续有限请求和计划批次，但没有内置多机调度器。
 可见性、路径存在性和应用连续性由场景与模型决定。计划路径、实际采用规则推导的路径、
