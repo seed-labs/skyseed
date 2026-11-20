@@ -7,6 +7,7 @@ from skyseed import Scene, Deployment, Runner, load_plans
 from experiment.console import RunConsole
 from experiment.repetition import RepeatedPlans
 from experiment.ut import TerminalAttachment
+from experiment.internet_map import InternetMap
 
 
 # Manual testing keeps nodes and application sockets alive across 600 s cycles.
@@ -15,6 +16,7 @@ REPEAT = True                     # False: execute the saved interval once.
 
 if __name__ == "__main__":
     output = Path(__file__).parent / "output"
+    InternetMap.check_ready(output)
     scene = Scene.load(output / "scene/scene.scene")
     plans = output / "plans/physical/bpf.plan"
     run_output = output / "runs" / datetime.now().strftime("run-%Y%m%d-%H%M%S")
@@ -34,10 +36,11 @@ if __name__ == "__main__":
                 with TerminalAttachment(scene, deployment, plans, run_output,
                                         ground_stations=build["experiment"]["ground_stations"],
                                         repetition=repetition if REPEAT else None):
-                    console.watch(runner)
-                    runner.run()
-                    console.finish()
-                    console.phase("Releasing runtime resources")
+                    with InternetMap(scene, deployment, repetition, output, run_output):
+                        console.watch(runner)
+                        runner.run()
+                        console.finish()
+                        console.phase("Releasing runtime resources")
     finally:
         console.close()
 

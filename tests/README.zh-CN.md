@@ -23,4 +23,6 @@
 有效回归应独立判断预期行为，不能只检查实现拼写或无异常。
 命令见[开发说明](../docs/development.zh-CN.md)。
 
-UT 回执跟随检查覆盖 JSONL 分段写入。
+S4 InternetMap2 检查覆盖未参与计划的已部署节点、实际接口配对、Zone 分批采用回执、抓包文本映射及直接容器查找／清单共享刷新；UT 回执跟随还覆盖 JSONL 分段写入。
+设置 `SKYSEED_TEST_NODE` 为 Node.js 可执行文件可运行 JavaScript 检查。
+浏览器检查使用独立的小型测试场景，完整 S4 仍由用户人工验收。

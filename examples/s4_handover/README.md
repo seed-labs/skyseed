@@ -13,7 +13,8 @@ communication and observation of handovers and a 60-second regional GS outage.
 | [emu.py](emu.py) | SEED configuration, dump/render/compile, image-build Tool | `output/seed/` |
 | [simu.py](simu.py) | P&C, model registration, two plan streams, Compiler; save optional drawing data | `output/plans/`, `observations/`, `build.json` |
 | [view.py](view.py) | Standard Tools read saved files and export layer views | `output/views/`, `index.html` |
-| [run.py](run.py) | Deployment, Runner and temporary UT | `output/runs/run-timestamp/` |
+| [map.py](map.py) | Adapt and build SEED InternetMap2 | `output/internet-map2/`, map image |
+| [run.py](run.py) | Deployment, Runner, temporary UT and InternetMap | `output/runs/run-timestamp/` |
 
 `SHELLS = ("S4",)` in `scene.py` selects the [parameter presets](../../data/README.md).
 Use `("S5",)` or `("S1", "S2", "S3")` to reuse this workflow without copying another
@@ -26,6 +27,14 @@ Complete [development setup](../../README.md#installation) first. If the local `
 shortcut is configured, use it to enter the environment and checkout. Existing environments
 need a one-time `python -m pip install -e ./tools` from the repository root after updating.
 
+For live execution, also complete the [host requirements](../../docs/usage.md#runtime-requirements):
+local Linux Docker Engine/Compose, privileged-container access and the BPF compiler/libraries.
+The first map build downloads `node:22-slim` and npm/pnpm dependencies inside Docker;
+Node.js is not required on the host. Keep the SEED checkout at the revision listed
+in the installation guide, since the adapter uses its `tools/InternetMap2` sources.
+Port 8080 must be free. On a remote Linux host, forward it with
+`ssh -L 8080:localhost:8080 USER@HOST` before opening the page locally.
+
 From the repository root in the development environment:
 
 ```bash
@@ -35,6 +44,7 @@ python emu.py
 python simu.py
 python view.py
 # After inspecting the plans, run the real network when needed:
+python map.py
 python run.py
 ```
 
@@ -47,10 +57,13 @@ artifacts and renders pages. Run starts the real network; repeated runs reuse
 plans. Requirements are in [Runner](../../src/skyseed/runner/README.md).
 Scene changes require matching artifacts. Stop the previous run and rename its
 `output` in this example directory (for example `mv output output-s4`), then rebuild
-from `scene.py`. Larger constellations require more planning/runtime resources. Check coverage, handover timing and hop counts in
+from `scene.py`. The map generates regions from orbit, satellite and GS counts;
+positions remain fixed during a run. Larger constellations require zoom/search and
+more planning/runtime resources. Check coverage, handover timing and hop counts in
 the new scene; the default S4 walkthrough does not establish those for S5 or multiple shells.
 
 [Manual tests, handover observations and shortcuts](MANUAL.md). Runs repeat by default; Ctrl+C cleans up.
+Run starts the network and SEED InternetMap2. Open http://localhost:8080/pro/map to enter containers and observe traffic.
 You can also enter this example directory and execute `python run.py` directly.
 
 ## Public interfaces and example extensions
@@ -60,6 +73,7 @@ Imports from `skyseed` and `seedemu` are public interfaces.
 usable repository Tools. [experiment/](experiment/README.md) contains helpers,
 with no second Simu/Run workflow:
 
+- [internet_map/](experiment/internet_map/README.md): SEED InternetMap2 adaptation for live nodes, interfaces and traffic.
 - `ut/`: temporary access and the GS's UT prefix classifier.
 - `perturbation.py`: circular regional GS outage Model.
 - `configuration.py`, `observation/`: settings summary and offline plan navigation.
@@ -68,7 +82,7 @@ with no second Simu/Run workflow:
 The main entries show registration and attachment explicitly.
 `list(generate_*_plans(...))` consumes the iterators to carry out planning requests.
 `timedelta(seconds=60)` sets each planning request's duration.
-Python's `with` manages resources, releasing UT, Runner and deployment in that order.
+Python's `with` manages resources, releasing InternetMap, UT, Runner and deployment in that order.
 
 ## Saved artifacts and Tools
 

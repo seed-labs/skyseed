@@ -89,6 +89,10 @@ class TerminalAttachment:
             self.container = subprocess.run([
                 "docker", "run", "-d", "--init", "--name", self.name,
                 "--label", "skyseed.example=s4-handover", "--network", "none", "--cap-add", "NET_ADMIN",
+                "--label", "org.seedsecuritylabs.seedemu.meta.nodename=ut",
+                "--label", "org.seedsecuritylabs.seedemu.meta.displayname=UT · Hangzhou",
+                "--label", "org.seedsecuritylabs.seedemu.meta.role=Host",
+                "--label", "org.seedsecuritylabs.seedemu.meta.asn=150",
                 "--sysctl", "net.ipv4.conf.all.rp_filter=0", "--entrypoint", "sleep", image, "infinity"],
                 check=True, capture_output=True, text=True).stdout.strip()
             ut = json.loads(subprocess.run(["docker", "inspect", self.container], check=True,

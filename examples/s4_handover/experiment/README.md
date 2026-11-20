@@ -45,6 +45,7 @@ The topology returns to its starting state every 600 seconds. Set `REPEAT = Fals
 `console.py` displays phase, cycle time and current UT service. Ctrl+C calls
 `Runner.stop()`; the owning contexts release UT, Runner and deployment resources.
 Runtime status and adoption/attachment records remain for inspection.
+[internet_map/](internet_map/README.md) adapts SEED InternetMap2 for live operation and observation.
 
 ## Regional outage model
 

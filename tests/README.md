@@ -37,4 +37,8 @@ changes. Add regression tests for concrete failures, with expectations that can
 catch a wrong result independently of the implementation.
 See [development commands](../docs/development.md).
 
-UT receipt following also covers partially appended JSONL records.
+S4 InternetMap2 checks cover deployed nodes absent from plans, live interface pairing,
+partial Zone adoption receipts, packet-text mapping and direct container lookup with
+shared inventory refresh. UT receipt following also covers partially appended JSONL
+records. Set `SKYSEED_TEST_NODE` to a Node.js executable to include the JavaScript
+checks. Browser checks use a small separate fixture; full S4 acceptance remains manual.

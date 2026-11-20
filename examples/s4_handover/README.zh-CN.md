@@ -12,7 +12,8 @@
 | [emu.py](emu.py) | SEED 配置、`dump`、`render`、`compile`、镜像构建 Tool | `output/seed/` |
 | [simu.py](simu.py) | P&C、模型注册、两路计划、Compiler；最后保存可选绘图资料 | `output/plans/`、`observations/`、`build.json` |
 | [view.py](view.py) | 标准 Tool 读取保存文件，逐层生成页面 | `output/views/`、`index.html` |
-| [run.py](run.py) | Deployment、Runner 和临时 UT | `output/runs/run-时间/` |
+| [map.py](map.py) | 适配并构建 SEED InternetMap2 | `output/internet-map2/`、地图镜像 |
+| [run.py](run.py) | Deployment、Runner、临时 UT 和 InternetMap | `output/runs/run-时间/` |
 
 `scene.py` 的 `SHELLS = ("S4",)` 选择[参数预设](../../data/README.zh-CN.md)。
 改成 `("S5",)` 或 `("S1", "S2", "S3")` 即可复用同一流程，无需复制另一个例子。
@@ -23,6 +24,12 @@
 完成[开发环境安装](../../README.zh-CN.md#安装)后执行以下步骤；本机已配置 `skyseed`
 快捷入口时先执行它即可。已有环境升级需在仓库根目录执行一次 `python -m pip install -e ./tools`。
 
+真实运行还需完成[主机运行要求](../../docs/usage.zh-CN.md#运行环境)：本地 Linux Docker Engine／Compose、
+运行特权容器的权限，以及 BPF 编译器和库。地图首次构建会在 Docker 内下载 `node:22-slim`
+及 npm／pnpm 依赖，主机无需安装 Node.js。SEED 仓库使用安装指南指定的版本，适配会读取其中的
+`tools/InternetMap2` 源码。8080 端口需空闲；如果运行在远程 Linux 主机上，先执行
+`ssh -L 8080:localhost:8080 USER@HOST`，再在本机打开网页。
+
 在仓库根目录的开发环境中：
 
 ```bash
@@ -32,6 +39,7 @@ python emu.py
 python simu.py
 python view.py
 # 查看计划后，需要真实运行时再执行：
+python map.py
 python run.py
 ```
 
@@ -43,10 +51,12 @@ python run.py
 `run` 启动真实网络；重复运行无需重新计算，运行要求见
 [Runner](../../src/skyseed/runner/README.zh-CN.md)。修改场景后需重新构建匹配产物，
 先停止旧实验，并将本例目录下的旧 `output` 改名保存（例如 `mv output output-s4`），
-再从 `scene.py` 开始重建。较大星座会增加计算和运行资源；换星时刻、覆盖和跳数需按新场景观察。
+再从 `scene.py` 开始重建。地图按实际轨道数、每轨节点数和 GS 数量划分区域，运行时位置固定。
+较大星座需要缩放／搜索节点，也会增加计算和运行资源；换星时刻、覆盖和跳数需按新场景观察。
 默认 S4 的手册示例不代表 S5 或多壳层具有相同路径。
 
 [手动测试、换星观察及快捷命令](MANUAL.zh-CN.md)。默认循环运行，Ctrl+C 清理。
+Run 同时启动网络和 SEED InternetMap2；打开 http://localhost:8080/pro/map 操作容器并观察流量。
 也可进入本例目录直接执行 `python run.py`。
 
 ## 正式接口与本例扩展
@@ -55,6 +65,7 @@ python run.py
 `tools.deployment.build_images` 与 `tools.observation.plan_views` 是可独立调用的仓库工具。
 [experiment/](experiment/README.zh-CN.md)只保存本例辅助实现，没有第二份 Simu／Run：
 
+- [internet_map/](experiment/internet_map/README.zh-CN.md)：集中保存 SEED 地图布局、实时状态、抓包记录及临时 UT 显示对接。
 - `ut/`：临时 UT 接入和 GS 的 UT 前缀规则。
 - `perturbation.py`：圆形区域 GS 断链 Model。
 - `configuration.py`、`observation/`：实验设置摘要和离线计划导航。
@@ -62,7 +73,7 @@ python run.py
 
 主流程显式展示扩展的注册和接入。`simu.py` 中 `list(generate_*_plans(...))` 消费迭代器，
 实际完成请求；`timedelta(seconds=60)` 设置每次规划请求的时长。
-`run.py` 中 `with` 是 Python 的资源管理语法，退出时按 UT、Runner、部署的顺序释放。
+`run.py` 中 `with` 是 Python 的资源管理语法，退出时按 InternetMap、UT、Runner、部署的顺序释放。
 
 ## 保存产物与 Tool
 

@@ -51,9 +51,9 @@ new one. The UT container and application address remain, so applications can
 keep their sockets open. Without a serving node, access routes drop traffic.
 A route receipt selects the service; planned times alone do not trigger attachment.
 If no satellite serves the UT anywhere in the saved plans, startup reports this
-and keeps the UT unattached while the network continues running.
+and keeps the UT unattached while the network and map continue running.
 `terminal.json` lists associated GS in `ground_ips` only when the plans provide
-their node identity addresses. `build.json` retains all associated GS.
+their node identity addresses. The map's Zone details show all associated GS.
 
 This is a temporary adapter for this example, not a general UT mobility protocol.
 It adds no separate radio link budget, delay or loss model.
@@ -69,3 +69,8 @@ The adapter owns its container, helper, interfaces and temporary routes. Leaving
 the context releases them, including partial setup after a failure.
 It does not launch echo servers, clients or tcpdump, archive measurements, or
 generate result pages. Use the [manual](../../MANUAL.md) to run your own commands.
+
+The map bridge for these example UT files is [temporary_ut.py](../internet_map/temporary_ut.py).
+A real UT implementation can replace network attachment and display integration separately.
+The fixed location, single UT and `ssut` naming are example conventions, not requirements
+for that system’s files, positions or state format.

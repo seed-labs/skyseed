@@ -41,6 +41,7 @@ GS 的入口分类将发往 UT 的回复接到 Zone 原有标签路径。
 
 `console.py` 显示阶段、轮内时间和当前 UT 服务星。Ctrl+C 调用 `Runner.stop()`，
 随后由各自上下文清理 UT、Runner 和部署资源。运行状态及采用／接入记录仍可查询。
+[internet_map/](internet_map/README.zh-CN.md) 适配 SEED InternetMap2，方便实时操作与观察。
 
 ## 区域中断模型
 
