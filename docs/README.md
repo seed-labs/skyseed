@@ -4,6 +4,7 @@
 
 - [Usage](usage.md): installation, independent builds, saved plans, execution and cleanup.
 - [Reference](reference.md): public operations, models and artifacts by task.
+- [Visualization data sources](visualization/README.md) explains how the frontend joins Docker, Scene and live topology data.
 - [Modules](../src/skyseed/README.md): precise contracts, data tables and extension points.
 - [Development](development.md): environment, checks and contribution workflow.
 

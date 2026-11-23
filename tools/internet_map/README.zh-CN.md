@@ -1,6 +1,6 @@
 # 运行地图
 
-[English](README.md) · [S4 操作手册](../../examples/s4_handover/MANUAL.zh-CN.md)
+[English](README.md) · [S4 操作手册](../../examples/s4_handover/MANUAL.zh-CN.md) · [可视化前端的数据来源](../../docs/visualization/README.zh-CN.md)
 
 运行实验时打开 [InternetMap2](http://localhost:8080/pro/map)。单击节点查看接口和对端，双击进入容器。Filter、Log 和手动录制沿用 SEED 的操作。选中 GS 或卫星可关注相关 Zone，换星时服务线随 Runner 的采用回执更新。
 

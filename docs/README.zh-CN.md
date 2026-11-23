@@ -4,6 +4,7 @@
 
 - [使用指南](usage.zh-CN.md)：安装、独立构建、保存计划、执行与清理。
 - [接口与产物速查](reference.zh-CN.md)：按任务查找公开操作、模型及文件。
+- [可视化前端的数据来源](visualization/README.zh-CN.md)说明 Docker、Scene 和运行时拓扑如何关联。
 - [模块索引](../src/skyseed/README.zh-CN.md)：精确合同、数据字段及扩展点。
 - [开发说明](development.zh-CN.md)：环境、检查和贡献流程。
 

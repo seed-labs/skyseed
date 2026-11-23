@@ -1,6 +1,6 @@
 # Runtime map
 
-[中文](README.zh-CN.md) · [S4 manual](../../examples/s4_handover/MANUAL.md)
+[中文](README.zh-CN.md) · [S4 manual](../../examples/s4_handover/MANUAL.md) · [Frontend data sources](../../docs/visualization/README.md)
 
 Open [InternetMap2](http://localhost:8080/pro/map) during the experiment. Click a node for interface details or double-click for a terminal. Filter and Log use SEED's packet capture. Select a GS or satellite to watch its Zones. Their service edges follow adopted local delivery rules.
 
