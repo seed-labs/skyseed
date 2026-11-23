@@ -7,12 +7,10 @@
 ```bash
 skyseed
 cd examples/s4_handover
-python map.py
 python run.py
 ```
 
-`map.py` 构建 SEED InternetMap2 的本例适配镜像；修改适配代码或重新计算计划后再执行。
-后续直接 `python run.py` 即可。打开 [InternetMap2](http://localhost:8080/pro/map)。
+地图和本轮 etcd 随实验启停。首次运行自动构建地图镜像，更新地图代码后用 `python map.py` 重建。打开 [InternetMap2](http://localhost:8080/pro/map)。
 网络默认循环 600 秒场景，运行终端按 Ctrl+C 停止。
 
 ## 在地图中操作
@@ -124,7 +122,7 @@ docksh NAME
 ## 停止
 
 在运行终端按一次 Ctrl+C，等待 UT、地图和网络清理。
-`output/runs/<run>/` 保留执行、接入和地图状态及诊断日志。
+`output/runs/<run>/` 保留执行回执、UT 接入、地图输入和诊断日志。
 
 异常退出后，确认原运行已结束，再从仓库根目录执行：
 
@@ -132,6 +130,7 @@ docksh NAME
 docker compose -f examples/s4_handover/output/seed/deployment/docker-compose.runtime.yml -p skyseed-s4 down
 docker ps -a --filter label=skyseed.example=s4-handover
 docker ps -a --filter label=skyseed.runner
+docker ps -a --filter label=skyseed.internet-map
 ```
 
 辨认本次运行的剩余容器后，用 `docker stop NAME`、`docker rm NAME` 清理。

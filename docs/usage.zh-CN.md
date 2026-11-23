@@ -106,7 +106,7 @@ with deployment:
 ```
 
 运行前先构建部署镜像。这里假定 etcd 已启动，由应用负责启停；S4 的 `emu.py` 构建镜像，
-手动 `run.py` 省略 Store，不需要 etcd。`with` 是 Python 的资源上下文用法：
+`run.py` 开启运行地图时自动启停本轮的 etcd 容器。`with` 是 Python 的资源上下文用法：
 Deployment 负责 Compose 启停，Runner 负责执行资源准备和释放。
 有限输入自然完成时，`run()` 在计划及延迟尾部执行完后返回；主动调用 `Runner.stop()`
 则记录 `stopped`，尚未执行的工作不计为完成。离开上下文时才清理，生命周期见
@@ -151,7 +151,7 @@ python -c 'from skyseed.pc.compiler.bpf.compile_program import compile_label_pro
   Runner 在正式起钟前编译随包提供的程序。
 - 节点使用 SEED 提供的常规工具和软件。BPF 本地产生流量的注入需要节点设置关闭
   `all.rp_filter`，细节见 [Runner](../src/skyseed/runner/README.zh-CN.md)。
-- 使用 Store 时需要可用的 etcd v3 服务；手动 S4 示例使用本地执行记录。
+- 使用 Store 时需要可用的 etcd v3 服务；S4 运行地图自行管理本轮服务，并保留本地执行记录。
 
 当前完整示例先预计算再运行。接口可接续有限请求和计划批次，但没有内置多机调度器。
 可见性、路径存在性和应用连续性由场景与模型决定。计划路径、实际采用规则推导的路径、

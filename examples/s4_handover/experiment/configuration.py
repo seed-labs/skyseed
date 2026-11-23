@@ -7,7 +7,7 @@ def save_configuration(output, pc, duration, route_evaluations):
     scene = pc.scene
     network = pc.get_layer("network-layer")
     link = pc.get_layer("link-layer")
-    associations = network.routing_model.ground_station_associations(scene)
+    associations = dict(network.routing_model.ground_station_associations(scene))
     grounds = associations[scene.data["experiment"]["zone"]]
     experiment = {**scene.data["experiment"], "ground_stations": grounds,
                   "ground_station": grounds[0]}
@@ -23,9 +23,9 @@ def save_configuration(output, pc, duration, route_evaluations):
                "satellites": len(scene.get_satellites()), "ground_stations": len(scene.get_ground_stations()),
                "zones": len(scene.endpoints), "experiment": experiment,
                "handover_schedule": schedule,
-               "routing": {"model": "TerminalRoutingModel",
+               "routing": {"model": type(network.routing_model).__name__,
                            "ground_stations_per_zone": network.routing_model.ground_stations_per_zone,
-                           "associations": dict(route_evaluations[0].associations),
+                           "associations": associations,
                            "service_min_elevation_deg": network.service_assignment_model.min_elevation_deg,
                            "ground_min_elevation_deg": pc.get_layer("physical-layer").candidate_model.min_ground_elevation_deg},
                "perturbation": outage_description(link.perturbation_model)}

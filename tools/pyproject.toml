@@ -12,7 +12,7 @@ dependencies = ["skyseed"]
 [tool.setuptools]
 package-dir = {tools = "."}
 packages = [
-    "tools", "tools.deployment", "tools.observation",
+    "tools", "tools.internet_map", "tools.deployment", "tools.observation",
     "tools.observation.scene", "tools.observation.physical",
     "tools.observation.link", "tools.observation.network",
     "tools.observation.compiler", "tools.observation.execution",
@@ -20,4 +20,8 @@ packages = [
 ]
 
 [tool.setuptools.package-data]
-tools = ["**/*.html", "**/*.css", "**/*.js", "**/*.json", "**/*.md", "deployment/*.sh"]
+"*" = ["*.html", "*.css", "*.js", "*.md"]
+"tools.deployment" = ["*.sh"]
+"tools.observation._presentation" = ["assets/*.json", "assets/*.md"]
+
+"tools.internet_map" = ["app/**/*", "app/.dockerignore", "app/frontend/env/.env.*", "app/frontend/.dockerignore"]

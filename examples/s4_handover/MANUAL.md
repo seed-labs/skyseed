@@ -7,12 +7,10 @@ Complete [development setup and the build](README.md) first. With the local shor
 ```bash
 skyseed
 cd examples/s4_handover
-python map.py
 python run.py
 ```
 
-`map.py` builds this example’s SEED InternetMap2 image. Repeat it after changing the
-adapter or regenerating plans. Later runs only need `python run.py`.
+The map and its etcd service start and stop with the run. The first run builds the image. Rebuild with `python map.py` after changes to the map code.
 Open [InternetMap2](http://localhost:8080/pro/map). The network repeats the
 600-second scenario until Ctrl+C in the running terminal.
 
@@ -139,7 +137,7 @@ docksh NAME
 ## Stop
 
 Press Ctrl+C once in the running terminal and wait for UT, map and network cleanup.
-`output/runs/<run>/` retains execution, attachment and map state plus diagnostic logs.
+`output/runs/<run>/` retains execution receipts, UT attachment records, map inputs and diagnostic logs.
 
 After an abnormal exit, confirm that the original run has ended, then use the repository root:
 
@@ -147,6 +145,7 @@ After an abnormal exit, confirm that the original run has ended, then use the re
 docker compose -f examples/s4_handover/output/seed/deployment/docker-compose.runtime.yml -p skyseed-s4 down
 docker ps -a --filter label=skyseed.example=s4-handover
 docker ps -a --filter label=skyseed.runner
+docker ps -a --filter label=skyseed.internet-map
 ```
 
 Identify remaining containers from this run and clean them up with

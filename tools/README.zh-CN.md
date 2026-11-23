@@ -3,6 +3,7 @@
 [English](README.md)
 
 - [可视化](observation/README.zh-CN.md)：读取保存的 Scene、逻辑计划、编译指令和实际执行记录，不运行网络。
+- [运行地图](internet_map/README.zh-CN.md)读取 Runner 的执行回执，提供容器操作、动态链路、Zone 服务与抓包。
 - [S4 view.py](../examples/s4_handover/view.py)：独立导出 Scene／Physical／Link／Network／Compiler 页面的简短用法。
 - `deployment/build_images.py`：读取 SEED 部署文件，复用相同内容构建镜像并写运行用 Compose；调用见 S4 Emu 入口。
 - [Shell 快捷命令](deployment/shell.sh)：SEED 风格的 Docker 命令、环境入口和 S4 运行查询；配置见下方。

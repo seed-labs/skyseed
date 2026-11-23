@@ -4,6 +4,7 @@
 
 - [Observation](observation/README.md): read saved Scene, logical plans, compiled
   instructions and actual execution records. These tools do not run the network.
+- [Runtime map](internet_map/README.md) follows Runner receipts and provides live links, Zone service, terminals and packet capture.
 - [S4 view.py](../examples/s4_handover/view.py): a short example of independent
   Scene/Physical/Link/Network/Compiler exports.
 - `deployment/build_images.py`: build reusable images and a runtime Compose file

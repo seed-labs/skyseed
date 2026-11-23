@@ -21,7 +21,7 @@ del context
 write_compiler(compiled_plan_file, compiler_output)
 ```
 
-这些函数读取文件并返回生成的 `index.html`。Link／Network 按基础计划的分段逐页显示；
+这些函数读取文件并返回生成的 `index.html`。Link 和 Network 直接显示全程时间轴，按需加载当前分段，也可只选一个基础计划。
 执行分支可以有不同分段，Delivery 重叠与最终延迟尾部保留。详细计划表仍保留原始批次。
 调用示例见 [S4 view.py](../../examples/s4_handover/view.py)。页面自包含，可直接打开。
 
@@ -63,4 +63,4 @@ Plan 是正式计算产物，context 是可选 Tool 资料，两者不混成新�
 各页说明：[Scene](scene/README.zh-CN.md)、[Physical](physical/README.zh-CN.md)、
 [Link](link/README.zh-CN.md)、[Network](network/README.zh-CN.md)、
 [Compiler](compiler/README.zh-CN.md)。[Execution](execution/README.zh-CN.md)读取真实执行回执。
-S4 的 UT、区域干扰和 TCP 回放属于该示例的额外展示。
+查看运行中的网络请使用[运行地图](../internet_map/README.zh-CN.md)。

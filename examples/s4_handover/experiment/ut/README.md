@@ -70,7 +70,7 @@ the context releases them, including partial setup after a failure.
 It does not launch echo servers, clients or tcpdump, archive measurements, or
 generate result pages. Use the [manual](../../MANUAL.md) to run your own commands.
 
-The map bridge for these example UT files is [temporary_ut.py](../internet_map/temporary_ut.py).
+The map bridge for these example UT files is [map.py](map.py).
 A real UT implementation can replace network attachment and display integration separately.
 The fixed location, single UT and `ssut` naming are example conventions, not requirements
 for that system’s files, positions or state format.

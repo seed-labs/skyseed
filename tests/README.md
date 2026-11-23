@@ -14,7 +14,7 @@
 | `unit/environment` | Installed source selection, mixed-source rejection, clean wheel contents and development scripts |
 | `unit/runner` | Scheduling, plan merging, resource cleanup and BPF version ownership |
 | `unit/examples` | UT routing/attachment/cleanup, regional outage and plan repetition |
-| `unit/tools` | Saved-plan views and actual-execution replay |
+| `unit/tools` | Saved-plan views, runtime map and actual-execution replay |
 | `connections` | Scene → real SEED objects → saved description and deployment files; services, routing software and examples |
 | `integration` | Scene → Emu deployment + P&C → saved/restored logical plans → BPF/Linux physical plans; independent requests, lookahead, segmented equivalence and delivery tails |
 | `live/runner`, `live/store` | Explicitly enabled Docker/BPF/Linux forwarding, UT and etcd checks |
@@ -37,8 +37,7 @@ changes. Add regression tests for concrete failures, with expectations that can
 catch a wrong result independently of the implementation.
 See [development commands](../docs/development.md).
 
-S4 InternetMap2 checks cover deployed nodes absent from plans, live interface pairing,
-partial Zone adoption receipts, packet-text mapping and direct container lookup with
-shared inventory refresh. UT receipt following also covers partially appended JSONL
+Runtime map checks cover deployed nodes absent from plans, optional UT and Zones,
+partial BPF adoptions, Linux route receipts, topology deltas and packet-to-link mapping. UT receipt following also covers partially appended JSONL
 records. Set `SKYSEED_TEST_NODE` to a Node.js executable to include the JavaScript
 checks. Browser checks use a small separate fixture; full S4 acceptance remains manual.

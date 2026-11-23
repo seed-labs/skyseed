@@ -35,7 +35,7 @@ def route_observations(evaluations):
 
 
 def save_context(path, physical, *, link_plans, route_plans, link_evaluations=(),
-                 route_evaluations=(), physical_times=(), position_times=()):
+                 route_evaluations=(), physical_times=(), position_times=(), position_file=None):
     """Explicitly sample display geometry, using the caller's configured Physical.
 
     Plans remain separate archives. Optional default-model evaluations describe
@@ -56,6 +56,9 @@ def save_context(path, physical, *, link_plans, route_plans, link_evaluations=()
         if key not in positions:
             snapshot = physical.snapshot_at(timestamp)
             positions[key] = {node: state.position_m for node, state in snapshot.states.items()}
+    if position_file is not None:
+        Path(position_file).parent.mkdir(parents=True, exist_ok=True)
+        Path(position_file).write_text(json.dumps(positions, allow_nan=False))
     data = {"format": "skyseed.plan-view-context/v1", "positions": positions,
             "physical": physical_data, "link_evaluations": link_observations(link_evaluations),
             "route_evaluations": route_observations(route_evaluations)}

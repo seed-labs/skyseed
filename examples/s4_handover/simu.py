@@ -64,7 +64,7 @@ if __name__ == "__main__":
     # Optional display data. Reopening views later never calls the models.
     print("[5/5] Saving observation data and experiment settings...", flush=True)
     save_context(
-        output / "observations/plans.json", physical,
+        output / "observations/plans.json", physical, position_file=output / "observations/map-positions.json",
         link_plans=[*link.base_plans, *link.execution_plans],
         route_plans=[*network.base_plans, *network.delivery_plans],
         link_evaluations=link_evaluations, route_evaluations=route_evaluations,

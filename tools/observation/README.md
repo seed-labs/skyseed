@@ -21,8 +21,8 @@ del context
 write_compiler(compiled_plan_file, compiler_output)
 ```
 
-Each function reads files and returns the exported `index.html`. Link/Network pages
-follow base-plan windows while preserving differently split execution histories,
+Each function reads files and returns the exported `index.html`. Link and Network open on a continuous timeline. Select a base-plan window to restrict playback.
+Only the current window is loaded, preserving differently split execution histories,
 overlapping Delivery and its final tail. Detail tables retain original batches.
 See [S4 view.py](../../examples/s4_handover/view.py). Pages are self-contained.
 
@@ -68,5 +68,4 @@ without reproducing default-model diagnostic behavior.
 
 Page guides: [Scene](scene/README.md), [Physical](physical/README.md),
 [Link](link/README.md), [Network](network/README.md), [Compiler](compiler/README.md).
-[Execution](execution/README.md) consumes actual receipts. S4's UT, outage and TCP
-replay are example-specific overlays.
+[Execution](execution/README.md) consumes actual receipts. Use the [runtime map](../internet_map/README.md) for the running network.

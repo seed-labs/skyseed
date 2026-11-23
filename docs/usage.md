@@ -116,7 +116,7 @@ with deployment:
 ```
 
 Build deployment images first. Here etcd is already running; the application owns
-its startup and shutdown. S4's `emu.py` builds images; its manual `run.py` omits Store and needs no etcd. `with` is Python's resource context:
+its startup and shutdown. S4's `emu.py` builds deployment images. Its `run.py` starts a private etcd container when the runtime map is enabled. `with` is Python's resource context:
 Deployment starts/stops Compose; Runner prepares/releases its execution resources.
 When finite input finishes naturally, `run()` returns after planned work and
 delayed tails have drained. Calling `Runner.stop()` instead records `stopped`;
@@ -167,8 +167,7 @@ repositories. Later builds can reuse Docker's cache.
   headers and libbpf. Runner compiles the packaged program before timed execution.
 - SEED nodes provide their normal tools/software. `all.rp_filter` must be disabled
   by the node setup for BPF local injection. See [Runner](../src/skyseed/runner/README.md).
-- If using Store, provide a running etcd v3 endpoint. The manual S4 example uses
-  local execution records instead.
+- If using Store, provide a running etcd v3 endpoint. S4 manages this endpoint for its runtime map and also saves local execution records.
 
 The included full example precomputes before running. The interfaces also accept
 successive finite requests and plan batches; that is not a built-in multi-machine

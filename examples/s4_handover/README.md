@@ -13,7 +13,7 @@ communication and observation of handovers and a 60-second regional GS outage.
 | [emu.py](emu.py) | SEED configuration, dump/render/compile, image-build Tool | `output/seed/` |
 | [simu.py](simu.py) | P&C, model registration, two plan streams, Compiler; save optional drawing data | `output/plans/`, `observations/`, `build.json` |
 | [view.py](view.py) | Standard Tools read saved files and export layer views | `output/views/`, `index.html` |
-| [map.py](map.py) | Adapt and build SEED InternetMap2 | `output/internet-map2/`, map image |
+| [map.py](map.py) | Rebuild the runtime map on demand | Shared `skyseed-internet-map` image |
 | [run.py](run.py) | Deployment, Runner, temporary UT and InternetMap | `output/runs/run-timestamp/` |
 
 `SHELLS = ("S4",)` in `scene.py` selects the [parameter presets](../../data/README.md).
@@ -24,14 +24,13 @@ records, and subsequent stages share the saved `.scene`.
 The manual's specific times and paths refer to S4.
 
 Complete [development setup](../../README.md#installation) first. If the local `skyseed`
-shortcut is configured, use it to enter the environment and checkout. Existing environments
-need a one-time `python -m pip install -e ./tools` from the repository root after updating.
+shortcut is configured, use it to enter the environment and checkout. If an existing environment cannot import
+`tools.internet_map`, run `python -m pip install -e ./tools` once from the repository root.
 
 For live execution, also complete the [host requirements](../../docs/usage.md#runtime-requirements):
 local Linux Docker Engine/Compose, privileged-container access and the BPF compiler/libraries.
 The first map build downloads `node:22-slim` and npm/pnpm dependencies inside Docker;
-Node.js is not required on the host. Keep the SEED checkout at the revision listed
-in the installation guide, since the adapter uses its `tools/InternetMap2` sources.
+S4 also pulls an etcd image on first use. The adapted map source ships with SkySEED.
 Port 8080 must be free. On a remote Linux host, forward it with
 `ssh -L 8080:localhost:8080 USER@HOST` before opening the page locally.
 
@@ -44,20 +43,20 @@ python emu.py
 python simu.py
 python view.py
 # After inspecting the plans, run the real network when needed:
-python map.py
 python run.py
 ```
 
 `simu.py` prints each stage and each 60-second planning interval as it runs.
 Interval bounds are simulation time; `elapsed` reports actual computation time.
-`view.py` reports each layer as it writes pages and prints the `output/index.html` entry.
+`view.py` opens `output/index.html`. Link and Network show the full timeline and load each range on demand. Choose a single plan in **Range** to inspect it.
+`run.py` builds a missing map image. Run `python map.py` to rebuild after editing the map code.
 
 View starts no containers or P&C. Repeating it only reads
 artifacts and renders pages. Run starts the real network; repeated runs reuse
 plans. Requirements are in [Runner](../../src/skyseed/runner/README.md).
-Scene changes require matching artifacts. Stop the previous run and rename its
-`output` in this example directory (for example `mv output output-s4`), then rebuild
-from `scene.py`. The map generates regions from orbit, satellite and GS counts;
+Scene changes require matching artifacts. Stop the experiment, retain any manual records you need
+from `output/runs`, then clear the old example output and rebuild from `scene.py`.
+For offline viewer changes alone, run `python view.py` against the existing plans. The map generates regions from orbit, satellite and GS counts;
 positions remain fixed during a run. Larger constellations require zoom/search and
 more planning/runtime resources. Check coverage, handover timing and hop counts in
 the new scene; the default S4 walkthrough does not establish those for S5 or multiple shells.
@@ -73,7 +72,7 @@ Imports from `skyseed` and `seedemu` are public interfaces.
 usable repository Tools. [experiment/](experiment/README.md) contains helpers,
 with no second Simu/Run workflow:
 
-- [internet_map/](experiment/internet_map/README.md): SEED InternetMap2 adaptation for live nodes, interfaces and traffic.
+- The [runtime map](../../tools/internet_map/README.md) lives in tools. Set `SHOW_MAP = False` in `run.py` to disable it. `map_store.py` owns the run’s etcd service and `ut/map.py` supplies UT display data.
 - `ut/`: temporary access and the GS's UT prefix classifier.
 - `perturbation.py`: circular regional GS outage Model.
 - `configuration.py`, `observation/`: settings summary and offline plan navigation.

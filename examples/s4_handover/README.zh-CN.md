@@ -12,7 +12,7 @@
 | [emu.py](emu.py) | SEED 配置、`dump`、`render`、`compile`、镜像构建 Tool | `output/seed/` |
 | [simu.py](simu.py) | P&C、模型注册、两路计划、Compiler；最后保存可选绘图资料 | `output/plans/`、`observations/`、`build.json` |
 | [view.py](view.py) | 标准 Tool 读取保存文件，逐层生成页面 | `output/views/`、`index.html` |
-| [map.py](map.py) | 适配并构建 SEED InternetMap2 | `output/internet-map2/`、地图镜像 |
+| [map.py](map.py) | 按需重建运行地图 | 通用镜像 `skyseed-internet-map` |
 | [run.py](run.py) | Deployment、Runner、临时 UT 和 InternetMap | `output/runs/run-时间/` |
 
 `scene.py` 的 `SHELLS = ("S4",)` 选择[参数预设](../../data/README.zh-CN.md)。
@@ -22,12 +22,12 @@
 操作手册中的具体时间和路径对应 S4。
 
 完成[开发环境安装](../../README.zh-CN.md#安装)后执行以下步骤；本机已配置 `skyseed`
-快捷入口时先执行它即可。已有环境升级需在仓库根目录执行一次 `python -m pip install -e ./tools`。
+快捷入口时先执行它即可。已有环境中如缺少 `tools.internet_map`，在仓库根目录执行一次 `python -m pip install -e ./tools`。
 
 真实运行还需完成[主机运行要求](../../docs/usage.zh-CN.md#运行环境)：本地 Linux Docker Engine／Compose、
 运行特权容器的权限，以及 BPF 编译器和库。地图首次构建会在 Docker 内下载 `node:22-slim`
-及 npm／pnpm 依赖，主机无需安装 Node.js。SEED 仓库使用安装指南指定的版本，适配会读取其中的
-`tools/InternetMap2` 源码。8080 端口需空闲；如果运行在远程 Linux 主机上，先执行
+及 npm／pnpm 依赖。首次运行还会下载 etcd 镜像。地图源码随 SkySEED 提供。
+8080 端口需空闲。在远程 Linux 主机运行时，先执行
 `ssh -L 8080:localhost:8080 USER@HOST`，再在本机打开网页。
 
 在仓库根目录的开发环境中：
@@ -39,19 +39,19 @@ python emu.py
 python simu.py
 python view.py
 # 查看计划后，需要真实运行时再执行：
-python map.py
 python run.py
 ```
 
 `simu.py` 会即时显示当前阶段，以及每个 60 秒规划区间的进度。
 区间数字表示仿真时间，`elapsed` 表示实际计算耗时。
-`view.py` 显示正在生成哪一层页面，完成后给出 `output/index.html` 入口。
+`view.py` 生成后打开 `output/index.html`。Link 和 Network 默认显示全程时间轴，拖动时按需加载，也可在“时段”中选择单段。
+首次执行 `run.py` 会构建缺少的地图镜像。修改地图源码后才需执行 `python map.py`。
 
 `view` 不启动容器或 P&C；重复执行只读取产物并生成页面。
 `run` 启动真实网络；重复运行无需重新计算，运行要求见
 [Runner](../../src/skyseed/runner/README.zh-CN.md)。修改场景后需重新构建匹配产物，
-先停止旧实验，并将本例目录下的旧 `output` 改名保存（例如 `mv output output-s4`），
-再从 `scene.py` 开始重建。地图按实际轨道数、每轨节点数和 GS 数量划分区域，运行时位置固定。
+先停止实验，取出 `output/runs` 下需要保留的手动记录，再清理本例旧 `output`，从 `scene.py` 开始重建。
+只更新查看工具时，直接执行 `python view.py` 即可更新离线页面。地图按实际轨道数、每轨节点数和 GS 数量划分区域，运行时位置固定。
 较大星座需要缩放／搜索节点，也会增加计算和运行资源；换星时刻、覆盖和跳数需按新场景观察。
 默认 S4 的手册示例不代表 S5 或多壳层具有相同路径。
 
@@ -65,7 +65,7 @@ Run 同时启动网络和 SEED InternetMap2；打开 http://localhost:8080/pro/m
 `tools.deployment.build_images` 与 `tools.observation.plan_views` 是可独立调用的仓库工具。
 [experiment/](experiment/README.zh-CN.md)只保存本例辅助实现，没有第二份 Simu／Run：
 
-- [internet_map/](experiment/internet_map/README.zh-CN.md)：集中保存 SEED 地图布局、实时状态、抓包记录及临时 UT 显示对接。
+- [运行地图](../../tools/internet_map/README.zh-CN.md)位于 tools。`run.py` 默认启用，设 `SHOW_MAP = False` 可关闭。`map_store.py` 管理本次运行的 etcd，`ut/map.py` 对接临时 UT。
 - `ut/`：临时 UT 接入和 GS 的 UT 前缀规则。
 - `perturbation.py`：圆形区域 GS 断链 Model。
 - `configuration.py`、`observation/`：实验设置摘要和离线计划导航。

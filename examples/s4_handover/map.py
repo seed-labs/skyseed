@@ -1,9 +1,5 @@
-"""Build the S4 adaptation of SEED InternetMap2 once, after simu.py."""
-from pathlib import Path
-
-from experiment.internet_map.build import build
-
+"""Explicitly rebuild the shared map image after editing the viewer."""
+from tools.internet_map import build_image
 
 if __name__ == "__main__":
-    build(Path(__file__).parent / "output")
-    print("InternetMap2 ready; python run.py starts the network and map together.")
+    build_image()

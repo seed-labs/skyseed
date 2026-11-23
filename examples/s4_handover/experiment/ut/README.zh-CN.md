@@ -59,6 +59,6 @@ Runner 的 `execution.jsonl` 提供已采用规则事件。
 它不启动 echo 服务、客户端或 tcpdump，不归档测量或生成结果页面。
 手动指令见[操作手册](../../MANUAL.zh-CN.md)。
 
-地图对本例 UT 文件的依赖集中在 [temporary_ut.py](../internet_map/temporary_ut.py)。
+地图对本例 UT 文件的依赖集中在 [map.py](map.py)。
 开发正式 UT 时可分别替换接入实现与这层显示对接；固定位置、单 UT 和 `ssut` 是本例约定，
 不要求正式系统沿用这些文件、位置或状态格式。
