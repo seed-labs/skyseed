@@ -12,7 +12,7 @@ header a{color:#8edfd7}header nav{text-align:right}header nav small{display:bloc
   <div class="steps"><div><strong id="candidateCount">—</strong><small>物理机会 / Candidate pairs</small></div><div><strong id="selectedCount">—</strong><small>已选择 / Selected</small></div><div><strong id="pendingCount">—</strong><small>准备中 / Preparing</small></div><div><strong id="activeCount">—</strong><small>执行可用 / Operational</small></div></div>
   <div class="legend"><span id="operationalLegend" style="color:#6edbd2">— 两分支可用</span><span style="color:#f0cf82">— 准备中</span><span style="color:#f1a0b6">— 分支不同</span><span style="color:#536a7e">— 候选</span></div>
   <canvas id="globe" aria-label="Link 连接计划地球视图"></canvas>
-  <div class="controls"><button id="play">播放 / Play</button><input id="timeline" type="range" min="0" value="0" aria-label="计划时刻"><time id="timestamp"></time><button id="reset">重置视角</button></div>
+  <div class="controls"><label>时段 / Range <select id="planWindow"><option value="all">全程 / All plans</option></select></label><button id="play">播放 / Play</button><input id="timeline" type="range" min="0" value="0" aria-label="计划时刻"><time id="timestamp"></time><button id="reset">重置视角</button></div>
   <p class="status" id="sampleNote"></p>
   <div class="selection-panel"><h2 id="selectionTitle">选择连接查看状态与方向属性</h2><div class="facts" id="selectionFacts"></div><div id="tracks"></div><details><summary>物理依据与完整方向属性 / Evidence & properties</summary><pre id="selectionData"></pre></details></div>
 </section><aside>
@@ -25,33 +25,39 @@ header a{color:#8edfd7}header nav{text-align:right}header nav small{display:bloc
 </aside></main>
 <footer>基础计划供路由使用，执行计划可经 Perturbation 修改。浏览器只展示导出的模型结果，不重新选择连接或计算计划。<br>Base plans support routing; execution plans may differ. Playback is an inspection of precomputed results.</footer>
 <script>/*SPATIAL_VIEW*/</script><script>
-const data = /*INSPECTION_DATA*/null;
+/*PLAN_TIMELINE*/
+(async function() {
+const timeline = planTimeline(/*PLAN_WINDOWS*/null, /*INSPECTION_DATA*/null);
+let data = await timeline.open();
 const meta = sceneIndex(data).nodes;
 const key = id => JSON.stringify(id);
 const name = id => meta.get(id)?.name || id;
 const label = id => id.map(name).join(' ↔ ');
 const map = values => new Map((values || []).map(value => [key(value.id), value]));
-const prepared = data.frames.map(frame => ({
-  ...frame,
-  baseMap: map(frame.base),
-  executionMap: map(frame.execution),
-  candidateMap: map(frame.candidates),
-  pendingMap: map(frame.pending),
-}));
-const start = Date.parse(data.start);
-const finish = Date.parse(data.end);
-let selected = null;
-let eventBranch = 'base';
-const eventsByLink = {base: new Map(), execution: new Map()};
-for (const branch of ['base', 'execution']) {
-  for (const event of data.events[branch]) {
-    const identity = key(event.id);
-    if (!eventsByLink[branch].has(identity)) {
-      eventsByLink[branch].set(identity, []);
+let selected = null, eventBranch = 'base', prepared, start, finish, eventsByLink;
+function prepare(part) {
+  data = part;
+  prepared = data.frames.map(frame => ({
+    ...frame,
+    baseMap: map(frame.base),
+    executionMap: map(frame.execution),
+    candidateMap: map(frame.candidates),
+    pendingMap: map(frame.pending),
+  }));
+  start = Date.parse(data.start);
+  finish = Date.parse(data.end);
+  eventsByLink = {base: new Map(), execution: new Map()};
+  for (const branch of ['base', 'execution']) {
+    for (const event of data.events[branch]) {
+      const identity = key(event.id);
+      if (!eventsByLink[branch].has(identity)) {
+        eventsByLink[branch].set(identity, []);
+      }
+      eventsByLink[branch].get(identity).push(event);
     }
-    eventsByLink[branch].get(identity).push(event);
   }
 }
+prepare(data);
 const globe = new InspectionGlobe(byId('globe'), id => {
   byId('node').value = id;
   selected = null;
@@ -68,9 +74,7 @@ for (const node of data.nodes) {
 }
 
 function setTime(timestamp) {
-  const index = data.frames.findIndex(frame => Date.parse(frame.timestamp) >= Date.parse(timestamp));
-  byId('timeline').value = index < 0 ? data.frames.length - 1 : index;
-  update();
+  timeline.seek(timestamp);
 }
 
 function stateLabel(identity, frame, branch) {
@@ -109,7 +113,7 @@ function addTrack(title, branch) {
 }
 
 function update() {
-  const frame = prepared[Number(byId('timeline').value)];
+  const frame = prepared[timeline.index()];
   if (!frame) return;
   byId('timestamp').textContent = frame.timestamp;
   byId('candidateCount').textContent = frame.candidates?.length ?? '未知';
@@ -260,7 +264,7 @@ for (const branch of ['base', 'execution']) {
   };
 }
 byId('reset').onclick = () => globe.reset();
-bindTimeline(data.frames, update);
+timeline.bind(prepare, update);
 const query = new URLSearchParams(location.search);
 if (['base','execution','compare'].includes(query.get('branch'))) byId('branch').value = query.get('branch');
 if (meta.has(query.get('node'))) byId('node').value = query.get('node');
@@ -268,5 +272,6 @@ selected = query.get('link');
 if (query.has('timestamp')) setTime(query.get('timestamp'));
 else update();
 
+})().catch(e=>{byId('timestamp').textContent=e.message;});
 </script>
 </html>

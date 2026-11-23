@@ -11,7 +11,7 @@ header a{color:#8edfd7}header nav{text-align:right}header nav small{display:bloc
 <div class="controls layers"><label><input type="checkbox" id="zones" checked>Zone 边界</label><label><input type="checkbox" id="services" checked>服务关系</label><label><input type="checkbox" id="links" checked>基础链路</label><label><input type="checkbox" id="baseRoutes" checked>基础路径</label><label><input type="checkbox" id="deliveryRoutes" checked>Delivery 路径</label></div>
 <div class="metrics"><span>节点 <strong id="nodeCount"></strong></span><span>Zone <strong id="zoneCount"></strong></span><span>当前有服务 <strong id="servedCount"></strong></span></div>
 <canvas id="globe" aria-label="GZ Zone、服务与路径地球视图"></canvas>
-<div class="controls"><button id="play">播放 / Play</button><input id="timeline" type="range" min="0" value="0" aria-label="路由计划时刻"><time id="timestamp"></time></div>
+<div class="controls"><label>时段 / Range <select id="planWindow"><option value="all">全程 / All plans</option></select></label><button id="play">播放 / Play</button><input id="timeline" type="range" min="0" value="0" aria-label="路由计划时刻"><time id="timestamp"></time></div>
 <p class="status" id="sampleNote"></p>
 <div class="route" id="basePath"></div><div class="route tag" id="deliveryPath"></div>
 <div class="selection-panel"><h2>逐跳转发 / Hop-by-hop forwarding</h2><div class="hops" id="hops"></div><pre id="pathDetail"></pre></div>
@@ -33,7 +33,10 @@ header a{color:#8edfd7}header nav{text-align:right}header nav small{display:bloc
 </aside></main>
 <footer>边界与代表点来自 Scene；服务卫星来自记录，路径逐跳读取实际规则。服务关系不表示已建立末跳链路。<br>仅展示离线 GZ 计划；不同步交付时，模型选出的服务星与当前转发出口可能不同。未记录的信息显示未知。</footer>
 <script>/*SPATIAL_VIEW*/</script><script>
-const data = /*INSPECTION_DATA*/null;
+/*PLAN_TIMELINE*/
+(async function() {
+const timeline = planTimeline(/*PLAN_WINDOWS*/null, /*INSPECTION_DATA*/null);
+let data = await timeline.open();
 const nodes = new Map(data.nodes.map(node => [node.node_id, node]));
 const zones = data.endpoints.filter(endpoint => endpoint.kind === 'geographic-zone/v1');
 const name = id => nodes.get(id)?.name || id;
@@ -99,7 +102,7 @@ function trace(frame, branch, source, destination) {
   }
 }
 function update() {
-  const frame = data.frames[Number(byId('timeline').value)];
+  const frame = data.frames[timeline.index()];
   if (!frame) return;
   const zoneId = byId('zone').value;
   const ground = byId('ground').value;
@@ -219,7 +222,7 @@ function update() {
     const button = document.createElement('button'); button.className = 'event';
     const seconds = (Date.parse(event.timestamp)-Date.parse(data.start))/1000;
     button.textContent = `+${seconds}s · ${name(event.node)} · ${event.kind}`;
-    button.onclick = () => {byId('timeline').value = data.frames.findIndex(item => item.timestamp === event.timestamp); update();};
+    button.onclick = () => {timeline.seek(event.timestamp);};
     byId('events').append(button);
   }
 }
@@ -233,7 +236,7 @@ byId('zone').oninput = () => {byId('inspect').value=`zone:${byId('zone').value}`
 for (const id of ['ground','direction','branch','inspect','focus','zones','services','links','baseRoutes','deliveryRoutes']) byId(id).oninput = update;
 byId('overview').onclick = () => {byId('focus').checked=false;update();};
 byId('reset').onclick = () => globe.reset();
-bindTimeline(data.frames, update);
+timeline.bind(part=>{data=part;},update);
 const query = new URLSearchParams(location.search);
 if (['base','delivery'].includes(query.get('branch'))) byId('branch').value = query.get('branch');
 if (nodes.get(query.get('ground'))?.kind === 'ground_station') byId('ground').value = query.get('ground');
@@ -244,9 +247,6 @@ if (query.has('destination')) {
   if (kind === 'endpoint' && zones.some(zone => zone.id === identity)) byId('inspect').value = `zone:${identity}`;
 }
 if (nodes.has(query.get('node'))) byId('inspect').value = `node:${query.get('node')}`;
-if (query.has('timestamp')) {
-  const index = data.frames.findIndex(frame => Date.parse(frame.timestamp) >= Date.parse(query.get('timestamp')));
-  byId('timeline').value = index < 0 ? data.frames.length-1 : index;
-}
 update();
+})().catch(e=>{byId('timestamp').textContent=e.message;});
 </script></html>

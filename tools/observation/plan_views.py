@@ -1,6 +1,8 @@
 """Save drawing context once; inspect saved plans without running their models."""
 from datetime import datetime, timezone
 from collections.abc import Mapping
+import base64
+import gzip
 import html
 import json
 from pathlib import Path
@@ -13,6 +15,7 @@ from tools.observation.physical import inspection as physical_view
 from tools.observation.link import inspection as link_view
 from tools.observation.network import inspection as network_view
 from tools.observation.compiler import inspection as compiler_view
+from tools.observation._presentation.inspection_page import write_page
 from tools.observation._presentation.plan_details import write_plan_details
 
 
@@ -98,25 +101,40 @@ def _windows(plan, boundaries):
         yield type(plan)(start, stop, initial, tuple(selected))
 
 
-def _index(output, title, windows, *, details=False):
-    links = []
-    for index, start, end in windows:
-        links.append(f'<li><a href="{index:03d}/index.html">{html.escape(start)} – {html.escape(end)}</a></li>')
-    detail = '<p><a href="plans/index.html">完整计划与字段 / complete plan records</a></p>' if details else ''
-    navigation = ''
-    if details:
-        data = json.dumps(windows).replace('<', '\\u003c')
-        navigation = ('<script>const windows=' + data + ';'
-                      'const time=Date.parse(new URLSearchParams(location.search).get("timestamp"));'
-                      'const selected=windows.find(([,start,end])=>Date.parse(start)<=time&&time<Date.parse(end));'
-                      'if(selected)location.replace(String(selected[0]).padStart(3,"0")+"/index.html"+location.search);'
-                      '</script>')
-    path = Path(output) / "index.html"
-    path.write_text('<!doctype html><meta charset="utf-8"><style>body{font:18px system-ui;'
-                   'max-width:900px;margin:3em auto}li{margin:.8em}</style>'
-                   f'<h1>{title}</h1><p>按计划时段浏览 / inspect by plan window</p>{detail}'
-                   '<ul>' + ''.join(links) + '</ul>' + navigation)
-    return path
+def _chunk(output, index, page):
+    directory = Path(output) / f"{index:03d}"
+    directory.mkdir(parents=True, exist_ok=True)
+    page["plan_details"] = "plans/index.html"
+    payload = json.dumps(page, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+    # A single local script carries the compressed JSON. Browsers can load it
+    # from file:// without a server or a second, uncompressed export.
+    encoded = base64.b64encode(gzip.compress(payload.encode(), compresslevel=1, mtime=0)).decode("ascii")
+    (directory / "frames.js").write_text(f'document.currentScript.plan="{encoded}";')
+    # Old bookmarks still open the selected window in the continuous inspector.
+    (directory / "index.html").write_text(
+        f'<meta charset="utf-8"><script>const q=new URLSearchParams(location.search);'
+        f'q.set("window","{index}");location.replace("../index.html?"+q)</script>')
+    return {"start": page["start"], "end": page["end"], "src": f"{index:03d}/frames.js",
+            "times": [f["timestamp"] for f in page["frames"]]}
+
+
+def _history(output, name, windows):
+    index = write_page(None, output, template=Path(__file__).parent / name / "viewer.html",
+                       data_name=name, windows=windows)
+    for directory in Path(output).iterdir():
+        if not directory.is_dir() or not directory.name.isdecimal():
+            continue
+        legacy = directory / f"{name}.json"
+        frames = directory / "frames.js"
+        if not (legacy.is_file() or frames.is_file()):
+            continue
+        legacy.unlink(missing_ok=True)
+        if int(directory.name) >= len(windows):
+            frames.unlink(missing_ok=True)
+            (directory / "index.html").unlink(missing_ok=True)
+            if not any(directory.iterdir()):
+                directory.rmdir()
+    return index
 
 
 def write_link(scene_file, base_file, execution_file, *, context, output):
@@ -132,12 +150,10 @@ def write_link(scene_file, base_file, execution_file, *, context, output):
     for index, (left, right) in enumerate(zip(_windows(base, boundaries), _windows(execution, boundaries), strict=True)):
         page = link_view.inspection_data(scene, [left], [right], positions=data["positions"],
                                          evaluations=data["link_evaluations"])
-        page["plan_details"] = "../plans/index.html"
-        link_view.write_inspection(page, Path(output) / f"{index:03d}")
-        windows.append((index, left.start_time.isoformat(), left.end_time.isoformat()))
+        windows.append(_chunk(output, index, page))
     write_plan_details(output, kind="link", streams={"base": base_plans, "execution": execution_plans},
                        files={"base": base_file, "execution": execution_file})
-    return _index(output, "Link", windows, details=True)
+    return _history(output, "link", windows)
 
 
 def write_network(scene_file, base_file, delivery_file, link_file, *, context, output):
@@ -161,12 +177,10 @@ def write_network(scene_file, base_file, delivery_file, link_file, *, context, o
             timestamp = datetime.fromisoformat(frame["timestamp"])
             frame["base_held"] = timestamp >= base.end_time
             frame["links_held"] = timestamp >= links.end_time
-        page["plan_details"] = "../plans/index.html"
-        network_view.write_inspection(page, Path(output) / f"{index:03d}")
-        windows.append((index, starts[index].isoformat(), ends[index].isoformat()))
+        windows.append(_chunk(output, index, page))
     write_plan_details(output, kind="route", streams={"base": base_plans, "delivery": delivery_plans},
                        files={"base": base_file, "delivery": delivery_file})
-    return _index(output, "Network", windows, details=True)
+    return _history(output, "network", windows)
 
 
 def write_compiler(plan_file, output):
@@ -174,4 +188,10 @@ def write_compiler(plan_file, output):
     for index, plan in enumerate(load_plans(plan_file)):
         compiler_view.write_inspection([plan], Path(output) / f"{index:03d}")
         windows.append((index, f"{plan.stream} {plan.start_time.isoformat()}", plan.end_time.isoformat()))
-    return _index(output, "Compiler", windows)
+    path = Path(output) / "index.html"
+    entries = "".join(f'<li><a href="{i:03d}/index.html">{html.escape(start)} – {html.escape(end)}</a></li>'
+                      for i, start, end in windows)
+    path.write_text('<!doctype html><meta charset="utf-8"><style>body{font:18px system-ui;'
+                    'max-width:900px;margin:3em auto}li{margin:.8em}</style>'
+                    '<h1>Compiler</h1><p>按计划时段浏览 / inspect by plan window</p><ul>' + entries + '</ul>')
+    return path

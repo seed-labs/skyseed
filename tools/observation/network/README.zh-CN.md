@@ -29,5 +29,5 @@
 `inspection_data(scene, base_plans, delivery_plans, link_plans, positions=..., evaluations=...)`
 从计划读取规则，从保存资料读取几何和可选 GZ 观察，不调用模型。路径逐跳检查规则；
 重叠 Delivery 上下文只计入一次，延迟尾部保持基础及链路最终状态并标记。
-`write_network` 按基础计划分段展示，详情表保留原始批次，包括起点、新操作和上下文。
+`write_network` 默认显示连续时间轴，可选择单段，拖动时按需加载。详情表保留原始批次，包括起点、新操作和上下文。
 本工具展示计划，不代表实际报文或 Runner 执行。

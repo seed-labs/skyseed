@@ -29,4 +29,4 @@ or replans; open the exported `index.html` directly.
 reads plans, a saved position mapping and optional JSON observations without
 calling Physical. Extra timestamps need saved positions; actual events always
 remain visible. `write_inspection` exports a self-contained page and `link.json`.
-The standard file entry also writes original-batch details and window navigation.
+The standard file entry also writes a continuous timeline, a single-plan selector and original-batch details.

@@ -1,5 +1,7 @@
 """Saved-file views preserve event boundaries and never regenerate model output."""
 from datetime import datetime, timedelta, timezone
+import base64
+import gzip
 import hashlib
 import json
 from pathlib import Path
@@ -74,12 +76,19 @@ def test_saved_views_keep_different_cuts_overlap_tail_and_unknown_observations(t
                           context=context_input, output=tmp_path / 'link')
     plan_views.write_network(scene_file, paths['base_route'], paths['delivery_route'], paths['base_link'],
                              context=context_input, output=tmp_path / 'network')
-    link_data = json.loads((tmp_path / 'link/001/link.json').read_text())
+    def exported_chunk(name):
+        root = tmp_path / name
+        assert 'id="planWindow"' in (root / 'index.html').read_text()
+        script = (root / '001/frames.js').read_text()
+        encoded = json.loads(script.removeprefix('document.currentScript.plan=').removesuffix(';'))
+        return json.loads(gzip.decompress(base64.b64decode(encoded)))
+
+    link_data = exported_chunk('link')
     assert [frame['timestamp'] for frame in link_data['frames']] == [time(5).isoformat(), time(9).isoformat()]
     assert len(link_data['frames'][0]['base']) == len(link_data['frames'][0]['execution']) == 1
     assert link_data['frames'][-1]['base'] == link_data['frames'][-1]['execution'] == []
     assert all(frame['candidates'] is None for frame in link_data['frames'])
-    route_data = json.loads((tmp_path / 'network/001/network.json').read_text())
+    route_data = exported_chunk('network')
     assert route_data['end'] == time(12).isoformat()
     frames = {frame['timestamp']: frame for frame in route_data['frames']}
     assert frames[time(7).isoformat()]['delivery']['a'][0]['data'] == {'version': 2}

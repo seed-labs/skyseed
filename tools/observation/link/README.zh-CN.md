@@ -24,4 +24,4 @@
 `inspection_data(scene, base_plans, execution_plans, positions=..., evaluations=..., timestamps=...)`
 读取计划、保存的位置映射和可选 JSON 观察，不调用 Physical。`timestamps` 可增加已有位置的
 显示时刻；计划事件始终保留。`write_inspection` 写出自包含页面及 `link.json`。
-标准文件入口还生成原始批次的计划详情和分段导航。
+标准文件入口还生成全程时间轴、单段选择器及原始批次的计划详情。

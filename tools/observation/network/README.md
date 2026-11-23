@@ -31,6 +31,6 @@ delayed rules after a service change. Missing association records leave the scop
 reads rules from plans and geometry/optional GZ observations from saved data,
 without model calls. Paths follow actual rules. Overlapping Delivery context is
 counted once; the delayed tail retains and marks final base/link state.
-`write_network` splits views by base-plan windows; detail tables retain original
+`write_network` loads the selected window on demand along a continuous timeline. Detail tables retain original
 batches, initial state, new operations and context. These are plans, not packet
 observations or Runner execution.
