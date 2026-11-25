@@ -9,17 +9,16 @@ from hashlib import sha256
 from html import escape
 import json
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import time
 
 from check_documentation import (
-    MERMAID_BLOCK,
-    OWNER_READMES,
-    PROJECT_ROOT,
+    ROOT as PROJECT_ROOT,
     _current_documents,
-    _full_repository_documents,
 )
+MERMAID_BLOCK = re.compile(r'^```mermaid\s*\n(.*?)^```\s*$', re.MULTILINE | re.DOTALL)
 from _webdriver import (
     _available_port,
     _execute,
@@ -203,18 +202,31 @@ return [...document.querySelectorAll("svg")].map(svg=>({
                              value={"width":1600,"height":1200})
                     for ordinal, (source_path, index, _) in enumerate(diagrams):
                         selector = f"#diagram-{ordinal:03d} svg"
-                        _request(f"{base_url}/session/{session_id}/window/rect", method="POST",
-                                 value={"width":1600,"height":max(1200,int(svg_evidence[ordinal]["height"])+160)})
-                        element = _request(f"{base_url}/session/{session_id}/element", method="POST",
-                                           value={"using":"css selector","value":selector})
+                        _request(
+                            f"{base_url}/session/{session_id}/window/rect",
+                            method="POST",
+                            value={
+                                "width": 1600,
+                                "height": max(1200, int(svg_evidence[ordinal]["height"]) + 160),
+                            },
+                        )
+                        element = _request(
+                            f"{base_url}/session/{session_id}/element",
+                            method="POST",
+                            value={"using": "css selector", "value": selector},
+                        )
                         element_id = next(iter(element.values()))
                         png = _request(f"{base_url}/session/{session_id}/element/{element_id}/screenshot")
-                        (evidence_directory/f"diagram-{ordinal:03d}.png").write_bytes(base64.b64decode(png))
-                        svg = _execute(base_url,session_id, f"return document.querySelector('{selector}').outerHTML;")
-                        (evidence_directory/f"diagram-{ordinal:03d}.svg").write_text(svg)
-                    (evidence_directory/'render.json').write_text(json.dumps([
-                        {"source":path,"block":index,**facts}
-                        for (path,index,_),facts in zip(diagrams,svg_evidence)],indent=2)+'\n')
+                        (evidence_directory / f"diagram-{ordinal:03d}.png").write_bytes(base64.b64decode(png))
+                        svg = _execute(
+                            base_url, session_id,
+                            f"return document.querySelector('{selector}').outerHTML;",
+                        )
+                        (evidence_directory / f"diagram-{ordinal:03d}.svg").write_text(svg)
+                    (evidence_directory / 'render.json').write_text(json.dumps([
+                        {"source": path, "block": index, **facts}
+                        for (path, index, _), facts in zip(diagrams, svg_evidence)
+                    ], indent=2) + '\n')
                 capabilities = session["capabilities"]
                 return (
                     len(diagrams),
@@ -236,7 +248,6 @@ return [...document.querySelectorAll("svg")].map(svg=>({
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--scope", choices=("focused", "full"), required=True)
     parser.add_argument("--mermaid-js", type=Path, required=True)
     parser.add_argument("--mermaid-version", required=True)
     parser.add_argument(
@@ -256,11 +267,7 @@ def main() -> int:
             "Mermaid renderer does not match the project pin: "
             f"version={arguments.mermaid_version!r}, sha256={javascript_hash}"
         )
-    documents = (
-        tuple(sorted({*_current_documents(), *OWNER_READMES}))
-        if arguments.scope == "focused"
-        else _full_repository_documents()
-    )
+    documents = _current_documents()
     count, firefox_version, mermaid_version = _render(
         documents=documents,
         mermaid_javascript=arguments.mermaid_js.resolve(),

@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SkySEED · Physical 物理结果</title>
+<style>/*INSPECTION_STYLE*/</style>
+<header><div><div class="brand">SKYSEED / PHYSICAL</div><h1>位置与通信机会 <small>Physical</small></h1><small>真实位置快照与逐节点候选 / Actual snapshots & per-node candidates</small></div><span class="badge">随时间查询 / Time-based queries</span></header>
+<main>
+  <section class="stage">
+    <div class="controls"><button id="overview" aria-pressed="true">全部同图 / Overview</button><span class="status" id="viewSummary"></span></div>
+    <div class="legend"><span style="color:#83a8ff">● 卫星 / Satellites</span><span style="color:#ffcd88">● 地面站 / Ground</span><span style="color:#6edbd2">— 选中候选 / Selected candidate</span></div>
+    <canvas id="globe" aria-label="Physical 位置与候选链路"></canvas>
+    <div class="controls"><button id="play">播放 / Play</button><input id="timeline" aria-label="查询时刻" type="range" min="0" value="0"><time id="timestamp"></time><button id="reset">重置 / Reset</button></div>
+    <p class="status" id="models"></p>
+    <div class="selection-panel"><h2 id="selectionTitle">节点 / Node</h2><div class="facts" id="selectionFacts"></div><details><summary>所选结果与自定义字段 / Selected result & custom fields</summary><pre id="selectionData"></pre></details></div>
+  </section>
+  <aside>
+    <div class="cards"><div><span class="metric" id="nodesCount"></span><small>快照节点 / Nodes</small></div><div><span class="metric" id="linksCount"></span><small>当前节点候选 / Candidates</small></div></div>
+    <label for="scope">查询节点分组 / Query group</label><select id="scope"></select>
+    <label for="node">查询节点 / Query node</label><select id="node"></select>
+    <p class="status" id="status"></p>
+    <p class="status">点击节点或候选线，在图下查看具体结果。<br>Click a node or candidate to inspect the result below.</p>
+    <label><input type="checkbox" id="focus"> 仅看当前节点与候选 / Focus query</label><br>
+    <label><input type="checkbox" id="allLinks" checked> 显示所有分组的候选 / All candidates</label>
+    <h2>候选对端 / Candidate peers</h2>
+    <div class="table-wrap"><table><thead><tr><th>对端 / Peer</th><th>km</th><th>ms</th></tr></thead><tbody id="peers"></tbody></table></div>
+  </aside>
+</main>
+<footer>候选表示通信机会，连接选择和建立时刻由后续 LinkPlan 决定。分组筛选查询节点，对端按真实报告保留。<br>Groups filter query nodes, not their reported peers. No schematic orbit is substituted for a custom model's actual positions.</footer>
+<script>/*SPATIAL_VIEW*/</script>
+<script>
+const data = /*INSPECTION_DATA*/null;
+const index=sceneIndex(data), meta=index.nodes;
+let selectedPeer=null, scopeNodes=data.nodes;
+const globe=new InspectionGlobe(byId('globe'),id=>chooseNode(id),feature=>{chooseNode(feature.owner,false);selectedPeer=feature.peer;update()});
+function addScope(label,value) {const option=document.createElement('option');option.value=JSON.stringify(value);option.textContent=label;byId('scope').append(option)}
+addScope('全部节点 / All nodes',{kind:'all'});addScope('全部地面站 / Ground stations',{kind:'ground'});addScope('全部卫星 / Satellites',{kind:'satellite'});
+for(const {group,depth} of index.ordered)addScope(`${'　'.repeat(depth)}${group.kind} · ${group.group_id.split('/').at(-1)}`,{kind:'group',id:group.group_id});
+function fillNodes(preferred) {
+  const scope=JSON.parse(byId('scope').value), ids=scope.kind==='group'?new Set(index.members.get(scope.id)):null;
+  scopeNodes=data.nodes.filter(n=>scope.kind==='all'||scope.kind==='group'&&ids.has(n.node_id)||scope.kind==='ground'&&n.kind==='ground_station'||scope.kind==='satellite'&&n.kind==='satellite');
+  byId('node').replaceChildren();
+  for(const n of scopeNodes){const option=document.createElement('option');option.value=n.node_id;option.textContent=n.name;byId('node').append(option)}
+  byId('node').disabled=scopeNodes.length===0;
+  byId('node').value=scopeNodes.some(n=>n.node_id===preferred)?preferred:scopeNodes[0]?.node_id||'';
+}
+function chooseNode(id,render=true) {
+  if(!scopeNodes.some(n=>n.node_id===id)){byId('scope').selectedIndex=0;fillNodes(id)}
+  byId('node').value=id;selectedPeer=null;if(render)update();
+}
+function number(value,divisor=1,digits=1){return value==null?'未知 / N/A':(value/divisor).toFixed(digits)}
+function update(){
+  const frame=data.frames[Number(byId('timeline').value)],selected=byId('node').value,node=meta.get(selected);
+  const candidates=frame?.candidates[selected]||[],chosen=candidates.find(c=>c.peer_id===selectedPeer),selectedPeers=new Set(candidates.map(c=>c.peer_id));
+  byId('timestamp').textContent=frame?.timestamp||'没有快照 / No snapshots';
+  byId('nodesCount').textContent=Object.keys(frame?.states||{}).length;byId('linksCount').textContent=candidates.length;
+  byId('status').textContent=!frame?'没有查询结果 / No query results':!node?'此分组没有节点 / Empty group':candidates.length?`此节点报告 ${candidates.length} 个通信机会 / reported opportunities`:'此刻没有候选 / No candidates at this time';
+  byId('peers').replaceChildren();
+  for(const link of candidates){
+    const tr=document.createElement('tr'),peer=document.createElement('td'),button=document.createElement('button');
+    button.className='peer-button';button.textContent=meta.get(link.peer_id)?.name||link.peer_id;
+    button.setAttribute('aria-pressed',String(link.peer_id===selectedPeer));button.onclick=()=>{selectedPeer=link.peer_id;update()};peer.append(button);tr.append(peer);
+    for(const value of [number(link.distance_m,1000),number(link.propagation_delay_s,.001,3)]){const td=document.createElement('td');td.textContent=value;tr.append(td)}byId('peers').append(tr);
+  }
+  let facts=[],raw={};
+  if(selectedPeer){
+    byId('selectionTitle').textContent=`${node?.name||selected} → ${meta.get(selectedPeer)?.name||selectedPeer}`;
+    if(chosen){facts=[['距离 / Distance',`${number(chosen.distance_m,1000)} km`],['单向时延 / Delay',`${number(chosen.propagation_delay_s,.001,3)} ms`],['仰角 / Elevation',`${number(chosen.elevation_deg)}°`],['时刻 / Time',frame.timestamp]];raw={node_id:selected,...chosen};}
+    else{facts=[['状态 / Status','此时刻已无该候选 / No longer a candidate at this time']];raw={node_id:selected,peer_id:selectedPeer,timestamp:frame?.timestamp};}
+  }else{
+    byId('selectionTitle').textContent=node?.name||'未选择节点 / No node selected';
+    if(node){facts=[['身份 / ID',selected],['归属 / Group',node.group_id??'未分组 / Ungrouped'],['候选 / Candidates',candidates.length]];raw={node, state:frame?.states[selected]??null};}
+  }
+  showFacts(byId('selectionFacts'),facts);byId('selectionData').textContent=JSON.stringify(raw,null,2);
+  const focus=byId('focus').checked, allLinks=byId('allLinks').checked&&!focus;
+  byId('overview').setAttribute('aria-pressed',String(allLinks));
+  byId('viewSummary').textContent=focus?'仅当前节点与候选 / Focused query':allLinks?'全部节点与候选 / All nodes & candidates':'全部节点 · 当前节点候选 / All nodes · selected query candidates';
+  byId('allLinks').disabled=focus;
+  const reports=allLinks?data.nodes.map(n=>[n.node_id,frame?.candidates[n.node_id]||[]]):[[selected,candidates]];
+  const seen=new Set(),lines=[];
+  for(const [owner,links]of reports)for(const link of links){
+    const key=JSON.stringify([owner,link.peer_id].sort());if(seen.has(key))continue;seen.add(key);
+    const belongs=owner===selected||link.peer_id===selected&&selectedPeers.has(owner);
+    const peer=owner===selected?link.peer_id:owner,active=belongs&&peer===selectedPeer;
+    lines.push({a:frame.states[owner].position_m,b:frame.states[link.peer_id].position_m,color:active?'#6edbd2':belongs?'#607887':'#283e50',width:active?2.2:belongs?1:.6,
+      feature:belongs?{owner:selected,peer}:{owner,peer:link.peer_id}});
+  }
+  globe.set(Object.entries(frame?.states||{}).filter(([id])=>!focus||id===selected||selectedPeers.has(id)).map(([id,state])=>({id,position:state.position_m,
+    color:id===selected?'#ffffff':id===selectedPeer&&chosen?'#6edbd2':meta.get(id).kind==='ground_station'?'#ffcd88':'#83a8ff',
+    radius:id===selected?5.5:id===selectedPeer?4:meta.get(id).kind==='ground_station'?4:2.8,label:id===selected||id===selectedPeer&&chosen?meta.get(id).name:null})),lines);
+}
+byId('models').textContent=`位置 / Position: ${data.models.position} · 候选 / Candidate: ${data.models.candidate}`;
+byId('scope').onchange=()=>{fillNodes(byId('node').value);selectedPeer=null;update()};
+byId('overview').onclick=()=>{byId('scope').selectedIndex=0;fillNodes(byId('node').value);byId('focus').checked=false;byId('allLinks').checked=true;update()};
+byId('node').onchange=()=>{selectedPeer=null;update()};byId('allLinks').onchange=update;byId('focus').onchange=update;
+byId('reset').onclick=()=>globe.reset();bindTimeline(data.frames,update);fillNodes(data.nodes.find(n=>n.kind==='ground_station')?.node_id);update();
+</script>
+</html>

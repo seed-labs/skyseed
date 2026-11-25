@@ -1,6 +1,15 @@
-"""Prevent accidental collection of the retired implementation's test suite."""
+"""Small scene facts only; no global service or runtime fixtures."""
+from datetime import datetime, timezone
 import pytest
-raise pytest.UsageError(
-    "Legacy tests/ is inactive during the paper-aligned redesign; use new_tests/. "
-    "Historical execution requires a separate, explicit checkout."
-)
+from skyseed.scene import Scene
+
+
+@pytest.fixture
+def tiny_scene():
+    scene = Scene(data={"source": {"file": "inputs/example.csv"}})
+    scene.create_constellation("demo", planes=1, satellites_per_plane=2,
+                               altitude_km=550, inclination_deg=53,
+                               epoch=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    scene.create_ground_station("G1", latitude_deg=40, longitude_deg=116,
+                                data={"researcher": {"antenna": "custom"}})
+    return scene

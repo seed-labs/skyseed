@@ -1,0 +1,50 @@
+:root { color-scheme: dark; font: 15px system-ui, sans-serif; color: #e5edf4; background: #0b1421; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+header { padding: 24px 30px; border-bottom: 1px solid #26384c; display: flex; gap: 20px; justify-content: space-between; align-items: center; }
+h1 { font-size: 25px; margin: 7px 0; font-weight: 600; }
+h2 { font-size: 15px; font-weight: 600; margin: 22px 0 12px; }
+small, .muted { color: #92a7bc; }
+.brand { letter-spacing: .18em; color: #6edbd2; font-size: 11px; }
+.badge { border: 1px solid #35506b; border-radius: 18px; padding: 7px 12px; font-size: 12px; white-space: nowrap; }
+main { display: grid; grid-template-columns: minmax(0, 1fr) 370px; }
+.stage { min-width: 0; padding: 20px; }
+canvas { width: 100%; height: 510px; display: block; cursor: grab; touch-action: none; background: radial-gradient(ellipse at center, #12273a 0%, #0b1421 70%); }
+aside { min-width: 0; padding: 24px; border-left: 1px solid #26384c; background: #0e1a29; }
+select, button { background: #192c40; border: 1px solid #35506b; color: #e5edf4; padding: 9px 12px; border-radius: 7px; }
+select { width: 100%; margin: 6px 0 12px; }
+button { cursor: pointer; }
+button:hover { background: #25435c; }
+button:disabled { cursor: default; opacity: .45; }
+.controls { display: flex; align-items: center; gap: 12px; padding: 12px; background: #111f30; border: 1px solid #26384c; border-radius: 10px; flex-wrap: wrap; }
+input[type=range] { flex: 1; min-width: 130px; accent-color: #6edbd2; }
+time { font-variant-numeric: tabular-nums; font-size: 12px; }
+.legend { display: flex; flex-wrap: wrap; gap: 14px; color: #a9bdce; font-size: 12px; min-height: 22px; }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+.metric { font-size: 27px; color: #6edbd2; }
+.cards { display: flex; gap: 22px; margin-bottom: 18px; }
+.cards small { display: block; font-size: 11px; }
+table { width: 100%; border-collapse: collapse; font-size: 12px; }
+td, th { text-align: left; padding: 8px 4px; border-bottom: 1px solid #223548; }
+th { color: #92a7bc; font-weight: 400; }
+td:first-child { max-width: 140px; overflow-wrap: anywhere; }
+.table-wrap { max-height: 250px; overflow: auto; }
+pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; line-height: 1.6; color: #b8c9d7; max-height: 300px; overflow: auto; }
+label, summary { font-size: 12px; color: #b8c9d7; }
+summary { cursor: pointer; padding: 10px 0; }
+footer { padding: 16px 30px; color: #7890a6; font-size: 12px; border-top: 1px solid #26384c; line-height: 1.7; }
+.status { margin: 10px 0; color: #a9bdce; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+.group-list { max-height: 210px; overflow: auto; }
+.group-list button { display: block; border: 0; border-radius: 0; text-align: left; width: 100%; background: transparent; font-size: 12px; overflow-wrap: anywhere; }
+.group-list button[aria-pressed=true] { background: #25435c; color: #8fe8dd; }
+.facts { font-size: 12px; line-height: 1.8; overflow-wrap: anywhere; }
+.facts div { display: grid; grid-template-columns: 86px 1fr; gap: 9px; padding: 4px 0; }
+.facts span:first-child { color: #92a7bc; }
+@media(max-width:1000px) { main { grid-template-columns: 1fr; } aside { border-left: 0; border-top: 1px solid #26384c; } canvas { height: 420px; } }
+@media(max-width:500px) { header { align-items: flex-start; padding: 18px; } h1 { font-size: 21px; } .badge { display: none; } .stage { padding: 12px; } canvas { height: 340px; } }
+.controls button[aria-pressed=true] { border-color: #6edbd2; background: #1b3c47; color: #a2efe6; }
+.selection-panel { padding: 0 16px 12px; margin-top: 16px; border: 1px solid #26384c; border-radius: 10px; background: #101f2e; }
+.selection-panel h2 { overflow-wrap: anywhere; color: #a2efe6; }
+.selection-panel .facts div { grid-template-columns: 155px 1fr; }
+.peer-button { padding: 4px 6px; font-size: 12px; border: 0; background: transparent; text-align: left; overflow-wrap: anywhere; }
+.peer-button[aria-pressed=true] { color: #a2efe6; background: #25435c; }

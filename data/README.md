@@ -1,40 +1,51 @@
-# Shared runtime inputs
+# Scene inputs
 
-`starlink/` contains the existing Starlink Gen1 orbit and ground-station source
-files, retained byte-for-byte through the directory migration. Prepared entries
-read Shells and GroundStations separately through `load_shell_configs` and
-`load_ground_station_configs`, then select Shells/filter GSs before construction.
-The existing aggregate `starlink/scenario.yaml` remains supported for other callers.
+[中文](README.zh-CN.md)
 
-- [shells.yaml](starlink/shells.yaml): all five Shells and 4,408 satellites from the
-  reviewed [FCC Schedule S records](../research/starlink/gen1/shells/fcc-sat-mod-20200417-00037-gen1.json).
-  The [S1–S5 mapping](../research/starlink/gen1/shells/S1-S5-MAPPING.md) explains
-  Shell identity, selected planes and phase interpretation. Per-satellite ISL
-  capacity 4 and GS capacity 2 remain explicit simulation assumptions.
-- [ground_stations.yaml](starlink/ground_stations.yaml): 355 retained sites from
-  the reviewed [gateway evidence](../research/starlink/gen1/ground-stations/gateway-evidence-2026-08-25.json),
-  with the original [provenance](../research/starlink/gen1/ground-stations/PROVENANCE.md).
-  `data/starlink/rebuild_frozen_ground_stations.py` verifies that exact research
-  source before rebuilding this frozen file. Coordinates do not establish current
-  commercial operation or hardware capacities.
-- [global_zones.yaml](global_zones.yaml): the preserved deterministic 732-Zone
-  file, usable for explicit file input. Default assembly creates the equivalent
-  24-band, 48-equatorial-cell, antimeridian-centered layout directly with
-  `build_global_zone_layout()`; no intermediate file is required.
+| File | Contents | Consumer |
+|---|---|---|
+| [starlink/shells.yaml](starlink/shells.yaml) | Five compact circular-shell parameter presets | [S4 Scene construction](../examples/s4_handover/scene.py) |
+| [starlink/ground_stations.yaml](starlink/ground_stations.yaml) | 355 individually located GS sites | Examples select sites before construction |
+| [global_zones.yaml](global_zones.yaml) | Explicit 732-zone reference layout | Optional authored input; `Scene.create_default_zones()` generates the same partition directly |
 
-Tiny retains its local Zones; S5 loads its authored 184-Zone global grid. Normal outputs and historical
-qualification files remain separate evidence with their original source identities.
-Runtime never loads the research directory.
+## S1–S5 parameters
 
-From ``, verify the frozen GS file without refreshing it:
+| Preset | Altitude (km) | Inclination (°) | Planes × satellites | RAAN (°) | Phase factor |
+|---|---:|---:|---:|---|---:|
+| S1 | 550 | 53 | 72 × 22 | Start 0, step 5 | 38.765 |
+| S2 | 540 | 53.2 | 72 × 22 | Start 2.5, step 5 | 54.175 |
+| S3 | 570 | 70 | 36 × 20 | Start 0, step 10 | 15.295 |
+| S4 | 560 | 97.6 | 6 × 58 | Start 63.7, step 60 | 1 |
+| S5 | 560 | 97.6 | 4 × 43 | 75.7, 87.7, 99.7, 117.7 | 2/15 |
+
+Shapes, plane directions and the 2015-01-01 UTC epoch follow the reviewed
+[FCC records](../research/starlink/gen1/shells/fcc-sat-mod-20200417-00037-gen1.json).
+[Mapping](../research/starlink/gen1/shells/S1-S5-MAPPING.md) identifies the source
+planes. S4 keeps source plane numbers 5–10; numbering does not change geometry.
+
+Phase factors are **derived generation parameters**, not separately published FCC
+Walker factors. They reproduce the rounded source anomalies within 0.05°;
+generation retains full precision. First phase is zero except S5's 0.29°.
+[Scene](../src/skyseed/scene/README.md#build-and-query) defines the formula and
+construction arguments. Counts such as 6 × 59 or 6 × 60 are valid custom layouts.
+There are no per-satellite records or link-capacity assumptions in this file;
+connection budgets belong to the Link model.
+
+The example reads a preset and calls `Scene.create_shell`; Scene does not parse
+this YAML itself. Its saved `.scene` snapshot still contains the generated nodes,
+groups and geometry, ready for consumers without regeneration. The raw research
+archive remains separate and is not loaded at runtime.
+
+## Ground-station evidence
+
+GS coordinates come from the reviewed
+[gateway evidence](../research/starlink/gen1/ground-stations/gateway-evidence-2026-08-25.json)
+and [provenance](../research/starlink/gen1/ground-stations/PROVENANCE.md).
+The retained inventory includes historical/planned sites and does not establish
+current operation or hardware capacity. Verify it from the repository root:
 
 ```bash
-python data/starlink/rebuild_frozen_ground_stations.py --check \
-  --research-source research/starlink/gen1/ground-stations/gateway-evidence-2026-08-25.json
+python data/starlink/rebuild_frozen_ground_stations.py --check --research-source research/starlink/gen1/ground-stations/gateway-evidence-2026-08-25.json
 ```
 
-The utility resolves its default output from its own location. Absolute source
-and utility paths work from another working directory. `--write` is an explicit
-rebuild operation; normal examples only read these files. The historical generator
-banner and schema versions remain unchanged. Original external evidence belongs
-in `research/`, separately from runtime inputs.
+`--write` explicitly rebuilds that file; ordinary examples only read it.

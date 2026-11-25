@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SkySEED · Compiler</title>
+<style>
+:root{font-family:system-ui,sans-serif;color:#203e4a;background:#eff4f4;--accent:#137a79;--muted:#607881;--line:#cddddd}
+*{box-sizing:border-box}body{margin:0}main{max-width:1500px;margin:auto;padding:26px}
+h1{font-size:27px;margin:6px 0}h2{font-size:19px;margin:0 0 14px}h3{font-size:16px;margin:0 0 10px}p{line-height:1.55;margin:8px 0}
+.muted{color:var(--muted);font-size:13px}.eyebrow{font-size:12px;color:var(--accent);letter-spacing:.08em;font-weight:650}
+header{display:flex;justify-content:space-between;gap:24px;align-items:center}header .status{max-width:390px;border-left:3px solid #d5b375;padding-left:12px;color:#6b582e;font-size:13px}
+.controls{display:flex;flex-wrap:wrap;gap:14px;margin:22px 0 12px}label{display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--muted)}
+select{border:1px solid #b6cbd1;border-radius:6px;background:white;color:#203e4a;padding:9px;max-width:360px;font:inherit;font-size:13px}
+.layout{display:grid;grid-template-columns:285px minmax(0,1fr);gap:20px;margin-top:18px}.panel{background:white;border:1px solid #dce7e7;border-radius:12px;padding:22px;min-width:0}
+aside.panel{padding:16px;align-self:start}.event-list{max-height:780px;overflow:auto}.event{width:100%;text-align:left;border:0;border-bottom:1px solid #e1e9eb;border-radius:6px;background:transparent;padding:13px 10px;margin:2px 0;color:inherit;cursor:pointer;line-height:1.5}
+.event.active{background:#def0ed;box-shadow:inset 3px 0 var(--accent)}.event strong,.event span{display:block}.event strong{font-size:13px;font-weight:600}.event span{font-size:12px;overflow-wrap:anywhere}.event .time{color:var(--accent);font-size:12px;margin-bottom:4px}
+.badge{display:inline-block;background:#e3f0ef;color:#146a69;border-radius:4px;padding:4px 8px;font-size:12px}.badge.withdraw{background:#f7e7e2;color:#9b4634}
+.title-row{display:flex;align-items:center;justify-content:space-between;gap:16px}.summary{font-size:18px;margin:12px 0 4px;overflow-wrap:anywhere}.record-note{font-size:13px;color:var(--muted);padding-bottom:16px;border-bottom:1px solid var(--line)}
+.diagram{margin:22px 0}.topology{display:grid;grid-template-columns:minmax(0,1fr) 195px minmax(0,1fr);align-items:center;gap:14px}
+.endpoint{display:block;text-align:left;width:100%;background:#f6f9f9;border:1px solid #d7e4e5;border-radius:10px;padding:16px;min-width:0;color:inherit;cursor:pointer}.endpoint.focus{border-color:var(--accent);background:#edf7f4;box-shadow:0 0 0 2px #137a7910}
+.endpoint strong{display:block;overflow-wrap:anywhere;font-size:15px;margin:8px 0}.endpoint code{display:block;font-size:13px;overflow-wrap:anywhere;margin:5px 0}.endpoint .extra{font-size:12px;overflow-wrap:anywhere;border-top:1px solid #cddddd;margin-top:12px;padding-top:10px}.endpoint .hint{font-size:11px;color:var(--muted);margin-top:9px}
+.directions{text-align:center;font-size:12px;color:#47646d}.direction{padding:8px 0}.arrow{display:block;height:2px;background:#7a9e9f;position:relative;margin:8px 6px}.arrow:after{content:'';position:absolute;right:-1px;top:-4px;border-left:8px solid #7a9e9f;border-top:5px solid transparent;border-bottom:5px solid transparent}.arrow.reverse:after{right:auto;left:-1px;transform:rotate(180deg)}.removed .arrow{background:repeating-linear-gradient(90deg,#b96550 0 7px,transparent 7px 12px)}.removed .arrow:after{border-left-color:#b96550}.drop{color:#a54a32;font-weight:600}
+.rule-flow{display:grid;grid-template-columns:1fr 30px 1fr 30px 1fr;align-items:stretch;margin:18px 0}.rule-part{background:#f1f7f6;border-radius:8px;padding:16px;min-width:0}.rule-part strong{display:block;font-size:22px;margin-top:8px;overflow-wrap:anywhere}.rule-part code{display:block;font-size:12px;margin-top:8px;overflow-wrap:anywhere}.flow-arrow{align-self:center;text-align:center;color:#719895;font-size:22px}
+.policy{border-left:3px solid #bb8e49;padding:10px 14px;background:#fbf6eb;margin:18px 0;font-size:13px;line-height:1.6}.policy.withdraw{border-color:#ad6958;background:#faf0ec}.route-scope{font-size:13px;margin:12px 0;overflow-wrap:anywhere}
+.steps{border-top:1px solid var(--line);padding-top:20px;margin-top:22px}.step-list{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0 16px}.step{flex:1 1 125px;max-width:220px;text-align:left;background:#f4f7f7;border:1px solid #dce6e6;border-radius:7px;color:inherit;padding:10px;cursor:pointer}.step.active{border-color:var(--accent);background:#e1f1ed}.step .number{font-weight:600;color:var(--accent)}.step code{display:block;font-size:12px;margin:7px 0;overflow-wrap:anywhere}.step small{font-size:11px;color:var(--muted);overflow-wrap:anywhere;display:block}
+.step-detail{background:#f7fafa;border-radius:9px;padding:18px}.step-detail ul{padding-left:20px;font-size:13px;line-height:1.6}.command-context{font-size:12px;margin:12px 0 4px;color:#546e77;overflow-wrap:anywhere}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#213b46;color:#e7f0f0;padding:14px;border-radius:7px;font-size:12px;line-height:1.6;margin:5px 0 10px;max-height:420px;overflow:auto}code{font-family:ui-monospace,monospace}
+.raw{margin-top:22px;border-top:1px solid var(--line);padding-top:16px}summary{cursor:pointer;font-size:13px;color:#486d76}details p{font-size:13px}.empty{padding:30px 8px;color:var(--muted)}.counter{font-size:12px;color:var(--muted);font-weight:400}
+@media(max-width:1050px){.layout{grid-template-columns:200px minmax(0,1fr)}.topology{grid-template-columns:minmax(0,1fr) 115px minmax(0,1fr);gap:8px}.endpoint{padding:12px}.endpoint strong{font-size:13px}.directions{font-size:11px}.rule-part{padding:12px}.rule-part strong{font-size:18px}}
+@media(max-width:720px){main{padding:14px}header{display:block}.status{margin-top:14px}.layout{grid-template-columns:1fr}.event-list{max-height:230px}.panel{padding:16px}.controls{gap:10px}label{max-width:100%}select{max-width:100%}.rule-flow{grid-template-columns:1fr}.flow-arrow{transform:rotate(90deg)}.directions{flex-direction:column;gap:0}.title-row{align-items:flex-start}}
+@media(max-width:520px){.topology{grid-template-columns:1fr}.directions{display:flex;flex-direction:row;gap:16px;justify-content:center}.direction{min-width:130px}}
+</style>
+<main>
+<header><div><div class="eyebrow">SkySEED / PLANNING & CONTROL</div><h1>这条计划将怎样操作网络？</h1><p class="muted">Compiler · 从逻辑意图，看到具体接口、转发动作与执行步骤。</p></div><div class="status">离线编译结果 / Compiled, not executed<br>命令为便于阅读的等价表达；运行时由 Runner 绑定资源并通过内核接口执行。</div></header>
+<div class="controls">
+<label>后端 / Backend<select id="backend"><option value="bpf">MPLS-like · BPF</option><option value="linux">IP · Linux</option></select></label>
+<label>计划 / Stream<select id="stream"><option value="link">LinkPlan · 链路</option><option value="route">RoutePlan · 路由</option></select></label>
+<label>批次 / Batch<select id="batch"></select></label>
+<label>节点 / Node<select id="node"></select></label>
+<label>记录 / Records<select id="group"><option value="operations">本批新操作 / New</option><option value="initial_operations">起点状态 / Initial</option><option value="context_operations">前批上下文 / Context</option></select></label>
+</div><p id="coverage" class="muted"></p>
+<div class="layout"><aside class="panel"><h2>逻辑操作 <span id="count" class="counter"></span></h2><div id="events" class="event-list"></div></aside><section class="panel" id="detail" aria-live="polite"></section></div>
+</main>
+<script>
+const data = /*INSPECTION_DATA*/null;
+const $ = id => document.getElementById(id);
+let plans = [], plan = null, selected = 0, selectedStep = 0, expandedNode = null;
+const kindNames = {establish:'建立连接 / Establish', update:'更新 / Update', withdraw:'撤销 / Withdraw', install:'安装规则 / Install', replace:'替换规则 / Replace'};
+const actions = {push:'压入标签 / Push', swap:'交换标签 / Swap', pop_deliver:'移除标签并交付 / Pop & deliver', forward:'IP 转发 / Forward', deliver:'本地交付 / Deliver'};
+const stepNames = {'veth.create':'创建接口对', 'interface.configure':'配置接口', 'netem.replace':'设置方向属性', 'link.activate':'启用与绑定', 'link.unbind':'解除出口', 'veth.delete':'删除接口对', 'bpf.rule':'准备转发表', 'linux.route':'更新内核路由'};
+function el(tag, text, parent, cls) {
+  const node = document.createElement(tag);
+  if (text !== undefined) node.textContent = text;
+  if (cls) node.className = cls;
+  if (parent) parent.append(node);
+  return node;
+}
+function options(select, items) {
+  select.replaceChildren();
+  for (const [value, label] of items) el('option', label, select).value = value;
+}
+function time(value) { return new Date(value).toISOString().slice(11, 23); }
+function shortNode(value) { return value?.replace(/^.*\/plane-/, 'plane-') || '两端 / Both ends'; }
+function speed(value) {
+  if (value === null) return '—';
+  if (value >= 1e9) return `${+(value / 1e9).toFixed(3)} Gbit/s`;
+  if (value >= 1e6) return `${+(value / 1e6).toFixed(3)} Mbit/s`;
+  return `${value} bit/s`;
+}
+function batches() {
+  plans = data.plans.filter(p => p.forwarding_backend === $('backend').value && p.stream === $('stream').value);
+  options($('batch'), plans.map((p, i) => [i, `${i + 1} · ${time(p.start_time)} → ${time(p.end_time)}`]));
+  choosePlan();
+}
+function choosePlan() {
+  plan = plans[Number($('batch').value)] || null;
+  options($('node'), [['', '全部节点 / All nodes'], ...(plan ? plan.targets.nodes.map(n => [n.node_id, n.node_id]) : [])]);
+  resetSelection();
+}
+function resetSelection() { selected = 0; selectedStep = 0; expandedNode = null; render(); }
+function rows() {
+  if (!plan) return [];
+  const group = $('group').value;
+  return plan[group].map((op, i) => ({op, view:plan.views[group][i]})).filter(({op}) =>
+    !$('node').value || (Array.isArray(op.target) ? op.target.includes($('node').value) : op.target === $('node').value));
+}
+function raw(parent, title, value) {
+  const details = el('details', undefined, parent, 'raw');
+  el('summary', title, details);
+  el('pre', JSON.stringify(value, null, 2), details);
+}
+function endpoint(parent, value, focus) {
+  const card = el('button', undefined, parent, 'endpoint' + (focus ? ' focus' : ''));
+  card.type = 'button';
+  card.setAttribute('aria-expanded', expandedNode === value.node);
+  el('span', '节点 / Node', card, 'muted');
+  el('strong', value.node, card);
+  el('code', value.interface, card);
+  el('code', value.address, card);
+  if (plan.forwarding_backend === 'bpf') el('span', `逻辑端口 / Port ${value.port}`, card, 'badge');
+  if (expandedNode === value.node) {
+    const extra = el('div', undefined, card, 'extra');
+    el('div', `服务 / Service: ${value.service}`, extra);
+    el('div', `MAC: ${value.mac}`, extra);
+  }
+  el('div', '点击查看部署映射 / Deployment mapping', card, 'hint');
+  card.onclick = () => { expandedNode = expandedNode === value.node ? null : value.node; renderDetail(); };
+}
+function drawLink(parent, diagram, op, step) {
+  el('h3', op.kind === 'withdraw' ? '将移除的接口对 / Pair to remove' : '两端接口与方向属性 / Interfaces & directions', parent);
+  const pair = el('div', undefined, parent, 'topology' + (op.kind === 'withdraw' ? ' removed' : ''));
+  endpoint(pair, diagram.endpoints[0], !step?.node || step.node === diagram.endpoints[0].node);
+  const middle = el('div', undefined, pair, 'directions');
+  for (const [i, value] of diagram.endpoints.entries()) {
+    const direction = el('div', undefined, middle, 'direction');
+    const shaping = diagram.directions.find(item => item.node === value.node);
+    el('div', `${shortNode(value.node)} → 对端 / peer`, direction);
+    el('span', undefined, direction, 'arrow' + (i ? ' reverse' : ''));
+    if (shaping) {
+      if (shaping.drop) el('div', '全部丢弃 / DROP ALL', direction, 'drop');
+      el('div', `${+(shaping.delay_us / 1000).toFixed(3)} ms · ${speed(shaping.rate_bps)}`, direction);
+      el('div', `丢包 / Loss ${shaping.loss_percent}%`, direction);
+    } else {
+      el('div', op.kind === 'withdraw' ? '撤除 / Remove' : '本操作未设置属性 / Unchanged here', direction, 'muted');
+    }
+  }
+  endpoint(pair, diagram.endpoints[1], !step?.node || step.node === diagram.endpoints[1].node);
+  if (op.kind === 'withdraw') {
+    const policy = el('div', undefined, parent, 'policy withdraw');
+    el('strong', '先解除出口 → 再删除 veth / Unbind → delete', policy);
+    el('div', plan.forwarding_backend === 'bpf' ? '路由意图保留；未绑定逻辑端口直接丢包。 / Retain intent; unbound ports drop.' : '路由意图保留；依赖该出口的受管路由切换为 blackhole。 / Retain intent; dependent routes become blackholes.', policy);
+  }
+}
+function flowPart(parent, label, value, sub) {
+  const part = el('div', undefined, parent, 'rule-part');
+  el('span', label, part, 'muted');
+  el('strong', value, part);
+  if (sub) el('code', sub, part);
+}
+function drawRoute(parent, diagram, op) {
+  el('h3', op.kind === 'withdraw' ? '将撤销的匹配与动作 / Rule to withdraw' : '该规则生效后的单节点动作 / One-node forwarding action', parent);
+  el('div', `节点 / Node: ${diagram.node.node} · 目的 / Destination: ${diagram.destination[1]}`, parent, 'route-scope');
+  const flow = el('div', undefined, parent, 'rule-flow');
+  const isLabel = diagram.match[0] === 'label';
+  flowPart(flow, '匹配 / Match', isLabel ? `Label ${diagram.match[1]}` : diagram.match[1], isLabel ? '入标签 / Incoming label' : 'IPv4 目的前缀 / Destination prefix');
+  el('span', '→', flow, 'flow-arrow');
+  flowPart(flow, '动作 / Action', diagram.action, actions[diagram.action]);
+  el('span', '→', flow, 'flow-arrow');
+  const outgoing = diagram.outgoing_label != null ? `Label ${diagram.outgoing_label}` : diagram.exit ? 'IPv4' : '本地 / Local';
+  const outputHint = diagram.exit ? (plan.forwarding_backend === 'bpf' ? `逻辑端口 / Port ${diagram.port}` : diagram.exit.local.interface) : diagram.prefix;
+  flowPart(flow, '输出 / Output', outgoing, outputHint);
+  if (diagram.exit) {
+    const pair = el('div', undefined, parent, 'topology');
+    endpoint(pair, diagram.exit.local, true);
+    const direction = el('div', undefined, pair, 'directions');
+    el('div', '此规则的一跳 / One hop', direction);
+    el('span', undefined, direction, 'arrow');
+    el('div', op.kind === 'withdraw' ? '规则将被撤销 / Withdrawn' : '出口绑定 / Exit binding', direction);
+    endpoint(pair, diagram.exit.peer, false);
+  }
+  const policy = el('div', undefined, parent, 'policy' + (op.kind === 'withdraw' ? ' withdraw' : ''));
+  if (op.kind === 'withdraw') {
+    el('strong', '删除此匹配项及其意图 / Remove entry and intent', policy);
+    el('div', '不再以此规则恢复出口；图中动作是被撤销的内容。 / The pictured action is removed, not newly activated.', policy);
+  } else if (diagram.exit) {
+    el('strong', diagram.unavailable === 'blackhole' ? '若出口缺失 → blackhole / If exit is absent → blackhole' : '若出口未绑定 → 直接丢包 / If exit is unbound → drop', policy);
+    el('div', '保留路由意图；出口恢复时仅恢复仍有效的规则。此图不表示该时刻链路实际可用。 / Retain intent; restore only still-current rules. Availability is not inferred here.', policy);
+  } else {
+    el('strong', '交给本节点 Linux / Deliver to local Linux', policy);
+    el('div', `本地目的前缀 / Local destination: ${diagram.prefix}`, policy);
+  }
+}
+function drawSteps(parent, view) {
+  const section = el('div', undefined, parent, 'steps');
+  el('h3', '后端操作顺序 / Backend steps', section);
+  el('p', '点击步骤查看具体动作；编号对应本操作内的顺序，不表示已执行。 / Select a step; numbers show order, not completion.', section, 'muted');
+  const buttons = el('div', undefined, section, 'step-list');
+  view.steps.forEach((step, i) => {
+    const button = el('button', undefined, buttons, 'step' + (i === selectedStep ? ' active' : ''));
+    button.type = 'button';
+    button.setAttribute('aria-pressed', i === selectedStep);
+    el('span', `${String(i + 1).padStart(2, '0')} ${stepNames[step.opcode] || ''}`, button, 'number');
+    el('code', step.opcode, button);
+    el('small', shortNode(step.node), button);
+    button.onclick = () => { selectedStep = i; renderDetail(); };
+  });
+  const step = view.steps[selectedStep];
+  if (!step) return;
+  const detail = el('div', undefined, section, 'step-detail');
+  el('h3', `${selectedStep + 1}. ${step.title}`, detail);
+  if (step.notes.length) {
+    const notes = el('ul', undefined, detail);
+    for (const note of step.notes) el('li', note, notes);
+  }
+  if (step.commands.length) {
+    el('p', '等价命令示意 / Command equivalents · 非可直接执行的完整脚本', detail, 'muted');
+    for (const command of step.commands) {
+      const scope = command.node ? `在 ${command.node} 的网络命名空间内 / In node namespace` : '创建接口对；具体创建位置由 Runner 绑定 / Creation namespace bound by Runner';
+      el('div', command.condition ? `${scope} · ${command.condition}` : scope, detail, 'command-context');
+      el('pre', command.text, detail);
+    }
+  }
+  if (step.requires.length) {
+    el('p', '依赖：先完成本连接的资源创建。 / Requires this connection’s resources.', detail, 'muted');
+  }
+}
+function renderDetail() {
+  const parent = $('detail');
+  parent.replaceChildren();
+  const row = rows()[selected];
+  if (!row) { el('p', '此筛选没有记录 / No matching records', parent, 'empty'); return; }
+  const {op, view} = row;
+  const title = el('div', undefined, parent, 'title-row');
+  el('span', kindNames[op.kind] || op.kind, title, 'badge' + (op.kind === 'withdraw' ? ' withdraw' : ''));
+  el('span', `${time(op.timestamp)} UTC`, title, 'muted');
+  el('p', Array.isArray(op.target) ? op.target.join(' ↔ ') : op.target, parent, 'summary');
+  const descriptions = {
+    operations:'本批新增定时操作 / New scheduled operation',
+    initial_operations:'起点恢复材料；连续执行时不重复应用 / Restore when starting here; do not replay between batches',
+    context_operations:'前批已交付的上下文；供独立恢复，不再次执行 / Previously delivered context; restoration only'
+  };
+  el('p', descriptions[$('group').value], parent, 'record-note');
+  const diagram = el('div', undefined, parent, 'diagram');
+  if (view.diagram?.type === 'link') drawLink(diagram, view.diagram, op, view.steps[selectedStep]);
+  else if (view.diagram?.type === 'route') drawRoute(diagram, view.diagram, op);
+  else el('p', '此操作没有内置图解；下方保留指令与原始记录。 / No built-in diagram for this operation.', diagram, 'muted');
+  drawSteps(parent, view);
+  raw(parent, '原始操作与编码 / Raw operation & encoded bytes', op);
+  raw(parent, '本批部署映射与程序约定 / Batch targets & program contract', plan.targets);
+}
+function render() {
+  const list = $('events');
+  list.replaceChildren();
+  const records = rows();
+  $('count').textContent = `(${records.length})`;
+  $('coverage').textContent = plan ? `${plan.start_time} → ${plan.end_time} · ${plan.stream === 'link' ? '链路' : '路由'}批次覆盖 / Batch coverage` : '此后端 / 计划没有记录。No records.';
+  if (!records.length) el('p', '此筛选没有记录 / No matching records', list, 'empty');
+  records.forEach(({op, view}, i) => {
+    const button = el('button', undefined, list, 'event' + (i === selected ? ' active' : ''));
+    button.type = 'button';
+    button.setAttribute('aria-pressed', i === selected);
+    el('span', `${time(op.timestamp)} · ${op.kind}`, button, 'time');
+    el('strong', Array.isArray(op.target) ? op.target.map(shortNode).join(' ↔ ') : shortNode(op.target), button);
+    if (view.diagram?.type === 'route') {
+      const d = view.diagram;
+      el('span', `${d.destination[1]} · ${d.match[0] === 'label' ? 'Label ' : ''}${d.match[1]} → ${d.action}${d.outgoing_label != null ? ' ' + d.outgoing_label : ''}`, button);
+    }
+    button.onclick = () => { selected = i; selectedStep = 0; expandedNode = null; render(); };
+  });
+  renderDetail();
+}
+$('backend').onchange = batches;
+$('stream').onchange = batches;
+$('batch').onchange = choosePlan;
+$('node').onchange = resetSelection;
+$('group').onchange = resetSelection;
+batches();
+</script>
+</html>
